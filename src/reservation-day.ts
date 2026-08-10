@@ -10,6 +10,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const MANAGEMENT_KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -311,6 +312,25 @@ const isCanonicalDate = (value: string): boolean => {
   );
 };
 
+const isCanonicalTimestamp = (value: unknown): value is string => {
+  if (typeof value !== "string" || !TIMESTAMP.test(value)) return false;
+  const milliseconds = Date.parse(value);
+  return (
+    Number.isFinite(milliseconds) &&
+    new Date(milliseconds).toISOString() === value
+  );
+};
+
+const hasExactKeys = (
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
+
 const minutes = (value: string): number => {
   const [hours = 0, minute = 0] = value.split(":").map(Number);
   return hours * 60 + minute;
@@ -589,29 +609,104 @@ const bookingSnapshot = (
   };
 };
 
-const isBookingSnapshot = (value: unknown): value is BookingSnapshot => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const snapshot = value as Record<string, unknown>;
+const SNAPSHOT_SERVICE_KEYS = [
+  "id",
+  "label",
+  "durationMinutes",
+  "cleanupMinutes",
+  "priceYen",
+] as const;
+
+const SNAPSHOT_KEYS = [
+  "settingsVersion",
+  "services",
+  "serviceMinutes",
+  "cleanupMinutes",
+  "occupiedMinutes",
+  "priceYen",
+  "resourceId",
+  "resourceLabel",
+  "consentVersion",
+] as const;
+
+type SnapshotService = BookingSnapshot["services"][number];
+
+// Mirrors the write-side bounds in isService for the frozen per-service copy that
+// bookingSnapshot stores, so a corrupted snapshot cannot describe a service the
+// configuration would never have accepted.
+const isSnapshotService = (value: unknown): value is SnapshotService => {
+  if (!hasExactKeys(value, SNAPSHOT_SERVICE_KEYS)) return false;
   return (
-    Number.isSafeInteger(snapshot.settingsVersion) &&
-    (snapshot.settingsVersion as number) >= 1 &&
-    Array.isArray(snapshot.services) &&
-    snapshot.services.length >= 1 &&
-    snapshot.services.length <= 4 &&
-    Number.isSafeInteger(snapshot.serviceMinutes) &&
-    Number.isSafeInteger(snapshot.cleanupMinutes) &&
-    Number.isSafeInteger(snapshot.occupiedMinutes) &&
-    (snapshot.occupiedMinutes as number) ===
-      (snapshot.serviceMinutes as number) + (snapshot.cleanupMinutes as number) &&
-    (snapshot.priceYen === null || Number.isSafeInteger(snapshot.priceYen)) &&
-    typeof snapshot.resourceId === "string" &&
-    ID.test(snapshot.resourceId) &&
-    typeof snapshot.resourceLabel === "string" &&
-    boundedText(snapshot.resourceLabel, 1, 80) &&
-    typeof snapshot.consentVersion === "string" &&
-    ID.test(snapshot.consentVersion)
+    typeof value.id === "string" &&
+    ID.test(value.id) &&
+    typeof value.label === "string" &&
+    boundedText(value.label, 1, 80) &&
+    Number.isSafeInteger(value.durationMinutes) &&
+    (value.durationMinutes as number) >= 15 &&
+    (value.durationMinutes as number) <= 480 &&
+    Number.isSafeInteger(value.cleanupMinutes) &&
+    (value.cleanupMinutes as number) >= 0 &&
+    (value.cleanupMinutes as number) <= 120 &&
+    (value.priceYen === null ||
+      (Number.isSafeInteger(value.priceYen) &&
+        (value.priceYen as number) >= 0 &&
+        (value.priceYen as number) <= 10_000_000))
   );
 };
+
+const isBookingSnapshot = (value: unknown): value is BookingSnapshot => {
+  if (!hasExactKeys(value, SNAPSHOT_KEYS)) return false;
+  const snapshot = value;
+  if (
+    !Number.isSafeInteger(snapshot.settingsVersion) ||
+    (snapshot.settingsVersion as number) < 1 ||
+    !Array.isArray(snapshot.services) ||
+    snapshot.services.length < 1 ||
+    snapshot.services.length > 4 ||
+    !snapshot.services.every(isSnapshotService) ||
+    typeof snapshot.resourceId !== "string" ||
+    !ID.test(snapshot.resourceId) ||
+    typeof snapshot.resourceLabel !== "string" ||
+    !boundedText(snapshot.resourceLabel, 1, 80) ||
+    typeof snapshot.consentVersion !== "string" ||
+    !ID.test(snapshot.consentVersion)
+  ) {
+    return false;
+  }
+  const services = snapshot.services as SnapshotService[];
+  const serviceMinutes = services.reduce(
+    (total, service) => total + service.durationMinutes,
+    0,
+  );
+  const cleanupMinutes = services.reduce(
+    (total, service) => total + service.cleanupMinutes,
+    0,
+  );
+  const priceYen = services.some((service) => service.priceYen === null)
+    ? null
+    : services.reduce((total, service) => total + (service.priceYen ?? 0), 0);
+  return (
+    snapshot.serviceMinutes === serviceMinutes &&
+    snapshot.cleanupMinutes === cleanupMinutes &&
+    snapshot.occupiedMinutes === serviceMinutes + cleanupMinutes &&
+    snapshot.priceYen === priceYen
+  );
+};
+
+const RESCHEDULE_POINT_KEYS = ["resourceId", "startTime"] as const;
+const RESCHEDULE_RECORD_KEYS = ["from", "to"] as const;
+
+const isReschedulePoint = (value: unknown): boolean =>
+  hasExactKeys(value, RESCHEDULE_POINT_KEYS) &&
+  typeof value.resourceId === "string" &&
+  ID.test(value.resourceId) &&
+  typeof value.startTime === "string" &&
+  TIME.test(value.startTime);
+
+const isRescheduleRecord = (value: unknown): value is RescheduleRecord =>
+  hasExactKeys(value, RESCHEDULE_RECORD_KEYS) &&
+  isReschedulePoint(value.from) &&
+  isReschedulePoint(value.to);
 
 const sha256Hex = async (value: string): Promise<string> => {
   const bytes = await crypto.subtle.digest(
@@ -649,9 +744,12 @@ const isStoredSuccess = (value: unknown): value is StoredSuccess => {
     return (
       UUID.test(candidate.reservationId) &&
       typeof candidate.date === "string" &&
-      DATE.test(candidate.date) &&
+      isCanonicalDate(candidate.date) &&
       typeof candidate.resourceId === "string" &&
       ID.test(candidate.resourceId) &&
+      (candidate.resourceLabel === undefined ||
+        (typeof candidate.resourceLabel === "string" &&
+          boundedText(candidate.resourceLabel, 1, 80))) &&
       typeof candidate.startTime === "string" &&
       TIME.test(candidate.startTime) &&
       [
@@ -663,6 +761,13 @@ const isStoredSuccess = (value: unknown): value is StoredSuccess => {
         "completed",
         "no_show",
       ].includes(candidate.status as string) &&
+      (candidate.rejectionReason === undefined ||
+        candidate.rejectionReason === null ||
+        (typeof candidate.rejectionReason === "string" &&
+          boundedText(candidate.rejectionReason, 1, 200))) &&
+      (candidate.outcomeAt === undefined ||
+        candidate.outcomeAt === null ||
+        isCanonicalTimestamp(candidate.outcomeAt)) &&
       (candidate.snapshot === undefined || isBookingSnapshot(candidate.snapshot))
     );
   }
@@ -670,7 +775,7 @@ const isStoredSuccess = (value: unknown): value is StoredSuccess => {
     typeof candidate.closureId === "string" &&
     UUID.test(candidate.closureId) &&
     typeof candidate.date === "string" &&
-    DATE.test(candidate.date) &&
+    isCanonicalDate(candidate.date) &&
     (candidate.resourceId === null ||
       (typeof candidate.resourceId === "string" && ID.test(candidate.resourceId))) &&
     typeof candidate.startTime === "string" &&
@@ -785,12 +890,14 @@ export class ReservationDay extends DurableObject<Env> {
     const row = rows[0];
     if (
       row === undefined ||
-      !DATE.test(row.date) ||
+      typeof row.date !== "string" ||
+      !isCanonicalDate(row.date) ||
       typeof row.schedule_json !== "string" ||
       !Number.isSafeInteger(row.accepted_creates) ||
       row.accepted_creates < 0 ||
       row.accepted_creates > 96 ||
       !Number.isSafeInteger(row.accepted_mutations) ||
+      row.accepted_mutations < 0 ||
       row.accepted_mutations > 192 ||
       !Number.isSafeInteger(row.purge_at) ||
       row.purge_at <= 0
@@ -916,7 +1023,10 @@ export class ReservationDay extends DurableObject<Env> {
       !DIGEST.test(row.management_digest) ||
       !statuses.includes(row.status as BookingStatus) ||
       (row.rejection_reason !== null &&
-        !boundedText(row.rejection_reason, 1, 200))
+        !boundedText(row.rejection_reason, 1, 200)) ||
+      !isCanonicalTimestamp(row.created_at) ||
+      !isCanonicalTimestamp(row.updated_at) ||
+      (row.outcome_at !== null && !isCanonicalTimestamp(row.outcome_at))
     ) {
       throw new Error("corrupt booking detail");
     }
@@ -930,7 +1040,8 @@ export class ReservationDay extends DurableObject<Env> {
     }
     if (
       (snapshot !== null && !isBookingSnapshot(snapshot)) ||
-      !Array.isArray(history)
+      !Array.isArray(history) ||
+      !history.every(isRescheduleRecord)
     ) {
       throw new Error("invalid booking JSON");
     }
@@ -989,7 +1100,9 @@ export class ReservationDay extends DurableObject<Env> {
           !TIME.test(row.end_time) ||
           minutes(row.start_time) >= minutes(row.end_time) ||
           !boundedText(row.label, 1, 80) ||
-          (row.active !== 0 && row.active !== 1)
+          (row.active !== 0 && row.active !== 1) ||
+          !isCanonicalTimestamp(row.created_at) ||
+          (row.removed_at !== null && !isCanonicalTimestamp(row.removed_at))
         ) {
           throw new Error("corrupt closure");
         }

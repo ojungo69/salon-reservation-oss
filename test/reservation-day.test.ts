@@ -1051,4 +1051,162 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
       ),
     ).toEqual({ ok: false, code: "CAPACITY_REACHED" });
   });
+
+  it("fails closed on every corrupted persisted structure and round-trips valid rows", async () => {
+    const corruptDay = configFor("2025-01-17");
+    const stub = stubFor(corruptDay);
+    expect(
+      await stub.createPublic(corruptDay, createInput(corruptDay)),
+    ).toMatchObject({ ok: true, replayed: false });
+    expect(
+      await callTarget(stub, "createClosure", corruptDay, {
+        commandId: crypto.randomUUID(),
+        date: corruptDay.date,
+        resourceId: "resource-chair-b",
+        startTime: "11:00",
+        endTime: "12:00",
+        label: "架空の設備点検",
+      }),
+    ).toMatchObject({ ok: true, replayed: false });
+
+    const healthy = await stub.listOwner(corruptDay);
+    expect(healthy).toMatchObject({ ok: true });
+
+    const original = await runInDurableObject(stub, (_instance, state) => {
+      const detail = state.storage.sql
+        .exec<{
+          snapshot_json: string;
+          reschedule_history_json: string;
+          created_at: string;
+          outcome_at: string | null;
+        }>(
+          "SELECT snapshot_json, reschedule_history_json, created_at, outcome_at FROM booking_details",
+        )
+        .toArray()[0];
+      const meta = state.storage.sql
+        .exec<{ date: string; accepted_mutations: number }>(
+          "SELECT date, accepted_mutations FROM partition_meta WHERE singleton = 1",
+        )
+        .toArray()[0];
+      const closure = state.storage.sql
+        .exec<{ created_at: string }>("SELECT created_at FROM closures")
+        .toArray()[0];
+      if (detail === undefined || meta === undefined || closure === undefined) {
+        throw new Error("missing baseline rows");
+      }
+      return { detail, meta, closure };
+    });
+
+    const snapshot = JSON.parse(original.detail.snapshot_json) as {
+      services: Array<Record<string, unknown>>;
+      serviceMinutes: number;
+    };
+    const withServices = (services: unknown): string =>
+      JSON.stringify({ ...snapshot, services });
+    const validHistory = [
+      {
+        from: { resourceId: "resource-chair-a", startTime: "09:00" },
+        to: { resourceId: "resource-chair-b", startTime: "10:00" },
+      },
+    ];
+
+    const corruptions: Array<[string, string, unknown[]]> = [
+      [
+        "snapshot service element with a non-string identifier",
+        "UPDATE booking_details SET snapshot_json = ?",
+        [withServices(snapshot.services.map((service, index) => (index === 0 ? { ...service, id: 7 } : service)))],
+      ],
+      [
+        "snapshot service element with an out-of-range price",
+        "UPDATE booking_details SET snapshot_json = ?",
+        [withServices(snapshot.services.map((service, index) => (index === 0 ? { ...service, priceYen: -1 } : service)))],
+      ],
+      [
+        "snapshot service element carrying an unexpected key",
+        "UPDATE booking_details SET snapshot_json = ?",
+        [withServices(snapshot.services.map((service, index) => (index === 0 ? { ...service, note: "x" } : service)))],
+      ],
+      [
+        "snapshot aggregate that disagrees with its service list",
+        "UPDATE booking_details SET snapshot_json = ?",
+        [JSON.stringify({ ...snapshot, serviceMinutes: snapshot.serviceMinutes + 5 })],
+      ],
+      [
+        "reschedule history entry missing a field",
+        "UPDATE booking_details SET reschedule_history_json = ?",
+        [JSON.stringify([{ from: { resourceId: "resource-chair-a" }, to: validHistory[0]?.to }])],
+      ],
+      [
+        "reschedule history entry with an invalid start time",
+        "UPDATE booking_details SET reschedule_history_json = ?",
+        [JSON.stringify([{ ...validHistory[0], to: { resourceId: "resource-chair-b", startTime: "25:00" } }])],
+      ],
+      [
+        "booking timestamp that is not a canonical instant",
+        "UPDATE booking_details SET created_at = ?",
+        ["2025-01-14T15:00:00Z"],
+      ],
+      [
+        "booking outcome timestamp that is not a canonical instant",
+        "UPDATE booking_details SET outcome_at = ?",
+        ["yesterday"],
+      ],
+      // A negative accepted_mutations value cannot be injected here: the
+      // partition_meta CHECK constraint rejects it before #readMeta ever sees the
+      // row. The matching guard in #readMeta is defense in depth for a database
+      // whose constraints were not applied, so it has no reachable test.
+      [
+        "calendar-invalid partition date",
+        "UPDATE partition_meta SET date = ? WHERE singleton = 1",
+        ["2025-02-30"],
+      ],
+      [
+        "closure timestamp that is not a canonical instant",
+        "UPDATE closures SET created_at = ?",
+        ["2025-01-14"],
+      ],
+    ];
+
+    for (const [label, statement, parameters] of corruptions) {
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.sql.exec(statement, ...parameters);
+      });
+      expect(await stub.listOwner(corruptDay), label).toEqual({
+        ok: false,
+        code: "TEMPORARILY_UNAVAILABLE",
+      });
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.sql.exec(
+          `UPDATE booking_details
+             SET snapshot_json = ?, reschedule_history_json = ?, created_at = ?, outcome_at = ?`,
+          original.detail.snapshot_json,
+          original.detail.reschedule_history_json,
+          original.detail.created_at,
+          original.detail.outcome_at,
+        );
+        state.storage.sql.exec(
+          "UPDATE partition_meta SET date = ?, accepted_mutations = ? WHERE singleton = 1",
+          original.meta.date,
+          original.meta.accepted_mutations,
+        );
+        state.storage.sql.exec(
+          "UPDATE closures SET created_at = ?",
+          original.closure.created_at,
+        );
+      });
+    }
+
+    expect(await stub.listOwner(corruptDay)).toEqual(healthy);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE booking_details SET reschedule_history_json = ?",
+        JSON.stringify(validHistory),
+      );
+    });
+    expect(await stub.listOwner(corruptDay)).toMatchObject({
+      ok: true,
+      reservations: [{ rescheduleHistory: validHistory }],
+    });
+  });
 });
