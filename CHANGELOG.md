@@ -20,8 +20,18 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
   date, review conversations must be resolved, force pushes and deletion blocked, linear history),
   and a tag ruleset protecting `v*` tags against deletion and rewriting.
 
+- `.nvmrc` pinning the exact Node.js version, which CI now reads as its single source of truth.
+- A CI assertion that fails when an installed package has an install script outside the
+  `allowScripts` allowlist.
+
 ### Changed
 
+- The install-script policy is now enforced rather than declared. CI installs npm 12 explicitly
+  (Node 24 bundles npm 11, which recognizes neither the `allowScripts` field nor
+  `strict-allow-scripts`) and keeps `--ignore-scripts`, so no third-party install code runs in CI,
+  while a separate step fails the build if any installed package has an install script outside the
+  reviewed allowlist. `.npmrc` gains `engine-strict=true`, and `package.json` declares the supported
+  npm range.
 - `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md` now describe the repository's private
   security advisory form as the concrete private reporting route. Private vulnerability reporting is
   enabled, so the form is available to any GitHub user.

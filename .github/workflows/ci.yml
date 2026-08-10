@@ -27,12 +27,33 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.16.0
+          node-version-file: .nvmrc
           cache: npm
           package-manager-cache: false
 
+      # Node 24.16.0 bundles npm 11, which does not enforce the allowScripts
+      # allowlist. Corepack has no npm shim, so packageManager cannot pin npm;
+      # an explicit global install is the only way to run the documented npm.
+      - name: Pin npm
+        run: npm install -g npm@12.0.2
+
+      - name: Report toolchain
+        run: node --version && npm --version
+
+      # --ignore-scripts skips every dependency install script uniformly, so no
+      # third-party install code runs in CI at all. It also short-circuits before
+      # the per-package allowScripts check, which is why the allowlist is
+      # verified by its own step below rather than as a side effect of the
+      # install. CI has never needed an install script to produce a green build.
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
+
+      # Makes the reviewed allowlist real rather than decorative: the listing is
+      # non-empty as soon as an installed package has an install script that no
+      # one has approved. `npm install-scripts ls` always exits 0, so the length
+      # is what the gate asserts.
+      - name: Verify the install-script allowlist covers every install script
+        run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"
 
       - name: Verify
         run: npm run check

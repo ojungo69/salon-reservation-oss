@@ -206,8 +206,17 @@ const auditPackage = () => {
   if (packageJson.license !== AGPL || packageJson.private !== true) {
     fail("package must be private AGPL-3.0-only metadata");
   }
-  if (readText(".npmrc") !== "allow-scripts=\nstrict-allow-scripts=true\n") {
+  if (
+    readText(".npmrc") !==
+    "allow-scripts=\nengine-strict=true\nstrict-allow-scripts=true\n"
+  ) {
     fail("strict install-script policy drift");
+  }
+  if (
+    packageJson.engines?.node !== ">=24.0.0" ||
+    packageJson.engines?.npm !== ">=12.0.0 <13.0.0"
+  ) {
+    fail("supported toolchain drift");
   }
   if (packageJson.scripts?.audit !== "npm audit --audit-level=high") {
     fail("dependency audit command drift");

@@ -4,7 +4,8 @@ Thank you for improving Salon Reservation OSS.
 
 ## Before changing code
 
-1. Use Node.js 24 and npm 12.
+1. Use the Node.js version in [`.nvmrc`](.nvmrc) and npm 12. See
+   [Toolchain](#toolchain) for why both matter.
 2. Run `npm ci`.
 3. Read the relevant source and tests end to end.
 4. Keep fixtures fictional. Never copy customer data, credentials, account IDs, private runbooks,
@@ -51,11 +52,55 @@ There is no automatic emergency bypass. If `main` must be repaired urgently, the
 temporarily sets the ruleset to `evaluate`, lands the fix, restores `active` enforcement, and
 records what happened in the pull request that follows.
 
+## Toolchain
+
+| Where | What it pins |
+|---|---|
+| [`.nvmrc`](.nvmrc) | The exact Node.js version. CI reads this file, so there is one source of truth. |
+| `package.json` → `engines` | The supported Node.js floor and the npm major (`>=12.0.0 <13.0.0`). |
+| [`.npmrc`](.npmrc) → `engine-strict=true` | Turns those `engines` values into a hard install failure instead of a warning. |
+| `.github/workflows/ci.yml` → "Pin npm" | The exact npm patch version CI installs. |
+
+npm 12 matters specifically: it blocks dependency install scripts by default, and
+`strict-allow-scripts=true` turns an unlisted install script into a failed install rather than a
+silent skip. Node 24 still bundles npm 11, which has neither behavior, so CI installs npm 12
+explicitly. Corepack cannot do this — it has no npm shim, which is why there is no `packageManager`
+field.
+
+Bumping the CI npm patch version is a manual edit; Dependabot does not manage it. Bumping the npm
+major additionally requires updating `engines.npm`, which `scripts/release-audit.mjs` verifies.
+
 ## Install scripts
 
 Dependency install scripts are governed by the `allowScripts` field in
 [`package.json`](package.json): only the packages listed there may run `preinstall`, `install`, or
-`postinstall`, pinned to an exact version.
+`postinstall`, pinned to an exact version. `strict-allow-scripts=true` in `.npmrc` makes an
+unlisted install script fail the install instead of being skipped in silence.
+
+CI additionally passes `--ignore-scripts`, so **no** dependency install script runs there at all.
+The two are not redundant, and the precedence matters:
+
+- `--ignore-scripts` wins over everything. It skips all install scripts and short-circuits before
+  the per-package `allowScripts` check, so on its own it would make the allowlist decorative.
+- The separate `npm install-scripts ls` step is therefore what enforces the allowlist in CI. It
+  fails the build as soon as an installed package has an install script nobody has approved, whether
+  or not that script would have run.
+- On a contributor's machine `npm ci` runs without the flag, and there `strict-allow-scripts` is the
+  live enforcement.
+
+The result is that CI executes no third-party install code while still refusing to accept an
+unreviewed one, and a local install runs only reviewed scripts. Nothing in the build has ever needed
+an install script to succeed.
+
+`npm install-scripts prune` will offer to remove the `"fsevents": false` entry because fsevents is
+not installed on Linux. Do not accept that: the entry is a deliberate denial that matters on macOS.
+
+The empty `allow-scripts=` line in [`.npmrc`](.npmrc) looks redundant — npm reports that
+`package.json` takes precedence and warns that the line is ignored — but it is load-bearing. It is a
+*different* npm mechanism, meant for global installs and `npx`, and it is commonly set in a personal
+`~/.npmrc`. Without the empty project-level override, a personal value leaks into project-scoped
+commands and npm 12 fails them outright with `EALLOWSCRIPTS`, so `npm run check` would pass or fail
+depending on the contributor's home directory. Keep the line.
 
 When a dependency update changes a package that runs an install script (for example, a `wrangler`
 bump that pulls a new `workerd`), two files must be updated together:

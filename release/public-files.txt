@@ -8,6 +8,7 @@
 .github/workflows/ci.yml
 .gitignore
 .npmrc
+.nvmrc
 CHANGELOG.md
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
