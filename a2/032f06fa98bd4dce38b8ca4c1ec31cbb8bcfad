@@ -1,0 +1,43 @@
+.nvmrc
+  s_9d6ddfd57aa340::t_a2d091b7e7bc36 1
+release/public-files.txt
+  s_9d6ddfd57aa340::t_d907d03260f6d0 11
+scripts/release-audit.mjs
+  s_9d6ddfd57aa340::t_1466f3e702e09d 209-212
+  s_9d6ddfd57aa340::t_0ec3600f3012e7 215-220
+CONTRIBUTING.md
+  s_9d6ddfd57aa340::t_2d4bebf9b04d35 55-72,94-96
+  s_9d6ddfd57aa340::t_6f3910e04c8047 98-103
+  s_9d6ddfd57aa340::t_13fdff5b4ff810 7-8
+  s_9d6ddfd57aa340::t_8447ddab0dbe91 77-93
+  s_9d6ddfd57aa340::t_d4f45c748eae51 97
+package.json
+  s_9d6ddfd57aa340::t_b0219c29901847 9-10
+package-lock.json
+  s_9d6ddfd57aa340::t_ce408294d93b73 19-20
+.npmrc
+  s_9d6ddfd57aa340::t_000c06f6489659 2
+.github/workflows/ci.yml
+  s_9d6ddfd57aa340::t_8dd50fffd36fbd 30,34-42,55-56
+  s_9d6ddfd57aa340::t_38de6b82b1053c 43-47,51-54
+  s_9d6ddfd57aa340::t_37663b254c9e72 57
+CHANGELOG.md
+  s_9d6ddfd57aa340::t_3a3ff1c3108746 23-26,29
+  s_9d6ddfd57aa340::t_cd3c207556d5e1 30-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "a2032f06fa98bd4dce38b8ca4c1ec31cbb8bcfad",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
