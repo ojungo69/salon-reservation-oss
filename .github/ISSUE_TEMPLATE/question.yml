@@ -1,0 +1,53 @@
+name: Support question
+description: Ask a non-sensitive question about running or configuring Salon Reservation OSS
+title: "[Question] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for setup, configuration, and behavior questions that do not involve a suspected vulnerability. Do not include customer data, owner tokens, Turnstile secrets, Cloudflare account identifiers, or deployment output.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Tag, release, or commit SHA you are running.
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Deployment and Cloudflare configuration
+        - Setup wizard and live readiness
+        - Customer booking flow
+        - Owner/admin operations
+        - Privacy, retention, and legal copy
+        - Local development and tests
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe what you are trying to do and what is unclear. Use fictional data for any example.
+    validations:
+      required: true
+  - type: textarea
+    id: consulted
+    attributes:
+      label: Documentation already consulted
+      description: Which README or docs/ sections did you read, and what did they not answer?
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This question contains no customer data, credentials, account identifiers, or deployment output.
+          required: true
+        - label: This question does not describe a suspected security vulnerability.
+          required: true

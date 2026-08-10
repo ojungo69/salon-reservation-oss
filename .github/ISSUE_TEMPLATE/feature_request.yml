@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a public-safe improvement to Salon Reservation OSS
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the user problem before the implementation idea. Keep provider integrations optional by default unless the proposal explicitly changes that project boundary.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is blocked or inconvenienced today, and in what workflow?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the observable behavior and UX, not only the technology choice.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Design boundaries
+      options:
+        - label: The proposal can be tested with fictional data only.
+          required: true
+        - label: Privacy, retention, authorization, retries/idempotency, and failure behavior are considered where relevant.
+          required: true
+        - label: Any external provider integration remains optional or the change in project scope is explicitly justified.
+          required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List concrete outcomes that would make this request complete.
+    validations:
+      required: true
