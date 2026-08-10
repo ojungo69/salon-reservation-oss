@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible, non-sensitive defect
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Salon Reservation OSS. Do not include customer data, owner tokens, Turnstile secrets, Cloudflare account identifiers, production dumps, or suspected vulnerability details here. Security-sensitive reports must use the private route described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Tag, release candidate, or commit SHA where you observed the problem.
+      placeholder: v0.2.0-rc.1 or 4ca0a13
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Customer booking UI
+        - Customer booking API
+        - Owner/admin UI
+        - Setup/deployment
+        - Durable Object/storage
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Use fictional data only. List the smallest sequence that reproduces the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Verification already attempted
+      description: Include relevant local commands or browser/runtime checks, without secrets or production data.
+      placeholder: npm run check
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I have removed customer data, credentials, account identifiers, and production dumps.
+          required: true
+        - label: This report does not disclose a suspected security vulnerability publicly.
+          required: true
