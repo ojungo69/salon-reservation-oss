@@ -1,0 +1,32 @@
+.github/ISSUE_TEMPLATE/config.yml
+  s_9d6ddfd57aa340::t_b66a68db81f8d7 3-5
+  s_9d6ddfd57aa340::t_c6ab98667d826b 1-2
+.github/ISSUE_TEMPLATE/question.yml
+  s_9d6ddfd57aa340::t_18662ad467d38c 1-53
+.github/ISSUE_TEMPLATE/bug_report.yml
+  s_9d6ddfd57aa340::t_05df496cb67fc5 1-66
+.github/ISSUE_TEMPLATE/feature_request.yml
+  s_9d6ddfd57aa340::t_57ef1e98b779cf 1-46
+.github/dependabot.yml
+  s_9d6ddfd57aa340::t_176eb74f9e2dfd 1-27
+.github/pull_request_template.md
+  s_9d6ddfd57aa340::t_1c778e39054bce 1-28
+release/public-files.txt
+  s_9d6ddfd57aa340::t_e5442040480bcd 2-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "99127d635ad4520b2dc22071376f2c9262f3574a",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
