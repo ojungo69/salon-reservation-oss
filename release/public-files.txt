@@ -8,6 +8,7 @@
 .github/workflows/ci.yml
 .gitignore
 .npmrc
+CHANGELOG.md
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 LICENSE
@@ -16,6 +17,7 @@ SECURITY.md
 docs/CLOUDFLARE.md
 docs/PARITY.md
 docs/PRIVACY.md
+docs/RELEASING.md
 docs/THIRD_PARTY_LICENSES.md
 package-lock.json
 package.json
