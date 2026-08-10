@@ -1,0 +1,40 @@
+CHANGELOG.md
+  s_9d6ddfd57aa340::t_3a3ff1c3108746 23-26,29-31
+  s_9d6ddfd57aa340::t_cae9ab833f0d2d 32-33
+.github/workflows/ci.yml
+  s_9d6ddfd57aa340::t_8dd50fffd36fbd 30,34-45,47-50
+CONTRIBUTING.md
+  s_9d6ddfd57aa340::t_13fdff5b4ff810 7-8
+  s_9d6ddfd57aa340::t_2d4bebf9b04d35 55-72,77-81
+  s_9d6ddfd57aa340::t_6f3910e04c8047 83-88
+  s_9d6ddfd57aa340::t_d4f45c748eae51 82
+scripts/release-audit.mjs
+  s_9d6ddfd57aa340::t_1466f3e702e09d 209-212
+  s_9d6ddfd57aa340::t_0ec3600f3012e7 215-220
+package.json
+  s_9d6ddfd57aa340::t_b0219c29901847 9-10
+.npmrc
+  s_9d6ddfd57aa340::t_000c06f6489659 2
+.nvmrc
+  s_9d6ddfd57aa340::t_a2d091b7e7bc36 1
+package-lock.json
+  s_9d6ddfd57aa340::t_ce408294d93b73 19-20
+release/public-files.txt
+  s_9d6ddfd57aa340::t_d907d03260f6d0 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "47606a1817118d480465ad2fda854b1f2ff60655",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
