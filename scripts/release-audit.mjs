@@ -29,6 +29,7 @@ const ALLOWED_DEPENDENCY_LICENSES = new Set([
 const REQUIRED = new Set([
   ".github/workflows/ci.yml",
   ".npmrc",
+  "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
   "LICENSE",
@@ -36,6 +37,7 @@ const REQUIRED = new Set([
   "SECURITY.md",
   "docs/CLOUDFLARE.md",
   "docs/PARITY.md",
+  "docs/RELEASING.md",
   "docs/PRIVACY.md",
   "docs/THIRD_PARTY_LICENSES.md",
   "package-lock.json",
