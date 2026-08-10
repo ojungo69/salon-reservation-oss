@@ -129,7 +129,9 @@ customer data, credentials, account IDs, or deployment output in an issue or fix
 ## Contributing and license
 
 Contributions are welcome under [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). The application is licensed
+[Code of Conduct](CODE_OF_CONDUCT.md). Released versions are recorded in
+[CHANGELOG.md](CHANGELOG.md); the release procedure is [docs/RELEASING.md](docs/RELEASING.md).
+The application is licensed
 [AGPL-3.0-only](LICENSE); development-tool licenses are summarized in
 [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).
 
