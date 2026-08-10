@@ -429,7 +429,7 @@ const isDayConfig = (config: DayConfig): boolean => {
   const base =
     typeof config === "object" &&
     config !== null &&
-    DATE.test(config.date) &&
+    isCanonicalDate(config.date) &&
     config.resourceIds.length >= 1 &&
     config.resourceIds.length <= 8 &&
     config.resourceIds.every((value) => ID.test(value)) &&
@@ -923,6 +923,12 @@ export class ReservationDay extends DurableObject<Env> {
     }
     if (meta.date !== config.date) return failure("CONFIGURATION_CONFLICT");
     const stored = parseStoredConfig(meta.scheduleJson);
+    // The date exists twice in partition_meta: as its own column and inside
+    // schedule_json. #writeMeta writes both from one object and never rewrites
+    // them, so a disagreement is corruption rather than a configuration change,
+    // and the target-mode branch below would otherwise return the stored copy
+    // without ever comparing it to the column this method just validated.
+    if (stored.date !== meta.date) return failure("TEMPORARILY_UNAVAILABLE");
     if (isTargetDayConfig(stored) && isTargetDayConfig(config)) return stored;
     return meta.scheduleJson === scheduleJson(config)
       ? stored

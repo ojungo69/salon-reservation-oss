@@ -1084,8 +1084,8 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         )
         .toArray()[0];
       const meta = state.storage.sql
-        .exec<{ date: string; accepted_mutations: number }>(
-          "SELECT date, accepted_mutations FROM partition_meta WHERE singleton = 1",
+        .exec<{ date: string; schedule_json: string; accepted_mutations: number }>(
+          "SELECT date, schedule_json, accepted_mutations FROM partition_meta WHERE singleton = 1",
         )
         .toArray()[0];
       const closure = state.storage.sql
@@ -1161,6 +1161,16 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         ["2025-02-30"],
       ],
       [
+        "calendar-invalid date inside the stored schedule",
+        "UPDATE partition_meta SET schedule_json = ? WHERE singleton = 1",
+        [original.meta.schedule_json.replace(corruptDay.date, "2025-02-30")],
+      ],
+      [
+        "stored schedule date disagreeing with the partition date column",
+        "UPDATE partition_meta SET schedule_json = ? WHERE singleton = 1",
+        [original.meta.schedule_json.replace(corruptDay.date, "2025-01-18")],
+      ],
+      [
         "closure timestamp that is not a canonical instant",
         "UPDATE closures SET created_at = ?",
         ["2025-01-14"],
@@ -1185,8 +1195,11 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           original.detail.outcome_at,
         );
         state.storage.sql.exec(
-          "UPDATE partition_meta SET date = ?, accepted_mutations = ? WHERE singleton = 1",
+          `UPDATE partition_meta
+             SET date = ?, schedule_json = ?, accepted_mutations = ?
+           WHERE singleton = 1`,
           original.meta.date,
+          original.meta.schedule_json,
           original.meta.accepted_mutations,
         );
         state.storage.sql.exec(
