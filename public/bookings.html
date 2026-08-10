@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="このブラウザに保存した予約を確認し、必要に応じて取り消すためのページです。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module"></script>
+    <title>予約を管理する | 架空サロン</title>
+  </head>
+  <body data-page="bookings">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="予約ページの先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">MY RESERVATIONS</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/">予約を申請</a>
+        <a href="/admin.html">運営者画面</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell">
+      <section class="intro compact-intro" aria-labelledby="page-title">
+        <p class="section-label">このブラウザの予約</p>
+        <h1 id="page-title">保存した予約を確認する</h1>
+        <p>
+          予約番号と管理キーを保存したこのブラウザでだけ、状態の確認や取消ができます。管理キーを失った予約は復元できません。
+        </p>
+      </section>
+
+      <p id="bookings-status" class="status page-status" role="status" aria-live="polite" data-bookings-status>
+        保存した予約を確認しています。
+      </p>
+
+      <section id="owned-bookings" class="owned-bookings" data-owned-bookings aria-labelledby="owned-bookings-title" aria-live="polite">
+        <h2 id="owned-bookings-title" class="visually-hidden">保存した予約一覧</h2>
+        <div id="bookings-empty" class="empty-state" data-bookings-empty>
+          <p class="section-label">保存済みの予約はありません</p>
+          <h2>予約を申請すると、ここで状態を確認できます。</h2>
+          <p>保存を選ばなかった場合や、別のブラウザで申し込んだ予約は表示されません。</p>
+          <a class="primary-link" href="/">予約を申請する</a>
+        </div>
+        <div id="bookings-list" class="booking-card-list" data-bookings-list hidden></div>
+        <template id="booking-card-template" data-booking-card-template>
+          <article class="booking-card" data-booking-card data-booking-state>
+            <div class="booking-card-heading">
+              <p class="section-label">予約番号 <code data-booking-reference></code></p>
+              <h2 data-booking-services>予約内容</h2>
+            </div>
+            <span class="badge" data-booking-status>確認中</span>
+            <dl class="summary-list compact-summary" data-booking-summary>
+              <div><dt>日時</dt><dd data-booking-time>—</dd></div>
+              <div><dt>担当・設備</dt><dd data-booking-resource>—</dd></div>
+              <div><dt>状態</dt><dd data-booking-status-description>—</dd></div>
+              <div><dt>操作</dt><dd data-booking-allowed-actions>—</dd></div>
+            </dl>
+            <div class="button-row">
+              <button class="danger-button" type="button" data-booking-cancel hidden>この予約を取り消す</button>
+              <button class="text-button" type="button" data-booking-remove>この端末から削除</button>
+            </div>
+          </article>
+        </template>
+      </section>
+
+      <section class="panel management-key-note" aria-labelledby="key-help-title">
+        <p class="section-label">管理キーについて</p>
+        <h2 id="key-help-title">予約ごとに、このブラウザだけが持つ確認情報です。</h2>
+        <p>
+          管理キーは URL や一覧には表示されず、予約内容を確認するときだけ同一オリジンへ送られます。不要になった保存情報は、このページから削除できます。
+        </p>
+      </section>
+    </main>
+
+    <dialog id="booking-cancel-dialog" class="confirmation-dialog" data-booking-cancel-dialog aria-labelledby="booking-cancel-title">
+      <form method="dialog" data-booking-cancel-confirm>
+        <p class="section-label">予約を取り消す</p>
+        <h2 id="booking-cancel-title">この予約を取り消しますか</h2>
+        <p data-booking-cancel-summary>取消すると元に戻せません。内容を確認してください。</p>
+        <div class="button-row">
+          <button class="secondary-button" value="cancel">戻る</button>
+          <button id="booking-cancel-confirm" class="danger-button" value="confirm" data-booking-cancel-confirm-button>取り消す</button>
+        </div>
+        <p class="status" role="status" aria-live="polite" data-booking-cancel-status></p>
+      </form>
+    </dialog>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/privacy.html">プライバシー</a>
+        <a href="/terms.html">利用条件</a>
+        <a href="/cancellation.html">取消の案内</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

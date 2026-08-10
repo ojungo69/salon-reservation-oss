@@ -1,0 +1,47 @@
+{
+  "name": "salon-reservation-oss",
+  "version": "0.2.0",
+  "description": "A small, self-hostable reservation app for Cloudflare Workers.",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents": false,
+    "workerd@1.20260801.1": true
+  },
+  "cloudflare": {
+    "bindings": {
+      "OWNER_TOKEN": {
+        "description": "Create a unique owner secret with `openssl rand -base64 32`; never keep or reuse the sample value."
+      },
+      "TURNSTILE_SECRET": {
+        "description": "The sample is demo-only. Replace it with the secret from [Turnstile Spin](https://developers.cloudflare.com/turnstile/spin/) before enabling live bookings."
+      }
+    }
+  },
+  "scripts": {
+    "audit": "npm audit --audit-level=high",
+    "build": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "check": "npm test && npm run typecheck && npm run types:check && npm run build && npm run audit && npm run release:audit",
+    "dev": "wrangler dev",
+    "release:audit": "node scripts/release-audit.mjs",
+    "release:audit:public": "node scripts/release-audit.mjs --public-tree",
+    "test": "npm run test:core && npm run test:worker",
+    "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts",
+    "test:worker": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types",
+    "types:check": "wrangler types --check"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.3",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.120.0"
+  }
+}

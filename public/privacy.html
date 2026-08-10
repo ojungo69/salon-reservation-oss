@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="予約情報、管理キー、ブラウザ内の保存情報の取り扱いを説明します。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module"></script>
+    <title>プライバシー案内 | 架空サロン</title>
+  </head>
+  <body data-page="privacy" data-legal-page="privacy">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="予約ページの先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">PRIVACY</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/">予約を申請</a>
+        <a href="/bookings.html">予約を管理</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell prose" data-legal-content>
+      <p class="mode-notice" role="status" data-legal-mode-notice>
+        この設置はデモ・設定中です。実際の予約を受け付ける前に、運営者が内容を確認します。
+      </p>
+      <p class="section-label">プライバシー案内</p>
+      <h1>予約情報の取り扱い</h1>
+      <p data-legal-privacy>
+        このページは導入時に運営者が設定する案内を表示します。設定が完了するまで、公開予約は有効になりません。
+      </p>
+
+      <h2>予約のために扱う情報</h2>
+      <p>
+        予約が受け付けられた場合、予約内容、選択したサービス、日時、担当・設備、お名前、ご連絡先、同意した文書の版を保存します。表示料金は案内用であり、このアプリケーションは決済情報を扱いません。
+      </p>
+
+      <h2>管理キーとブラウザ内の保存</h2>
+      <p>
+        管理キーの平文は予約先に保存しません。確認用のハッシュだけを保存します。予約の送信結果を確認できないときは、同じ予約を安全に再確認するため、必要な情報をこのタブ内に短時間だけ保持します。予約をこのブラウザに保存することを選んだ場合は、予約番号、日付、管理キーをこのブラウザに保存します。保存情報は予約一覧から削除できます。
+      </p>
+
+      <h2>保存期間</h2>
+      <p>
+        保存期間は運営者が設定します。保存期限を過ぎると、その日の予約、取消、管理キーハッシュ、操作の再確認情報をまとめて削除します。実際の期間と問い合わせ先は、運営者が公開前に設定します。
+      </p>
+
+      <h2 id="data-export">データ出力について</h2>
+      <p>
+        このアプリケーションには予約データの一括出力画面はありません。運営者は実際の受付を始める前に、Cloudflare アカウント内だけで行う認可済みの出力手順、保存先、削除方法を定めて架空データで試験してください。お客様がご自身の情報の確認や出力を希望する場合は、このページに表示される運営者連絡先へお問い合わせください。管理キーや予約データを公開リポジトリ、公開リンク、問い合わせ Issue へ載せないでください。
+      </p>
+
+      <h2>第三者サービス</h2>
+      <p>
+        自動送信防止のために Cloudflare Turnstile を使用できます。実際に使用するサービスと適用地域は、導入した運営者がご自身の法的要件に合わせて確認してください。
+      </p>
+
+      <h2>お問い合わせ</h2>
+      <p data-legal-contact>
+        このデモには実在する運営者の連絡先を含めていません。公開前に、導入した運営者が問い合わせ先を設定します。
+      </p>
+    </main>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/terms.html">利用条件</a>
+        <a href="/cancellation.html">取消の案内</a>
+        <a href="/setup.html">設定</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

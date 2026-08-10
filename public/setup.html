@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="予約サイトの公開準備を、安全な順序で進める運営者用の設定ページです。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module"></script>
+    <title>公開準備 | 架空サロン</title>
+  </head>
+  <body data-page="setup" data-installation-mode="demo">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/setup.html" aria-label="公開準備の先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">INSTALLATION SETUP</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/">お客様用画面</a>
+        <a href="/admin.html">運営者画面</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell" data-setup-root>
+      <p class="mode-notice" role="status" data-setup-mode-notice>
+        現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。
+      </p>
+
+      <section class="intro compact-intro" aria-labelledby="page-title">
+        <p class="section-label">公開準備</p>
+        <h1 id="page-title">最初に必要な設定だけを、順番に確認する</h1>
+        <p>
+          デモはすぐに確認できます。実際の予約を受け付ける前に、運営者本人の情報、自動送信防止、法的表示、受付条件を設定してください。
+        </p>
+      </section>
+
+      <section class="panel setup-auth-panel" aria-labelledby="setup-auth-title">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">運営者認証</p>
+            <h2 id="setup-auth-title">設定を開く</h2>
+          </div>
+          <p class="helper">トークンはこの画面を閉じると消えます。</p>
+        </div>
+        <form id="setup-auth-form" class="inline-form" data-setup-auth-form>
+          <div class="field-row grow">
+            <label for="setup-owner-token">運営者トークン</label>
+            <input
+              id="setup-owner-token"
+              type="password"
+              autocomplete="current-password"
+              minlength="32"
+              aria-describedby="setup-owner-token-help"
+              required
+            >
+            <p id="setup-owner-token-help" class="helper">設定値や受領書にはトークンとシークレットを含めません。</p>
+          </div>
+          <button id="setup-auth-submit" class="primary-button compact-button" type="submit">認証して設定を開く</button>
+          <button id="setup-logout" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
+        </form>
+        <p id="setup-auth-status" class="status" role="status" aria-live="polite" data-setup-auth-status></p>
+      </section>
+
+      <ol class="setup-progress" aria-label="公開準備の手順" data-setup-progress>
+        <li data-setup-progress-step="identity"><span>1</span><strong>運営情報</strong></li>
+        <li data-setup-progress-step="schedule"><span>2</span><strong>サービスと時間</strong></li>
+        <li data-setup-progress-step="protection"><span>3</span><strong>公開の保護</strong></li>
+        <li data-setup-progress-step="review"><span>4</span><strong>最終確認</strong></li>
+      </ol>
+      <p id="setup-announcer" class="visually-hidden" role="status" aria-live="polite" data-setup-live></p>
+
+      <form id="setup-form" class="setup-form" data-setup-form novalidate>
+        <fieldset id="setup-fields" disabled>
+          <section class="journey-stage setup-stage" data-setup-step="identity" aria-labelledby="identity-title">
+            <div class="stage-heading">
+              <p class="stage-marker">01</p>
+              <div>
+                <h2 id="identity-title">運営情報と公開文書</h2>
+                <p>お客様に表示する名前、連絡先、公開するソースコード、案内文を設定します。</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="setup-location-name">表示する場所の名前</label>
+                <input id="setup-location-name" data-setup-location-name maxlength="160" required>
+              </div>
+              <div class="field-row">
+                <label for="setup-operator-name">運営者の表示名</label>
+                <input id="setup-operator-name" data-setup-operator-name maxlength="240" required>
+              </div>
+              <div class="field-row">
+                <label for="setup-operator-contact">問い合わせ先</label>
+                <input id="setup-operator-contact" data-setup-operator-contact minlength="3" maxlength="400" required>
+              </div>
+              <div class="field-row">
+                <label for="setup-source-url">公開するソースコードの URL</label>
+                <input id="setup-source-url" data-setup-source-url type="url" inputmode="url" required>
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="setup-privacy-notice">プライバシー案内</label>
+                <textarea id="setup-privacy-notice" data-setup-privacy-notice maxlength="1000" required></textarea>
+              </div>
+              <div class="field-row">
+                <label for="setup-terms-notice">利用条件</label>
+                <textarea id="setup-terms-notice" data-setup-terms-notice maxlength="1000" required></textarea>
+              </div>
+              <div class="field-row">
+                <label for="setup-cancellation-policy">取消の案内</label>
+                <textarea id="setup-cancellation-policy" data-setup-cancellation-policy maxlength="1000" required></textarea>
+              </div>
+              <div class="field-row">
+                <label for="setup-consent-version">公開文書の版</label>
+                <input
+                  id="setup-consent-version"
+                  data-setup-consent-version
+                  maxlength="64"
+                  pattern="[A-Za-z0-9][A-Za-z0-9._:\-]{0,63}"
+                  aria-describedby="setup-consent-version-help"
+                  required
+                >
+                <p id="setup-consent-version-help" class="helper">上の案内文を変更するときは、新しい版の識別子に更新してください。</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="journey-stage setup-stage" data-setup-step="schedule" aria-labelledby="schedule-title">
+            <div class="stage-heading">
+              <p class="stage-marker">02</p>
+              <div>
+                <h2 id="schedule-title">サービス、担当・設備、受付時間</h2>
+                <p>お客様が選べる候補を設定します。保存済みの予約内容は、後から書き換わりません。</p>
+                <p class="helper">将来日の予約が残る間は、サービスと担当・設備の識別子を変更・削除しないでください。変更した固定済みの日付は新しい予約だけを安全に停止します。</p>
+              </div>
+            </div>
+            <div class="setup-editor-grid">
+              <section class="editor-panel" aria-labelledby="services-title">
+                <h3 id="services-title">サービス</h3>
+                <div id="setup-services" data-setup-services aria-live="polite">
+                  <p class="empty-note">認証すると、初期の架空データを確認・編集できます。</p>
+                </div>
+                <button id="setup-add-service" class="secondary-button" type="button" data-setup-add-service>サービスを追加</button>
+              </section>
+              <section class="editor-panel" aria-labelledby="resources-title">
+                <h3 id="resources-title">担当・設備</h3>
+                <div id="setup-resources" data-setup-resources aria-live="polite">
+                  <p class="empty-note">認証すると、初期の架空データを確認・編集できます。</p>
+                </div>
+                <button id="setup-add-resource" class="secondary-button" type="button" data-setup-add-resource>担当・設備を追加</button>
+              </section>
+            </div>
+            <fieldset class="slot-field" data-setup-weekdays>
+              <legend>受付する曜日</legend>
+              <div class="slot-list">
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="0"><span>日</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="1"><span>月</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="2"><span>火</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="3"><span>水</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="4"><span>木</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="5"><span>金</span></label>
+                <label class="slot-option"><input type="checkbox" name="openWeekdays" value="6"><span>土</span></label>
+              </div>
+            </fieldset>
+            <div class="field-grid">
+              <div class="field-row"><label for="setup-opens-at">受付開始</label><input id="setup-opens-at" type="time" data-setup-opens-at required></div>
+              <div class="field-row"><label for="setup-closes-at">受付終了</label><input id="setup-closes-at" type="time" data-setup-closes-at required></div>
+              <div class="field-row"><label for="setup-interval">開始時間の間隔（分）</label><input id="setup-interval" type="number" min="15" max="240" data-setup-interval required></div>
+              <div class="field-row"><label for="setup-horizon">受付可能な日数</label><input id="setup-horizon" type="number" min="1" max="90" data-setup-horizon required></div>
+              <div class="field-row"><label for="setup-retention">保存期間（日）</label><input id="setup-retention" type="number" min="1" max="365" data-setup-retention required></div>
+              <div class="field-row"><label for="setup-theme">表示テーマ</label><select id="setup-theme" data-setup-theme><option value="ink">インク</option><option value="forest">フォレスト</option><option value="clay">クレイ</option></select></div>
+            </div>
+            <p class="helper">日付ごとの臨時休業や担当・設備ごとの休止時間は、保存後に<a href="/admin.html#closures">運営者画面の休業設定</a>から管理できます。</p>
+          </section>
+
+          <section class="journey-stage setup-stage" data-setup-step="protection" aria-labelledby="protection-title">
+            <div class="stage-heading">
+              <p class="stage-marker">03</p>
+              <div>
+                <h2 id="protection-title">公開を保護する</h2>
+                <p>サイトキーと公開するホスト名を確認します。シークレットはサーバー側にだけ設定します。</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="setup-turnstile-site-key">自動送信防止のサイトキー</label>
+                <input id="setup-turnstile-site-key" data-setup-turnstile-site-key maxlength="128" aria-describedby="turnstile-key-help">
+                <p id="turnstile-key-help" class="helper">公開用のサイトキーのみを入力します。シークレットをこの画面へ入力しないでください。</p>
+              </div>
+              <div class="field-row">
+                <label for="setup-allowed-hostname">許可するホスト名</label>
+                <input id="setup-allowed-hostname" data-setup-allowed-hostname maxlength="253" required>
+              </div>
+            </div>
+            <div class="notice-list">
+              <p><strong>必須:</strong> 自動送信防止のシークレットは、デプロイ先のシークレット設定で追加します。</p>
+              <p><strong>任意:</strong> 独自ドメインは後から追加できます。まずはプラットフォームの URL でデモを確認できます。</p>
+            </div>
+          </section>
+        </fieldset>
+
+        <div class="setup-actions">
+          <p id="setup-help" class="action-help" data-setup-help>認証すると、各項目の編集と保存ができるようになります。</p>
+          <div class="button-row">
+            <button id="setup-save" class="secondary-button" type="submit" data-setup-save disabled>下書きを保存する</button>
+            <button id="setup-enable-live" class="primary-button" type="button" data-setup-enable-live aria-describedby="setup-help" disabled>公開予約を有効にする</button>
+          </div>
+          <p id="setup-status" class="status" role="status" aria-live="polite" data-setup-status></p>
+        </div>
+      </form>
+
+      <section class="panel readiness-panel" aria-labelledby="readiness-title" data-readiness-panel>
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">公開前の確認</p>
+            <h2 id="readiness-title">4つの項目がそろうまで、公開予約は有効になりません</h2>
+          </div>
+          <span id="readiness-summary" class="count-chip" data-readiness-summary>0 / 4</span>
+        </div>
+        <ol id="readiness-list" class="readiness-list" data-readiness-list>
+          <li data-readiness-check="owner"><span class="readiness-state" data-readiness-state="owner">未確認</span><div><h3>運営者の認証</h3><p>有効な運営者トークンでこの設定を開きます。</p></div></li>
+          <li data-readiness-check="protection"><span class="readiness-state" data-readiness-state="protection">未確認</span><div><h3>自動送信防止</h3><p>本番用のサイトキー、サーバー側のシークレット、ホスト名を確認します。</p></div></li>
+          <li data-readiness-check="identity"><span class="readiness-state" data-readiness-state="identity">未確認</span><div><h3>運営情報と公開文書</h3><p>問い合わせ先、公開 URL、プライバシー・利用条件・取消の案内を設定します。</p></div></li>
+          <li data-readiness-check="capacity"><span class="readiness-state" data-readiness-state="capacity">未確認</span><div><h3>予約の受付条件</h3><p>サービス、担当・設備、営業時間、保存期間が上限内で有効か確認します。</p></div></li>
+        </ol>
+      </section>
+
+      <section class="panel receipt-panel" aria-labelledby="receipt-title" data-installation-receipt-panel>
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">設置受領書</p>
+            <h2 id="receipt-title">設定の確認結果を、秘密を含めずに保存する</h2>
+          </div>
+          <button id="receipt-copy" class="secondary-button" type="button" data-receipt-copy disabled>内容をコピー</button>
+        </div>
+        <div id="installation-receipt-empty" class="empty-state compact-empty" data-installation-receipt-empty>
+          <p>認証後に、アプリケーションのバージョン、設定の要約、準備状況、作成されたリソース種別、復旧・削除の案内を表示します。</p>
+        </div>
+        <dl id="installation-receipt" class="receipt-grid" data-installation-receipt hidden>
+          <div><dt>アプリケーション</dt><dd data-receipt-version>—</dd></div>
+          <div><dt>設定バージョン</dt><dd data-receipt-settings-version>—</dd></div>
+          <div><dt>設定の適用開始</dt><dd data-receipt-settings-effective>—</dd></div>
+          <div><dt>日付別設定</dt><dd data-receipt-day-policy>—</dd></div>
+          <div><dt>同意文書</dt><dd data-receipt-consent-policy>—</dd></div>
+          <div><dt>公開設定の要約</dt><dd><code data-receipt-digest>—</code></dd></div>
+          <div><dt>現在の状態</dt><dd data-receipt-mode>—</dd></div>
+          <div><dt>作成済みのリソース</dt><dd data-receipt-resources>—</dd></div>
+          <div><dt>作成日時</dt><dd data-receipt-created-at>—</dd></div>
+        </dl>
+        <p class="helper" data-receipt-guidance-empty>
+          受領書の取得後に、復旧、ロールバック、データ出力、削除の案内を表示します。
+        </p>
+        <nav class="receipt-links" aria-label="運用の案内" data-receipt-guidance hidden>
+          <a data-receipt-guidance-link="rollback">コードのロールバック</a>
+          <a data-receipt-guidance-link="recovery">データ復旧</a>
+          <a data-receipt-guidance-link="export">データ出力</a>
+          <a data-receipt-guidance-link="deletion">データの削除</a>
+        </nav>
+        <p id="receipt-status" class="status" role="status" aria-live="polite" data-receipt-status></p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/privacy.html">プライバシー</a>
+        <a href="/terms.html">利用条件</a>
+        <a href="/cancellation.html">取消の案内</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

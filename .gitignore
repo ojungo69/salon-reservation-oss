@@ -1,0 +1,31 @@
+# Secrets and local runtime values
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Machine and editor artifacts
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Node.js generated artifacts
+node_modules/
+.wrangler/
+.playwright-cli/
+.playwright-mcp/
+output/
+
+# Local Worker secrets
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Private local audit evidence
+.specify/audit-private/
+.release-private-denylist

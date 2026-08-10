@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="予約の確認、対応、休業時間の設定を行う運営者用ページです。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module"></script>
+    <title>運営者画面 | 架空サロン</title>
+  </head>
+  <body data-page="admin">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/admin.html" aria-label="運営者画面の先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">OPERATOR BOARD</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/">お客様用画面</a>
+        <a href="/setup.html">設定</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell" data-operator-root>
+      <section class="intro compact-intro" aria-labelledby="page-title">
+        <p class="section-label">運営者専用</p>
+        <h1 id="page-title">今日の対応を、ひとつの予定表で進める</h1>
+        <p>
+          保留中の申請、予約、休業時間を日ごと・週ごとに確認できます。認証情報はこのページを閉じると消え、ブラウザへ保存しません。
+        </p>
+      </section>
+
+      <section class="panel auth-panel" aria-labelledby="auth-title">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">認証</p>
+            <h2 id="auth-title">運営者として予定表を開く</h2>
+          </div>
+          <p class="helper">認証後にのみ、お客様の連絡先と操作項目を表示します。</p>
+        </div>
+        <form id="auth-form" class="inline-form" data-owner-auth-form>
+          <div class="field-row grow">
+            <label for="owner-token">運営者トークン</label>
+            <input
+              id="owner-token"
+              type="password"
+              autocomplete="current-password"
+              minlength="32"
+              aria-describedby="owner-token-help"
+              required
+            >
+            <p id="owner-token-help" class="helper">このページ内だけで使用します。保存・表示・ログ出力はしません。</p>
+          </div>
+          <button class="primary-button compact-button" type="submit">認証して予定表を開く</button>
+          <button id="logout-button" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
+        </form>
+        <p id="auth-status" class="status" role="status" aria-live="polite" data-owner-auth-status></p>
+      </section>
+
+      <section class="operator-toolbar" aria-label="予定表の表示範囲" data-operator-toolbar>
+        <div class="compact-field">
+          <label for="admin-date">開始日</label>
+          <input id="admin-date" type="date" data-schedule-date disabled>
+        </div>
+        <div class="view-tabs" aria-label="予定表の表示切替">
+          <button
+            id="schedule-view-day"
+            class="tab-button"
+            type="button"
+            aria-pressed="true"
+            data-schedule-view="day"
+            disabled
+          >
+            1日
+          </button>
+          <button
+            id="schedule-view-week"
+            class="tab-button"
+            type="button"
+            aria-pressed="false"
+            data-schedule-view="week"
+            disabled
+          >
+            7日
+          </button>
+        </div>
+        <p class="status toolbar-status" role="status" aria-live="polite" data-schedule-live></p>
+      </section>
+
+      <div class="operator-layout">
+        <aside class="panel attention-panel" aria-labelledby="attention-title" data-attention-panel>
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">対応が必要</p>
+              <h2 id="attention-title">確認待ち</h2>
+            </div>
+            <span id="attention-count" class="count-chip" data-attention-count>0件</span>
+          </div>
+          <div id="attention-list" class="attention-list" data-attention-list aria-live="polite">
+            <p class="empty-note">認証すると、対応が必要な予約と設定を表示します。</p>
+          </div>
+        </aside>
+
+        <section id="day-board" class="panel schedule-board" data-schedule-board="day">
+          <div class="panel-heading schedule-heading">
+            <div>
+              <p class="section-label">日ごとの予定</p>
+              <h2>予約と休業時間</h2>
+            </div>
+            <p class="helper" data-day-board-summary>認証すると、この日の予定を読み込みます。</p>
+          </div>
+          <div id="reservation-list" class="reservation-list" data-reservation-list aria-live="polite">
+            <p class="empty-note">認証すると予約を表示します。</p>
+          </div>
+          <div id="closure-list" class="closure-list" data-closure-list aria-live="polite">
+            <p class="empty-note">休業時間はまだありません。</p>
+          </div>
+          <p id="schedule-status" class="status" role="status" aria-live="polite" data-schedule-status></p>
+        </section>
+
+        <section id="week-board" class="panel schedule-board" data-schedule-board="week" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">7日間の予定</p>
+              <h2>一週間の見通し</h2>
+            </div>
+            <p class="helper">日付ごとの件数を選ぶと、詳細を開けます。</p>
+          </div>
+          <div id="week-summary-list" class="week-summary-list" data-week-summary-list aria-live="polite">
+            <p class="empty-note">認証すると7日間の予定を表示します。</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="operator-actions-grid">
+        <section id="reservation-detail" class="panel reservation-detail" data-reservation-detail hidden tabindex="-1" aria-labelledby="reservation-detail-title">
+          <p class="section-label">予約の詳細</p>
+          <h2 id="reservation-detail-title" data-reservation-detail-title>予約を選択してください</h2>
+          <dl class="summary-list compact-summary" data-reservation-detail-summary>
+            <div><dt>状態</dt><dd data-detail-status>—</dd></div>
+            <div><dt>日時</dt><dd data-detail-time>—</dd></div>
+            <div><dt>サービス</dt><dd data-detail-services>—</dd></div>
+            <div><dt>お客様</dt><dd data-detail-customer>—</dd></div>
+          </dl>
+          <div class="detail-actions" aria-label="予約への操作" data-reservation-actions>
+            <button type="button" class="primary-button" data-reservation-action="approve" disabled>承認する</button>
+            <button type="button" class="secondary-button" data-reservation-action="reschedule" disabled>同じ日の別の時間へ移す</button>
+            <button type="button" class="secondary-button" data-reservation-action="complete" disabled>来店済みにする</button>
+            <button type="button" class="secondary-button" data-reservation-action="no_show" disabled>無断不来にする</button>
+            <button type="button" class="danger-button" data-reservation-action="reject" disabled>申請を見送る</button>
+            <button type="button" class="danger-button" data-reservation-action="cancel" disabled>予約を取り消す</button>
+          </div>
+          <p class="status" role="status" aria-live="polite" data-reservation-action-status></p>
+        </section>
+
+        <section class="panel" aria-labelledby="owner-create-title">
+          <p class="section-label">運営者による登録</p>
+          <h2 id="owner-create-title">お客様に代わって予約する</h2>
+          <form id="owner-create-form" data-owner-create-form novalidate>
+            <fieldset id="owner-service-field" class="selection-field" aria-describedby="owner-service-help">
+              <legend>サービス</legend>
+              <div id="owner-service-list" class="service-list compact-service-list" data-owner-service-list>
+                <p class="empty-note">認証すると選べるサービスを表示します。</p>
+              </div>
+              <p id="owner-service-help" class="helper">サービスの組み合わせに応じた候補だけを登録できます。</p>
+            </fieldset>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="owner-resource">担当・設備</label>
+                <select id="owner-resource" required disabled></select>
+              </div>
+              <div class="field-row">
+                <label for="owner-time">開始時間</label>
+                <select id="owner-time" required disabled></select>
+              </div>
+              <div class="field-row">
+                <label for="owner-customer-name">お客様のお名前</label>
+                <input id="owner-customer-name" maxlength="160" required>
+              </div>
+              <div class="field-row">
+                <label for="owner-contact">ご連絡先</label>
+                <input id="owner-contact" minlength="3" maxlength="400" required>
+              </div>
+            </div>
+            <button class="primary-button" type="submit" disabled>代理予約を登録する</button>
+          </form>
+          <div id="owner-create-result" class="result-box" hidden>
+            <p class="result-label">お客様へ渡す管理キー</p>
+            <code id="owner-management-key" class="key-value"></code>
+            <button id="owner-copy-key" class="secondary-button" type="button">管理キーをコピー</button>
+          </div>
+          <p id="owner-create-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section id="closures" class="panel closure-panel" aria-labelledby="closure-title">
+          <p class="section-label">休業時間</p>
+          <h2 id="closure-title">予約を受け付けない時間を登録する</h2>
+          <p class="helper">すでに有効な予約と重なる休業時間は登録できません。</p>
+          <form id="closure-form" data-closure-form novalidate>
+            <fieldset id="closure-fields" disabled>
+              <div class="field-grid closure-grid">
+                <div class="field-row">
+                  <label for="closure-date">日付</label>
+                  <input id="closure-date" type="date" data-closure-date required>
+                </div>
+                <div class="field-row">
+                  <label for="closure-resource">対象</label>
+                  <select id="closure-resource" data-closure-resource required>
+                    <option value="">全体または担当・設備を選択</option>
+                  </select>
+                </div>
+                <div class="field-row">
+                  <label for="closure-start-time">開始</label>
+                  <input id="closure-start-time" type="time" data-closure-start required>
+                </div>
+                <div class="field-row">
+                  <label for="closure-end-time">終了</label>
+                  <input id="closure-end-time" type="time" data-closure-end required>
+                </div>
+              </div>
+              <div class="field-row">
+                <label for="closure-label">表示名</label>
+                <input id="closure-label" maxlength="160" data-closure-label required>
+              </div>
+            </fieldset>
+            <button id="closure-submit" class="secondary-button" type="submit" data-closure-submit disabled>休業時間を登録する</button>
+          </form>
+          <p class="status" role="status" aria-live="polite" data-closure-status></p>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/setup.html">設定</a>
+        <a href="/privacy.html">プライバシー</a>
+        <a href="/terms.html">利用条件</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

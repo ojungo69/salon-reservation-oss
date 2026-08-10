@@ -1,0 +1,25 @@
+/*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src 'self' https://challenges.cloudflare.com; img-src 'self' data:; style-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+  Permissions-Policy: camera=(), geolocation=(), microphone=(), payment=()
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  X-Permitted-Cross-Domain-Policies: none
+  Cross-Origin-Opener-Policy: same-origin
+
+/
+  Cache-Control: no-store
+
+/index.html
+  Cache-Control: no-store
+
+/admin.html
+  Cache-Control: no-store
+
+/bookings.html
+  Cache-Control: no-store
+
+/setup.html
+  Cache-Control: no-store

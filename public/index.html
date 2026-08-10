@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="サービス、日時、連絡先を確認して予約を申請するためのページです。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+    <script src="/app.js" type="module"></script>
+    <title>予約を申請する | 架空サロン</title>
+  </head>
+  <body data-page="customer" data-installation-mode="demo">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="予約ページの先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">RESERVATION NOTE</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/bookings.html">予約を管理</a>
+        <a href="/admin.html">運営者画面</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell" data-journey-root>
+      <p class="mode-notice" role="status" data-installation-mode-notice>
+        デモ・設定中です。必要な準備が完了するまで、予約内容は受け付けません。
+        <a href="/setup.html">設定状況を確認する</a>
+      </p>
+
+      <section class="intro journey-intro" aria-labelledby="page-title">
+        <p class="section-label">予約の申請</p>
+        <h1 id="page-title">予定を選び、内容を確認して送信する</h1>
+        <p>
+          予約は確認後に受付状態になります。予約番号と管理キーは、このブラウザで予約を確認・取消するために使います。
+        </p>
+      </section>
+
+      <ol class="journey-progress" aria-label="予約手続きの進行状況" data-journey-progress>
+        <li aria-current="step" data-journey-progress-step="selection">
+          <span>1</span><strong>日時を選ぶ</strong>
+        </li>
+        <li data-journey-progress-step="details">
+          <span>2</span><strong>連絡先を入力</strong>
+        </li>
+        <li data-journey-progress-step="review">
+          <span>3</span><strong>確認して送信</strong>
+        </li>
+      </ol>
+      <p id="journey-announcer" class="visually-hidden" role="status" aria-live="polite" data-journey-live></p>
+
+      <form id="booking-form" class="journey-form" data-booking-form novalidate>
+        <section
+          id="journey-selection"
+          class="journey-stage"
+          data-journey-stage="selection"
+          aria-labelledby="selection-title"
+        >
+          <div class="stage-heading">
+            <p class="stage-marker">01</p>
+            <div>
+              <h2 id="selection-title">サービスと日時を選ぶ</h2>
+              <p>選んだサービスすべてに対応できる担当・設備と、必要な時間を確認します。</p>
+            </div>
+          </div>
+
+          <fieldset id="service-field" class="selection-field" aria-describedby="service-help">
+            <legend>サービス</legend>
+            <div id="service-list" class="service-list" data-service-list aria-live="polite">
+              <p class="empty-note" data-services-loading>サービスを読み込んでいます。</p>
+            </div>
+            <p id="service-help" class="helper" data-service-help>
+              1〜4件まで選べます。組み合わせにより選べる担当・設備と時間が変わります。
+            </p>
+          </fieldset>
+
+          <div class="field-grid selection-grid">
+            <div class="field-row">
+              <label for="booking-date">日付</label>
+              <input id="booking-date" name="date" type="date" required>
+            </div>
+            <div class="field-row">
+              <label for="booking-resource">担当・設備</label>
+              <select id="booking-resource" name="resourceId" required disabled aria-describedby="resource-help">
+                <option value="">サービスと日付を選ぶと表示されます</option>
+              </select>
+              <p id="resource-help" class="helper">対応できる候補だけを表示します。</p>
+            </div>
+          </div>
+
+          <fieldset id="slot-field" class="slot-field" disabled aria-describedby="slot-help">
+            <legend>開始時間</legend>
+            <div id="slot-list" class="slot-list" data-slot-list aria-live="polite">
+              <p class="empty-note">サービス、日付、担当・設備を選んでください。</p>
+            </div>
+            <p id="slot-help" class="helper" data-availability-help>
+              表示時点の空き状況です。送信時にもう一度確認します。
+            </p>
+          </fieldset>
+
+          <div class="action-bar">
+            <p id="selection-help" class="action-help" data-journey-help="selection">
+              サービス、担当・設備、日時を選ぶと次へ進めます。
+            </p>
+            <button
+              id="selection-next"
+              class="secondary-button"
+              type="button"
+              data-journey-next="details"
+              aria-describedby="selection-help"
+              disabled
+            >
+              連絡先を入力する
+            </button>
+          </div>
+        </section>
+
+        <section
+          id="journey-details"
+          class="journey-stage"
+          data-journey-stage="details"
+          aria-labelledby="details-title"
+        >
+          <div class="stage-heading">
+            <p class="stage-marker">02</p>
+            <div>
+              <h2 id="details-title">連絡先を入力する</h2>
+              <p>予約内容の確認に必要な情報だけを入力します。</p>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            <div class="field-row">
+              <label for="customer-name">お名前</label>
+              <input
+                id="customer-name"
+                name="customerName"
+                autocomplete="name"
+                maxlength="160"
+                required
+              >
+            </div>
+            <div class="field-row">
+              <label for="customer-contact">ご連絡先</label>
+              <input
+                id="customer-contact"
+                name="contact"
+                autocomplete="email"
+                inputmode="email"
+                minlength="3"
+                maxlength="400"
+                aria-describedby="contact-help"
+                required
+              >
+              <p id="contact-help" class="helper">メールアドレスまたは電話番号を入力してください。</p>
+            </div>
+          </div>
+
+          <label class="consent-row" for="booking-consent">
+            <input id="booking-consent" name="consent" type="checkbox" value="true" required>
+            <span>
+              <a href="/privacy.html">プライバシー案内</a>、<a href="/terms.html">利用条件</a>、
+              <a href="/cancellation.html">取消の案内</a>（文書版 <span data-consent-version>—</span>）を読み、予約情報の取り扱いに同意します。
+            </span>
+          </label>
+
+          <div class="action-bar">
+            <button class="text-button" type="button" data-journey-back="selection">日時の選択に戻る</button>
+            <div class="action-stack">
+              <p id="details-help" class="action-help" data-journey-help="details">
+                お名前、ご連絡先、同意を確認すると内容を確認できます。
+              </p>
+              <button
+                id="details-next"
+                class="secondary-button"
+                type="button"
+                data-journey-next="review"
+                aria-describedby="details-help"
+                disabled
+              >
+                内容を確認する
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="journey-review"
+          class="journey-stage review-stage"
+          data-journey-stage="review"
+          aria-labelledby="review-title"
+        >
+          <div class="stage-heading">
+            <p class="stage-marker">03</p>
+            <div>
+              <h2 id="review-title">予約内容を確認する</h2>
+              <p>送信前に、サービス、日時、連絡先を確認してください。</p>
+            </div>
+          </div>
+
+          <dl id="booking-review" class="summary-list" data-booking-review>
+            <div><dt>サービス</dt><dd data-review-services>選択後に表示されます</dd></div>
+            <div><dt>担当・設備</dt><dd data-review-resource>選択後に表示されます</dd></div>
+            <div><dt>日時</dt><dd data-review-time>選択後に表示されます</dd></div>
+            <div><dt>所要時間</dt><dd data-review-duration>選択後に表示されます</dd></div>
+            <div><dt>表示料金</dt><dd data-review-price>選択後に表示されます</dd></div>
+            <div><dt>お名前</dt><dd data-review-name>入力後に表示されます</dd></div>
+            <div><dt>ご連絡先</dt><dd data-review-contact>入力後に表示されます</dd></div>
+            <div><dt>同意する文書版</dt><dd data-consent-version>読込後に表示されます</dd></div>
+          </dl>
+
+          <div id="turnstile-widget" class="turnstile-box" aria-label="自動送信防止の確認"></div>
+          <div class="action-bar">
+            <button class="text-button" type="button" data-journey-back="details">連絡先の入力に戻る</button>
+            <div class="action-stack">
+              <p id="review-help" class="action-help" data-journey-help="review">
+                内容を確認し、自動送信防止の確認を完了すると送信できます。
+              </p>
+              <button
+                id="booking-submit"
+                class="primary-button"
+                type="submit"
+                data-booking-submit
+                aria-describedby="review-help"
+                disabled
+              >
+                この内容で予約を申請する
+              </button>
+            </div>
+          </div>
+          <p id="booking-status" class="status" role="status" aria-live="polite" data-booking-status></p>
+        </section>
+      </form>
+
+      <section id="booking-result" class="result-box booking-result" data-booking-result hidden tabindex="-1" aria-labelledby="result-title">
+        <p class="section-label">受付内容</p>
+        <h2 id="result-title">予約を受け付けました</h2>
+        <p data-booking-result-status>運営者の確認後に状態が更新されます。</p>
+        <dl class="result-details">
+          <div><dt>予約番号</dt><dd><code id="result-reservation-id"></code></dd></div>
+          <div><dt>管理キー</dt><dd><code id="result-management-key" class="key-value"></code></dd></div>
+        </dl>
+        <p class="key-warning">管理キーは再発行できません。必ず安全な場所に控えてください。</p>
+        <label class="remember-row" for="remember-booking">
+          <input id="remember-booking" type="checkbox" data-remember-booking>
+          <span>このブラウザに予約を保存する</span>
+        </label>
+        <div class="button-row">
+          <button id="copy-key" class="secondary-button" type="button">管理キーをコピー</button>
+          <a class="tertiary-link" href="/bookings.html">保存した予約を確認</a>
+          <button id="forget-key" class="text-button" type="button">この端末から管理キーを削除</button>
+        </div>
+        <p id="key-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+    </main>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/privacy.html">プライバシー</a>
+        <a href="/terms.html">利用条件</a>
+        <a href="/cancellation.html">取消の案内</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

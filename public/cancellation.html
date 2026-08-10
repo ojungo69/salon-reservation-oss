@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="予約の確認と取消に必要な管理キー、取消可能な状態について説明します。">
+    <meta name="theme-color" content="#edf3f1">
+    <meta name="color-scheme" content="light dark">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module"></script>
+    <title>取消の案内 | 架空サロン</title>
+  </head>
+  <body data-page="cancellation" data-legal-page="cancellation">
+    <a class="skip-link" href="#main">本文へ移動</a>
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="予約ページの先頭へ">
+        <span class="brand-mark" aria-hidden="true">日</span>
+        <span>
+          <span class="eyebrow">CANCELLATION</span>
+          <span class="site-name" data-location-name>架空サロン</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主要メニュー">
+        <a href="/">予約を申請</a>
+        <a href="/bookings.html">予約を管理</a>
+      </nav>
+    </header>
+
+    <main id="main" class="page-shell prose" data-legal-content>
+      <p class="mode-notice" role="status" data-legal-mode-notice>
+        この設置はデモ・設定中です。必要な公開準備が済むまで、実際の予約は受け付けません。
+      </p>
+      <p class="section-label">取消の案内</p>
+      <h1>予約を確認・取消する方法</h1>
+      <p data-legal-cancellation>
+        このページは導入時に運営者が設定する取消の案内を表示します。設定が完了するまで、公開予約は有効になりません。
+      </p>
+
+      <h2>このブラウザに保存した予約</h2>
+      <p>
+        予約完了時に保存を選んだ場合は、<a href="/bookings.html">予約を管理する</a>ページで現在の状態を確認できます。取消できる予約には、予約カード内に取消の操作が表示されます。
+      </p>
+
+      <h2>管理キーを失った場合</h2>
+      <p>
+        管理キーは予約内容を確認・取消するための本人確認情報です。安全のため、管理キーを失った場合にこのアプリケーションから再発行・検索することはできません。実際の連絡方法は、導入した運営者が公開前に案内します。
+      </p>
+
+      <h2>取消後の扱い</h2>
+      <p>
+        取消が受け付けられると、その予約が確保していた時間は一度だけ解放されます。通信結果が確認できない場合は、同じ操作を安全に再確認できます。すでに終了・取消・見送りになった予約には、同じ操作を繰り返せません。
+      </p>
+    </main>
+
+    <footer class="site-footer">
+      <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>
+      <nav class="footer-links" aria-label="補足メニュー">
+        <a href="/privacy.html">プライバシー</a>
+        <a href="/terms.html">利用条件</a>
+        <a href="/setup.html">設定</a>
+        <a data-source-link href="/setup.html#setup-source-url">ソースコード</a>
+      </nav>
+    </footer>
+  </body>
+</html>

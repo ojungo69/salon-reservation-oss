@@ -1,0 +1,56 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "salon-reservation-oss",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-08",
+  "workers_dev": true,
+  "preview_urls": false,
+  "secrets": {
+    "required": ["OWNER_TOKEN", "TURNSTILE_SECRET"]
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./public",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RESERVATION_DAYS",
+        "class_name": "ReservationDay"
+      },
+      {
+        "name": "INSTALLATION_CONFIG",
+        "class_name": "InstallationConfig"
+      }
+    ]
+  },
+  "exports": {
+    "ReservationDay": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "InstallationConfig": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "ratelimits": [
+    {
+      "name": "PUBLIC_RATE_LIMITER",
+      "namespace_id": "81740354",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    },
+    {
+      "name": "OWNER_RATE_LIMITER",
+      "namespace_id": "72597735",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ]
+}
