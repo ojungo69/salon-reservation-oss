@@ -1,0 +1,35 @@
+public/setup.html
+  s_7c8b13bff90366::t_3c7d32b32ab604 186
+public/journey.js
+  s_7c8b13bff90366::t_aa3f40ec3cc7af 252
+public/app.js
+  s_7c8b13bff90366::t_58bcc047c860d1 704-706
+  s_7c8b13bff90366::t_301282105a0f8b 594
+  s_7c8b13bff90366::t_cdb2db260148b3 667-672
+  s_7c8b13bff90366::t_bcdc7b0a40710c 936-938
+  s_7c8b13bff90366::t_522e329930013b 860-861,863-865
+  s_7c8b13bff90366::t_84752757b52613 930
+public/index.html
+  s_7c8b13bff90366::t_28128abf6b5078 122-126
+  s_7c8b13bff90366::t_4c7bd5089b6d6e 167
+public/styles.css
+  s_7c8b13bff90366::t_0778ffb021e244 765-766,768,777-781
+test/journey.test.ts
+  s_7c8b13bff90366::t_acf541a3c55fab 7,529-530,532-534
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0d70666aec005793de68baf52c77b05ac1928d41",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
