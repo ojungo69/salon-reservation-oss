@@ -276,8 +276,25 @@ const auditWorkflow = () => {
     if (!/@[0-9a-f]{40}$/.test(match[1])) fail(`GitHub Action is not commit-pinned: ${match[1]}`);
   }
   if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
+  // Comments are stripped before matching, so a required line cannot be
+  // satisfied by text that never runs: `run: npm ci # run: npm ci
+  // --ignore-scripts` keeps the string and drops the flag.
+  const activeLines = workflow
+    .split("\n")
+    .map((line) => line.replace(/\s+#.*$/, "").trim())
+    .filter((line) => line.length !== 0 && !line.startsWith("#"));
+  const active = new Set(activeLines);
   for (const step of REQUIRED_WORKFLOW_STEPS) {
-    if (!workflow.includes(step)) fail(`install-script enforcement drift: ${step}`);
+    if (!active.has(step)) fail(`install-script enforcement drift: ${step}`);
+  }
+  // Requiring the two known installs is not enough on its own: a third one
+  // added later would run install scripts that the allowlist gate has already
+  // reported on, past the point where reporting them helps.
+  for (const line of activeLines) {
+    if (!/\bnpm (?:ci|install|rebuild)(?![\w-])/.test(line)) continue;
+    if (!line.includes("--ignore-scripts")) {
+      fail(`workflow installs packages with scripts enabled: ${line}`);
+    }
   }
 };
 
