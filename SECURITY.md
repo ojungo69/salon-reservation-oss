@@ -2,13 +2,26 @@
 
 ## Supported version
 
-Security fixes are provided for the latest `0.2.x` release candidate. Until a tagged release
-exists, use the newest commit on the public default branch.
+Security fixes are provided for the latest `0.2.x` release. Older tags receive no backports. If you
+run a commit newer than the latest tag, report against that exact commit.
 
 ## Reporting a vulnerability
 
-Use the repository host's private security-advisory feature or the private contact method listed by
-the maintainers. Do not open a public issue for a suspected vulnerability.
+**Primary route.** Open a private security advisory:
+[Report a vulnerability](https://github.com/ojungo69/salon-reservation-oss/security/advisories/new).
+Private vulnerability reporting is enabled for this repository, so the form is available to any
+GitHub user without prior contact. The report, its discussion, and any draft fix stay private until
+the maintainers publish the advisory.
+
+**Fallback route.** If that form is unavailable to you, open a public issue that says only that you
+have a security report and are requesting a private channel. Do not describe the vulnerability,
+the affected code path, or a reproduction there — a maintainer will open a private advisory and
+invite you. Public issues are for non-sensitive coordination only and are never the right place to
+disclose details.
+
+There is no published security email address. This is deliberate: the repository's release audit
+rejects non-public contact addresses in published files, and an unmonitored address would be worse
+than the advisory form.
 
 Include:
 
