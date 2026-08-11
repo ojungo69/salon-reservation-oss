@@ -511,7 +511,13 @@ const startCustomer = async () => {
     slotList.replaceChildren();
     const times = selected?.startTimes ?? [];
     if (times.length === 0) {
-      slotList.append(createElement("p", "empty-note", "この条件で選べる時間はありません。"));
+      slotList.append(createElement(
+        "p",
+        "empty-note",
+        availability?.capacityReached
+          ? "この日に受付できる予約数の上限に達したため、空き時間があっても新しい予約はお受けできません。"
+          : "この条件で選べる時間はありません。",
+      ));
       slotField.disabled = true;
       updateActions();
       return;
@@ -1453,7 +1459,17 @@ const startAdmin = async () => {
       if (loaded.resources.some(({ id }) => id === previousResource)) ownerResource.value = previousResource;
       else if (loaded.resources.length === 1) ownerResource.value = loaded.resources[0].id;
       renderOwnerTimes(previousTime);
-      setStatus(ownerCreateStatus, "空き時間を更新しました。", "success");
+      if (loaded.capacityReached) {
+        // Distinguishes the exhausted acceptance budget from a genuinely full
+        // day: the operator otherwise sees an empty dropdown over free chairs.
+        setStatus(
+          ownerCreateStatus,
+          "この日に受付できる予約数の上限に達しているため、空き時間があっても新しい予約は登録できません。",
+          "error",
+        );
+      } else {
+        setStatus(ownerCreateStatus, "空き時間を更新しました。", "success");
+      }
     } catch (error) {
       if (sequence !== ownerAvailabilitySequence) return;
       ownerAvailability = null;

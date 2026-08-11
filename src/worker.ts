@@ -59,7 +59,8 @@ const ERROR_MESSAGES = {
   UNAVAILABLE: "選択した日時は利用できません。",
   CONFIGURATION_CONFLICT: "設定が更新されています。内容を確認してください。",
   IDEMPOTENCY_CONFLICT: "同じ操作番号を別の内容には使用できません。",
-  CAPACITY_REACHED: "この日は受付上限に達しました。",
+  CAPACITY_REACHED:
+    "この日に受付できる件数の上限に達しているため、この操作はお受けできません。上限は取り消しや期限切れでは戻りません。",
   RATE_LIMITED: "操作が多すぎます。しばらく待ってからお試しください。",
   PROTECTION_REFUSED: "確認に失敗しました。もう一度お試しください。",
   NOT_LIVE: "現在は予約を受け付けていません。",
