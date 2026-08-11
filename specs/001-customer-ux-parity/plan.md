@@ -100,10 +100,12 @@ Each phase lands as an independently green commit on `feat/customer-ux-parity`; 
 - Browser: extend customer spec(s) — card edit-jump, chips + totals via keyboard, refresh re-render, duplicate ack path (create → remember → attempt second same-day booking), absence tests, axe + overflow at 320/360/768/1440.
 - Full `npm run check` + browser suite green per phase (constitution gates).
 
-## Judgment calls batched for plan approval
+## Judgment calls — resolved 2026-08-12
 
-1. Duplicate warning is **proof-bound** (remembered bookings only), not contact-matching — privacy trade (research D4). OK?
-2. Compact service surface activates **above 8 services**; below that the UI stays byte-identical (research D6). OK?
-3. Catalog cap 16 stays; raising it is out of scope (research D5). OK?
-4. `exposeResourceChoice` default **true** (no behavior change for existing installs). OK?
-5. Notice field is **one plain-text string** (no per-resource/per-day scoping in this feature). OK?
+Plan approved 2026-08-12; the user delegated all five calls ("利用者にとって最善な設計であれば任せる"). Decisions, optimizing for the end customer and the small-shop operator:
+
+1. Duplicate warning is **proof-bound** (remembered bookings only) — contact matching would let anyone probe other people's bookings. **Adopted.**
+2. Compact service surface activates **above 8 services**; at or below 8 the current simple list renders unchanged — most installs are small and keep the simplest UI. **Adopted.**
+3. Catalog cap 16 stays; raising it is a separate capacity decision. **Adopted.**
+4. `exposeResourceChoice` defaults **true** — existing installs see no behavior change; hiding is an explicit operator choice. **Adopted.**
+5. Notice field is **one plain-text string** — covers the "tell customers something about availability" need without scoping machinery nobody asked for. **Adopted.**
