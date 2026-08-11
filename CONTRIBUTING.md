@@ -62,10 +62,21 @@ records what happened in the pull request that follows.
 | `.github/workflows/ci.yml` → "Pin npm" | The exact npm patch version CI installs. |
 
 npm 12 matters specifically: it blocks dependency install scripts by default, and
-`strict-allow-scripts=true` turns an unlisted install script into a failed install rather than a
-silent skip. Node 24 still bundles npm 11, which has neither behavior, so CI installs npm 12
-explicitly. Corepack cannot do this — it has no npm shim, which is why there is no `packageManager`
-field.
+`strict-allow-scripts=true` turns an unreviewed install script into a failed install rather than a
+silent skip. Node 24.16.0 bundles npm 11.13.0, which has neither behavior — `allowScripts` and
+`strict-allow-scripts` do not exist there at all, and npm reports them as unknown config — so CI
+installs npm 12 explicitly. Corepack cannot do this: it has no npm shim, which is why there is no
+`packageManager` field.
+
+**Install npm 12 before your first `npm ci`.** `nvm use` alone leaves you on the bundled npm 11.13.0,
+and `engine-strict=true` with `engines.npm` turns that into a failed install:
+
+```sh
+nvm install                      # reads .nvmrc
+npm install -g --ignore-scripts npm@12.0.2
+npm --version                    # expect 12.0.2
+npm ci
+```
 
 Bumping the CI npm patch version is a manual edit; Dependabot does not manage it. Bumping the npm
 major additionally requires updating `engines.npm`, which `scripts/release-audit.mjs` verifies.
@@ -73,9 +84,20 @@ major additionally requires updating `engines.npm`, which `scripts/release-audit
 ## Install scripts
 
 Dependency install scripts are governed by the `allowScripts` field in
-[`package.json`](package.json): only the packages listed there may run `preinstall`, `install`, or
-`postinstall`, pinned to an exact version. `strict-allow-scripts=true` in `.npmrc` makes an
-unlisted install script fail the install instead of being skipped in silence.
+[`package.json`](package.json). It covers a dependency's `preinstall`, `install`, and `postinstall`,
+the implicit `node-gyp rebuild` a `binding.gyp` produces, and `prepare` for dependencies that do not
+come from the registry (git, file, link). The project's own scripts are not affected.
+
+Each entry is a boolean, and the version pin lives in the key:
+
+| Entry | Meaning |
+|---|---|
+| `"esbuild@0.28.1": true` | Reviewed and permitted, for that version only. |
+| `"fsevents": false` | Reviewed and refused, at every version, without a warning. |
+| absent | Not reviewed. Skipped, with a warning — or a failed install under `strict-allow-scripts`. |
+
+`strict-allow-scripts=true` in `.npmrc` is what turns that warning into a failure, so an unreviewed
+install script cannot be skipped in silence.
 
 CI additionally passes `--ignore-scripts`, so **no** dependency install script runs there at all.
 The two are not redundant, and the precedence matters:

@@ -336,7 +336,15 @@ const auditWorkflow = () => {
     const key = KEY_LINE.exec(line);
     if (key === null) fail(`unreviewed workflow line: ${line}`);
     if (!WORKFLOW_KEYS.has(key[1])) fail(`unreviewed workflow key: ${key[1]}`);
+    // A flow value carries keys of its own that this reader would never see:
+    // `on: {pull_request: null, pull_request_target: null}` is one allowed key
+    // on one line.
+    if (/^[[{]/.test(key[2] ?? "")) fail(`unreviewed workflow flow value: ${line}`);
   }
+  // Deliberately redundant with the key list above. This is the one key whose
+  // presence hands a write token to code from a fork, and it should fail by
+  // name however it is written.
+  if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
   // The leading dash is optional: `- run: npm ci` is a step just as much as a
   // `run:` under a `- name:` is, and reading only the second form would let a
   // whole extra step through.

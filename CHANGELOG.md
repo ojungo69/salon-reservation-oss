@@ -27,11 +27,14 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 ### Changed
 
 - The install-script policy is now enforced rather than declared. CI installs npm 12 explicitly
-  (Node 24 bundles npm 11, which recognizes neither the `allowScripts` field nor
+  (Node 24.16.0 bundles npm 11.13.0, which recognizes neither the `allowScripts` field nor
   `strict-allow-scripts`) and keeps `--ignore-scripts`, so no third-party install code runs in CI,
   while a separate step fails the build if any installed package has an install script outside the
   reviewed allowlist. `.npmrc` gains `engine-strict=true`, and `package.json` declares the supported
   npm range.
+- The release audit now pins the CI workflow itself: the ordered list of commands it runs, the
+  actions it calls, the YAML keys it may contain, and the plain line form it must be written in.
+  Removing or neutralising the install-script policy fails the audit instead of passing quietly.
 - `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md` now describe the repository's private
   security advisory form as the concrete private reporting route. Private vulnerability reporting is
   enabled, so the form is available to any GitHub user.
