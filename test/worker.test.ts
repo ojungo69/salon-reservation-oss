@@ -1893,9 +1893,11 @@ describe("T029 operator schedule API", () => {
 
 describe("current settings and existing partitions", () => {
   it("rejects elapsed and past-day starts across public and owner paths while replaying receipts", async () => {
-    const now = vi
-      .spyOn(Date, "now")
-      .mockReturnValue(Date.parse(`${day.date}T00:00:00.000Z`));
+    // Fake the Date class itself, not just Date.now: the worker stamps
+    // createdAt via `new Date()`, and a spy on Date.now leaves those stamps
+    // on the real clock, so pending-expiry deadlines drift against the
+    // mocked clock (red between 00:00 and 10:30 JST, green after).
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(`${day.date}T00:00:00.000Z`) });
     try {
       await enableLiveInstallation();
       const accepted = await acceptedPublicCreate({
@@ -1926,7 +1928,7 @@ describe("current settings and existing partitions", () => {
       expect(firstReschedule.status).toBe(200);
       expect(await firstReschedule.json()).toMatchObject({ replayed: false });
 
-      now.mockReturnValue(Date.parse(`${day.date}T01:30:00.000Z`));
+      vi.setSystemTime(Date.parse(`${day.date}T01:30:00.000Z`));
       const ownerUrl = `https://example.test/api/admin/availability?${new URLSearchParams({
         date: day.date,
         serviceId: "service-cut",
@@ -1994,7 +1996,7 @@ describe("current settings and existing partitions", () => {
       );
       expect(await ownerStatus.json()).toMatchObject({ startTime: "11:00" });
 
-      now.mockReturnValue(Date.parse(`${day.date}T15:30:00.000Z`));
+      vi.setSystemTime(Date.parse(`${day.date}T15:30:00.000Z`));
       const pastOwnerAvailability = await SELF.fetch(ownerUrl, { headers: ownerHeaders });
       expect(pastOwnerAvailability.status).toBe(200);
       expect(
@@ -2031,7 +2033,7 @@ describe("current settings and existing partitions", () => {
         reservation: { reservationId: accepted.result.reservation?.reservationId },
       });
     } finally {
-      now.mockRestore();
+      vi.useRealTimers();
     }
   });
 
@@ -2282,9 +2284,9 @@ describe("current settings and existing partitions", () => {
       (await updateInstallation(shrunken, crypto.randomUUID(), 2)).status,
     ).toBe(200);
 
-    const now = vi
-      .spyOn(Date, "now")
-      .mockReturnValue(Date.parse(`${date}T15:00:00.000Z`) + 86_400_000);
+    // Same reasoning as the fake above: `new Date()` stamps must follow the
+    // mocked clock, so fake the Date class rather than spying on Date.now.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(`${date}T15:00:00.000Z`) + 86_400_000 });
     try {
       const [status, schedule] = await Promise.all([
         jsonRequest(`/api/reservations/${reservationId}/status`, {
@@ -2299,7 +2301,7 @@ describe("current settings and existing partitions", () => {
 
       expect([status.status, schedule.status]).toEqual([200, 200]);
     } finally {
-      now.mockRestore();
+      vi.useRealTimers();
     }
   });
 });
