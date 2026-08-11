@@ -1,0 +1,21 @@
+tests-browser/customer.spec.ts
+  s_d039e857cfe6e0::t_3d761bf60522cc 16,20-25,29-36,38,41-42,112-201
+tests-browser/owner.spec.ts
+  s_d039e857cfe6e0::t_222f2f5e231b6e 14-28,89-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0475109e9b14b6a9edb4200d8544b48103260e86",
+  "prompts": {},
+  "sessions": {
+    "s_d039e857cfe6e0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ablue-review-29-346e5129335c5670",
+        "model": "unknown"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
