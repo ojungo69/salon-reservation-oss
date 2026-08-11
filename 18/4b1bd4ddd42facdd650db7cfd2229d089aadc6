@@ -1,0 +1,26 @@
+tests-browser/owner.spec.ts
+  s_7c8b13bff90366::t_db560db549d9a7 1
+  s_7c8b13bff90366::t_b68c5ef8399e3a 92-95,98-103,105-106
+  s_7c8b13bff90366::t_68b6331ddc2e47 22-26
+  s_7c8b13bff90366::t_5a85eab8a999b2 89-91
+  s_7c8b13bff90366::t_6ced144e031861 139,141
+  s_7c8b13bff90366::t_a2e6e4d44f9df4 110,118
+playwright.config.ts
+  s_7c8b13bff90366::t_dc5f36a586c664 55-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "184b1bd4ddd42facdd650db7cfd2229d089aadc6",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
