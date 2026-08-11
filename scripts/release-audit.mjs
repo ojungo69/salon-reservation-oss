@@ -270,14 +270,16 @@ const WORKFLOW_COMMANDS = [
   `test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
   "npm run check",
 ];
+// The same list for actions, without the SHA so Dependabot's digest bumps do
+// not touch it. A step that calls an action is executing someone else's code
+// just as much as a `run:` line is, and a reusable workflow would appear here
+// as a path that is not in the list.
+const WORKFLOW_ACTIONS = ["actions/checkout", "actions/setup-node"];
 const REQUIRED_WORKFLOW_LINES = ["node-version-file: .nvmrc"];
 
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
   if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
-  for (const match of workflow.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)) {
-    if (!/@[0-9a-f]{40}$/.test(match[1])) fail(`GitHub Action is not commit-pinned: ${match[1]}`);
-  }
   if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
   // Comments are stripped before matching, so a pinned command cannot be
   // satisfied by text that never runs: `run: npm ci # run: npm ci
@@ -296,11 +298,25 @@ const auditWorkflow = () => {
   }
   const jobs = activeLines.filter((line) => /^runs-on\s*:/.test(line));
   if (jobs.length !== 1) fail(`workflow must define one job, found ${jobs.length}`);
-  const commands = activeLines
-    .filter((line) => line.startsWith("run:"))
-    .map((line) => line.slice("run:".length).trim());
+  // The leading dash is optional in both lists: `- run: npm ci` is a step just
+  // as much as a `run:` under a `- name:` is, and reading only the second form
+  // would let a whole extra step through.
+  const values = (keyword) =>
+    activeLines
+      .map((line) => new RegExp(`^(?:-\\s*)?${keyword}:\\s*(.*)$`).exec(line))
+      .filter((match) => match !== null)
+      .map((match) => match[1].trim());
+  const commands = values("run");
   if (JSON.stringify(commands) !== JSON.stringify(WORKFLOW_COMMANDS)) {
     fail(`workflow command drift: ${JSON.stringify(commands)}`);
+  }
+  const actions = values("uses");
+  for (const action of actions) {
+    if (!/@[0-9a-f]{40}$/.test(action)) fail(`GitHub Action is not commit-pinned: ${action}`);
+  }
+  const identities = actions.map((action) => action.slice(0, action.lastIndexOf("@")));
+  if (JSON.stringify(identities) !== JSON.stringify(WORKFLOW_ACTIONS)) {
+    fail(`workflow action drift: ${JSON.stringify(identities)}`);
   }
 };
 
