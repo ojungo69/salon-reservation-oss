@@ -111,6 +111,12 @@ bump that pulls a new `workerd`), two files must be updated together:
 That duplication is deliberate. It forces a human to look at the new install script before it runs
 in CI. Do not relax the audit to avoid the second edit.
 
+The workflow steps that carry this policy — `node-version-file: .nvmrc`, the pinned global npm, both
+`--ignore-scripts`, and the `npm install-scripts ls` gate — are themselves pinned by
+`REQUIRED_WORKFLOW_STEPS` in `scripts/release-audit.mjs`, and `.nvmrc` is compared exactly. Editing
+any of those lines fails the audit until the constant is updated in the same change. Without that,
+deleting the enforcement would leave a build that still passes every other check.
+
 ## Pull requests
 
 - Keep one user-visible or security-relevant change per pull request.

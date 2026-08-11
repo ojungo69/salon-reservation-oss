@@ -214,7 +214,8 @@ const auditPackage = () => {
   }
   if (
     packageJson.engines?.node !== ">=24.0.0" ||
-    packageJson.engines?.npm !== ">=12.0.0 <13.0.0"
+    packageJson.engines?.npm !== ">=12.0.0 <13.0.0" ||
+    readText(".nvmrc") !== "24.16.0\n"
   ) {
     fail("supported toolchain drift");
   }
@@ -255,6 +256,19 @@ const auditPackage = () => {
   }
 };
 
+// The install-script policy is only worth anything while every one of these
+// lines is present: the pinned npm is what enforces allowScripts at all, the two
+// --ignore-scripts keep third-party install code from running, and the listing
+// gate is what makes the allowlist real rather than decorative. Deleting any of
+// them leaves a workflow that still passes every other check, so they are named
+// here for the same reason .npmrc and engines are.
+const REQUIRED_WORKFLOW_STEPS = [
+  "node-version-file: .nvmrc",
+  "run: npm install -g --ignore-scripts npm@12.0.2",
+  "run: npm ci --ignore-scripts",
+  `run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
+];
+
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
   if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
@@ -262,6 +276,9 @@ const auditWorkflow = () => {
     if (!/@[0-9a-f]{40}$/.test(match[1])) fail(`GitHub Action is not commit-pinned: ${match[1]}`);
   }
   if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
+  for (const step of REQUIRED_WORKFLOW_STEPS) {
+    if (!workflow.includes(step)) fail(`install-script enforcement drift: ${step}`);
+  }
 };
 
 const auditAuthForms = () => {
