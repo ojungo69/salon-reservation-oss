@@ -14,37 +14,60 @@ import {
 } from "./tests-browser/harness.ts";
 
 // Remove comments and trailing commas without ever rewriting string literals
-// (the canonical config legitimately contains "/api/*"). Character walk, not
-// regexes: two review rounds proved regex stripping corrupts either strings
-// or the shell quoting it rode in on.
-const stripJsonc = (text: string): string => {
+// (the canonical config legitimately contains "/api/*"). Character walks, not
+// regexes, and comments go first so a trailing comma hiding behind one
+// ("period": 60, // note) is still recognized by the second pass.
+const copyStringLiteral = (text: string, start: number): { chunk: string; end: number } => {
+  let chunk = text[start];
+  let i = start + 1;
+  while (i < text.length && text[i] !== '"') {
+    chunk += text[i];
+    if (text[i] === "\\") {
+      chunk += text[i + 1] ?? "";
+      i += 1;
+    }
+    i += 1;
+  }
+  return { chunk: chunk + (text[i] ?? ""), end: i };
+};
+
+const stripComments = (text: string): string => {
   let out = "";
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (ch === '"') {
-      out += ch;
-      for (i += 1; i < text.length && text[i] !== '"'; i += 1) {
-        out += text[i];
-        if (text[i] === "\\") {
-          out += text[i + 1] ?? "";
-          i += 1;
-        }
-      }
-      out += text[i] ?? "";
+      const literal = copyStringLiteral(text, i);
+      out += literal.chunk;
+      i = literal.end;
     } else if (ch === "/" && text[i + 1] === "/") {
       while (i < text.length && text[i] !== "\n") i += 1;
       out += "\n";
     } else if (ch === "/" && text[i + 1] === "*") {
       for (i += 2; i < text.length && !(text[i] === "*" && text[i + 1] === "/"); i += 1);
       i += 1;
-    } else if (ch === "," && /^\s*[}\]]/.test(text.slice(i + 1))) {
-      // trailing comma: drop it
     } else {
       out += ch;
     }
   }
   return out;
 };
+
+const stripTrailingCommas = (text: string): string => {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      const literal = copyStringLiteral(text, i);
+      out += literal.chunk;
+      i = literal.end;
+    } else if (ch !== "," || !/^\s*[}\]]/.test(text.slice(i + 1))) {
+      out += ch;
+    }
+  }
+  return out;
+};
+
+const stripJsonc = (text: string): string => stripTrailingCommas(stripComments(text));
 
 // The production owner limiter (10/minute/route) is far below what an ordered
 // full run sends inside one minute, so the suite would spend its time waiting
