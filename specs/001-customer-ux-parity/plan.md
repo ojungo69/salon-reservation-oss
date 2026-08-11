@@ -6,7 +6,7 @@
 
 ## Summary
 
-The customer flow already has the three-step shell, draft persistence, and success surface; this plan closes the residual parity gaps found in research D2: an editable booking-summary card on the details step, a stronger final-confirmation presentation, a scalable service-selection surface with chips and running totals, slot refresh and operator availability notices, a proof-bound duplicate-booking warning, an operator flag for resource-choice exposure, success-copy polish, absence-tested adapter slots, and the committed UX parity matrix. Two bounded backend touchpoints (a settings notice field + resource-choice flag, and one read-only duplicate signal) ride existing mechanisms; reservation transaction semantics stay untouched.
+The customer flow already has the three-step shell, draft persistence, and success surface; this plan closes the residual parity gaps found in research D2: an editable booking-summary card on the details step, a stronger final-confirmation presentation, a scalable service-selection surface with chips and running totals, slot refresh and operator availability notices, a proof-bound duplicate-booking warning, an operator flag for resource-choice exposure, success-copy polish, absence-tested adapter slots, and the committed UX parity matrix. The duplicate warning reuses the existing per-reservation status endpoint (already proof-bound and live on the bookings page), so the only backend touchpoint is the settings pair (notice field + resource-choice flag) riding existing mechanisms; reservation transaction semantics stay untouched.
 
 ## Technical Context
 
@@ -22,7 +22,7 @@ The customer flow already has the three-step shell, draft persistence, and succe
 
 **Project Type**: single Worker serving static `public/` + API
 
-**Performance Goals**: no additional request on the happy path; duplicate check adds at most one read-only call before submission
+**Performance Goals**: no additional request on the happy path; duplicate check adds at most 3 read-only calls (existing status endpoint, same-day remembered records only) before submission
 
 **Constraints**: Free-plan budget (existing request/write budgets unchanged), settings-version compatibility for drafts, AGPL public-safe surface
 
@@ -65,7 +65,7 @@ public/
 
 src/
 ├── installation-config.ts  # optional availabilityNotice (bounded text), exposeResourceChoice flag — versioned settings
-└── worker.ts               # expose new settings in /api/config; POST /api/reservations/active-check (proof-bound duplicate signal)
+└── worker.ts               # expose new settings in /api/config (duplicate signal reuses the existing status route — no new endpoint)
 
 test/journey.test.ts         # new pure-function cases
 tests-browser/customer.spec.ts (+ possibly one new spec file)  # card, chips, refresh, duplicate ack, absence tests, viewports
@@ -78,25 +78,25 @@ docs/UX-PARITY.md            # user-task parity matrix (FR-014)
 
 1. **US1 (P1) — summary card + confirmation presentation**: `index.html` details-stage card with per-field edit links (jump to selection/details), review-stage panel styling and CTA isolation; `journey.js` summary derivation; browser tests at 4 viewports.
 2. **US2 (P2) — scalable service selection**: threshold 8 (research D6): ≤8 renders today's list byte-for-byte; >8 renders filter input + checkbox list + selected chips + running duration/price total (server-derived values already in config/availability responses); full keyboard/SR paths; unit tests for filter state, browser test with an >8 fixture catalog.
-3. **US3 (P2) — freshness & duplicate recovery**: slot-refresh button reusing the sequenced availability loader; `availabilityNotice` settings field (bounded text, versioned) surfaced near availability; proof-bound duplicate check (contract below) with acknowledgement gate before submit; CAPACITY_REACHED / stale-slot copy verified inside the shell.
+3. **US3 (P2) — freshness & duplicate recovery**: slot-refresh button reusing the sequenced availability loader; `availabilityNotice` settings field (bounded text, versioned) surfaced near availability; proof-bound duplicate check via the existing status endpoint (see Backend contracts) with acknowledgement gate before submit; CAPACITY_REACHED / stale-slot copy verified inside the shell.
 4. **US4 (P3) — key comfort**: one-sentence key explanation, copy affordance kept, bookings entry copy check.
 5. **US5 (P3) — adapter slots**: `docs/UX-PARITY.md` documents the three insertion points; browser tests assert absence in default config.
 6. **Matrix + closure**: fill `docs/UX-PARITY.md` per user task (parity / exceeds / deferred-with-reason), update `docs/PARITY.md` acceptance rows touched, run the manual keyboard/mobile review, close #11.
 
 Each phase lands as an independently green commit on `feat/customer-ux-parity`; one PR at the end (or split PRs if review size demands — decided at review time).
 
-## Backend contracts (the only two)
+## Backend contracts (settings only)
 
 **Settings additions** (`installation-config.ts`, versioned like existing fields):
 - `availabilityNotice`: optional string, trimmed, 1–200 chars, plain text; absent by default; editable in setup; exposed in public config.
 - `exposeResourceChoice`: boolean, default `true` (today's behavior). When `false`, the resource select is hidden, the best eligible resource is auto-assigned (existing single-eligible logic generalized), and the assignment is shown on summary/confirmation.
 
-**Duplicate signal** (`worker.ts`): reuse was checked first — the bookings page today renders locally remembered records only and calls no status endpoint (its only proof-verified path is cancel), so there is no existing proof-bound read to extend. Hence one new endpoint: `POST /api/reservations/active-check` with `{ date, entries: [{ reservationId, managementKey }] (≤16) }` → `{ activeReservationIds: [...] }`. Verifies each key digest against the stored booking exactly like the existing cancel path, returns only IDs that are active on that date. Read-only, rate-limited like other public endpoints, uniform response for unknown proofs (no oracle). Client warns + requires acknowledgement when non-empty; cross-device duplicates documented as deferred (research D4).
+**Duplicate signal**: no new endpoint. `POST /api/reservations/:id/status` already exists (worker.ts) and the bookings page already calls it with the stored management key — proof-bound, read-only, rate-limited, uniform on bad proofs. Before submission the client checks its *remembered same-day* records (rarely more than 1–2; hard cap 3 lookups per attempt to respect the request budget) against this endpoint and warns + requires acknowledgement when any is still active. Cross-device duplicates stay deferred (research D4).
 
 ## Test plan
 
 - Pure: `journey.js` additions (summary derivation, filter state, ack state) in `test/journey.test.ts`.
-- API: worker tests for config exposure, notice bounds, active-check (valid proof / wrong key / cancelled booking / foreign reservationId → uniform behavior).
+- API: worker tests for config exposure and notice bounds (the status endpoint the duplicate check reuses is already covered by existing worker + browser tests).
 - Browser: extend customer spec(s) — card edit-jump, chips + totals via keyboard, refresh re-render, duplicate ack path (create → remember → attempt second same-day booking), absence tests, axe + overflow at 320/360/768/1440.
 - Full `npm run check` + browser suite green per phase (constitution gates).
 

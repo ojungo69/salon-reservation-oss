@@ -149,7 +149,7 @@ An operator running the default single-location, no-provider installation sees e
 
 - Issue #11's checklists plus issue #1's decision comment are the product intent; where they conflict with `docs/PARITY.md` v0.2 exclusions, the exclusions win for backend scope (no multi-location model, no identity/notification adapter, no staff roles in this feature).
 - The identity-adapter and location surfaces are delivered as *documented, test-asserted absence* (slots), not as new configuration switches; issue #1 defines the contracts later.
-- Backend changes are bounded to three touchpoints, none of which alter reservation transaction semantics: FR-006's read-only duplicate signal, and two versioned settings additions (the availability notice text and the resource-choice exposure flag). No schema change, no new write path.
+- Backend changes are bounded to two versioned settings additions (the availability notice text and the resource-choice exposure flag); FR-006's duplicate signal reuses an existing read-only status endpoint. No new endpoint, no schema change, no new write path, no change to reservation transaction semantics.
 - The current single-page customer implementation may be restructured freely as long as URLs that customers may have bookmarked (booking entry, management page, legal pages) keep working.
 - Existing browser-suite conventions (shared installation, ordered specs, harness helpers) remain the testing substrate; specs are extended/adjusted rather than replaced wholesale.
 - Japanese remains the customer-facing language with the existing polite tone; code and documentation stay in English.
