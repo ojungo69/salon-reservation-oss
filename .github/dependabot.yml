@@ -12,6 +12,14 @@ updates:
       - dependencies
     commit-message:
       prefix: "deps"
+    ignore:
+      # @types/node major versions track Node.js major versions. This project
+      # pins Node in .nvmrc and engines.node, and tsconfig.json compiles against
+      # ["node"], so types from a newer major would describe APIs the runtime
+      # does not have. It moves when the Node version does, in the same change.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /

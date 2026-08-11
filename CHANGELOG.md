@@ -31,6 +31,11 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Changed
 
+- Dependabot no longer proposes `@types/node` major updates, which track Node.js majors and have to
+  move together with `.nvmrc` and `engines.node`. `CONTRIBUTING.md` now also explains why every
+  Dependabot npm pull request starts red — the release audit pins each direct dependency's version
+  in `docs/THIRD_PARTY_LICENSES.md`, which Dependabot does not update — and what to do about it.
+
 - The install-script policy is now enforced rather than declared. CI installs npm 12 explicitly
   (Node 24.16.0 bundles npm 11.13.0, which recognizes neither the `allowScripts` field nor
   `strict-allow-scripts`) and keeps `--ignore-scripts`, so no third-party install code runs in CI,
