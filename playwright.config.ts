@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { defineConfig, devices } from "@playwright/test";
 
 import {
@@ -9,6 +12,55 @@ import {
   SERVER_ORIGIN,
   TURNSTILE_SECRET,
 } from "./tests-browser/harness.ts";
+
+// Remove comments and trailing commas without ever rewriting string literals
+// (the canonical config legitimately contains "/api/*"). Character walk, not
+// regexes: two review rounds proved regex stripping corrupts either strings
+// or the shell quoting it rode in on.
+const stripJsonc = (text: string): string => {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      out += ch;
+      for (i += 1; i < text.length && text[i] !== '"'; i += 1) {
+        out += text[i];
+        if (text[i] === "\\") {
+          out += text[i + 1] ?? "";
+          i += 1;
+        }
+      }
+      out += text[i] ?? "";
+    } else if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      out += "\n";
+    } else if (ch === "/" && text[i + 1] === "*") {
+      for (i += 2; i < text.length && !(text[i] === "*" && text[i + 1] === "/"); i += 1);
+      i += 1;
+    } else if (ch === "," && /^\s*[}\]]/.test(text.slice(i + 1))) {
+      // trailing comma: drop it
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+};
+
+// The production owner limiter (10/minute/route) is far below what an ordered
+// full run sends inside one minute, so the suite would spend its time waiting
+// out limiter windows instead of asserting behaviour. The web server runs on
+// a config derived from the canonical one with roomy limits — deriving at
+// load, rather than keeping a second config file, cannot drift. Paths are
+// absolutized because wrangler resolves them against the config file.
+const TEST_CONFIG_PATH = ".wrangler/browser-test.json";
+{
+  const config = JSON.parse(stripJsonc(readFileSync(resolve("wrangler.jsonc"), "utf8")));
+  for (const limiter of config.ratelimits) limiter.simple.limit = 1000;
+  config.main = resolve(config.main);
+  config.assets.directory = resolve(config.assets.directory);
+  mkdirSync(".wrangler", { recursive: true });
+  writeFileSync(TEST_CONFIG_PATH, JSON.stringify(config));
+}
 
 export default defineConfig({
   testDir: "./tests-browser",
@@ -52,16 +104,7 @@ export default defineConfig({
     // is removed underneath it.
     command: [
       `node -e "require('node:fs').rmSync('${STATE_DIR}',{recursive:true,force:true})"`,
-      // The production owner limiter (10/minute/route) is far below what an
-      // ordered full run sends inside one minute, so the suite would spend
-      // its time waiting out windows instead of asserting behaviour. Derive
-      // a test config from the canonical one with roomy limits — deriving,
-      // rather than keeping a second config file, cannot drift. Paths are
-      // absolutized because wrangler resolves them against the config file,
-      // and a light JSONC strip (comments, trailing commas) keeps the read
-      // aligned with the canonical file's format without a parser package.
-      `&& node -e "const f=require('node:fs');const p=require('node:path');const t=f.readFileSync('wrangler.jsonc','utf8').replace(/\\\\/\\\\*[^]*?\\\\*\\\\//g,'').replace(/^[\\\\t ]*\\\\/\\\\/.*$/gm,'').replace(/,(\\\\s*[}\\\\]])/g,'$1');const c=JSON.parse(t);for(const r of c.ratelimits)r.simple.limit=1000;c.main=p.resolve(c.main);c.assets.directory=p.resolve(c.assets.directory);f.mkdirSync('.wrangler',{recursive:true});f.writeFileSync('.wrangler/browser-test.json',JSON.stringify(c))"`,
-      "&& npx wrangler dev --config .wrangler/browser-test.json",
+      `&& npx wrangler dev --config ${TEST_CONFIG_PATH}`,
       `--ip 127.0.0.1 --port ${PORT} --local-protocol https`,
       `--persist-to ${STATE_DIR}`,
       `--var OWNER_TOKEN:${OWNER_TOKEN}`,
