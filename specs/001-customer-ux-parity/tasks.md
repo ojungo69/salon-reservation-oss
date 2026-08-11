@@ -79,9 +79,9 @@
 
 ## Phase 6: Matrix + closure
 
-- [ ] T021 Fill the user-task parity matrix (parity / exceeds / deferred-with-reason per task) in `docs/UX-PARITY.md`, including cross-device duplicates as deferred (research D4)
-- [ ] T022 Update the acceptance rows this feature touches in `docs/PARITY.md`
-- [ ] T023 Full verification: `npm run check`, `npm run test:browser`, manual keyboard + 320px pass over the three changed screens; record results in the PR body
+- [X] T021 Fill the user-task parity matrix (parity / exceeds / deferred-with-reason per task) in `docs/UX-PARITY.md`, including cross-device duplicates as deferred (research D4)
+- [X] T022 Update the acceptance rows this feature touches in `docs/PARITY.md`
+- [X] T023 Full verification: `npm run check`, `npm run test:browser`, manual keyboard + 320px pass over the three changed screens; record results in the PR body
 
 ---
 

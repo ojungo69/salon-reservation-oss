@@ -1304,6 +1304,11 @@ textarea::placeholder {
     flex-direction: column;
   }
 
+  /* Stretched by the stacked heading, the round marker would become an oval. */
+  .stage-marker {
+    width: 2.5rem;
+  }
+
   .site-header,
   .site-footer {
     align-items: flex-start;
