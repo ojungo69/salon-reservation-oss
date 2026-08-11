@@ -146,6 +146,27 @@ fails it, while the same command run on its own passes. The empty project-level 
 config resolution, so what gets exported is empty. Keep the line, and test any change to it through
 `npm run check` rather than by invoking the inner command yourself.
 
+## Dependency updates
+
+`scripts/release-audit.mjs` checks that every direct dependency appears in
+[`docs/THIRD_PARTY_LICENSES.md`](docs/THIRD_PARTY_LICENSES.md) at the exact version `package.json`
+declares. Dependabot does not know about that table, so **every one of its npm pull requests is red
+until someone updates the table in the same branch**:
+
+```text
+release audit failed: direct dependency license documentation drift: @types/node
+```
+
+The fix is one line per bumped package — the version column, and the license column if the license
+itself changed, which is worth reading rather than assuming. Push that commit to Dependabot's branch
+rather than opening a second pull request. The friction is the point: a dependency's license is a
+thing a human should look at, and an automated bump is exactly when nobody does.
+
+`@types/node` is deliberately excluded from Dependabot's major updates. Its majors track Node.js
+majors, and this project pins Node in `.nvmrc` and `engines.node` and compiles against
+`"types": ["node"]`, so a newer major would describe APIs the runtime does not have. It moves when
+the Node version moves, in the same change.
+
 When a dependency update changes a package that runs an install script (for example, a `wrangler`
 bump that pulls a new `workerd`), two files must be updated together:
 
