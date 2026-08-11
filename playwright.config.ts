@@ -57,8 +57,10 @@ export default defineConfig({
       // its time waiting out windows instead of asserting behaviour. Derive
       // a test config from the canonical one with roomy limits — deriving,
       // rather than keeping a second config file, cannot drift. Paths are
-      // absolutized because wrangler resolves them against the config file.
-      `&& node -e "const f=require('node:fs');const p=require('node:path');const c=JSON.parse(f.readFileSync('wrangler.jsonc','utf8'));for(const r of c.ratelimits)r.simple.limit=1000;c.main=p.resolve(c.main);c.assets.directory=p.resolve(c.assets.directory);f.mkdirSync('.wrangler',{recursive:true});f.writeFileSync('.wrangler/browser-test.json',JSON.stringify(c))"`,
+      // absolutized because wrangler resolves them against the config file,
+      // and a light JSONC strip (comments, trailing commas) keeps the read
+      // aligned with the canonical file's format without a parser package.
+      `&& node -e "const f=require('node:fs');const p=require('node:path');const t=f.readFileSync('wrangler.jsonc','utf8').replace(/\\\\/\\\\*[^]*?\\\\*\\\\//g,'').replace(/^[\\\\t ]*\\\\/\\\\/.*$/gm,'').replace(/,(\\\\s*[}\\\\]])/g,'$1');const c=JSON.parse(t);for(const r of c.ratelimits)r.simple.limit=1000;c.main=p.resolve(c.main);c.assets.directory=p.resolve(c.assets.directory);f.mkdirSync('.wrangler',{recursive:true});f.writeFileSync('.wrangler/browser-test.json',JSON.stringify(c))"`,
       "&& npx wrangler dev --config .wrangler/browser-test.json",
       `--ip 127.0.0.1 --port ${PORT} --local-protocol https`,
       `--persist-to ${STATE_DIR}`,

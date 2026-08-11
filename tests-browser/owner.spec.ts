@@ -19,11 +19,22 @@ const signIn = async (page: Page): Promise<void> => {
   await expect(page.locator("#auth-status")).toContainText("認証しました", { timeout: 20_000 });
 };
 
+// The availability loader stamps its interim text synchronously when a date
+// or service change starts it, so a settled status means no reload is in
+// flight — and a start time selected after this point cannot be reset by a
+// late option-list re-render.
+const waitForAvailabilitySettled = async (page: Page): Promise<void> => {
+  await expect(page.locator("#owner-create-status")).not.toContainText("確認しています", {
+    timeout: 15_000,
+  });
+};
+
 const openDayBoardAt = async (page: Page, date: string): Promise<void> => {
   await page.click("#schedule-view-day");
   await expect(page.locator("#day-board")).toBeVisible();
   await page.fill("#admin-date", date);
   await page.locator("#admin-date").blur();
+  await waitForAvailabilitySettled(page);
 };
 
 // A date or service change refreshes availability asynchronously, and a
@@ -44,6 +55,8 @@ const selectStartTime = async (page: Page, startTime?: string): Promise<void> =>
 
 const chooseOpenStartTime = async (page: Page): Promise<void> => {
   await page.fill("#admin-date", openDateFrom(await page.locator("#admin-date").inputValue()));
+  await page.locator("#admin-date").blur();
+  await waitForAvailabilitySettled(page);
   // Only an option carrying a real start time means the date has availability.
   await selectStartTime(page);
 };
