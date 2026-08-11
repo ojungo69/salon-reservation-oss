@@ -64,6 +64,17 @@ jobs:
       - name: Verify
         run: npm run check
 
+      # Browser binaries live under ~/.cache/ms-playwright and only change when
+      # the pinned @playwright/test version bumps; the key hashes the whole
+      # lockfile, so unrelated dependency changes merely re-download the same
+      # browser. Exact key, no restore-keys: a stale browser for a new
+      # Playwright must never restore silently.
+      - name: Cache the Playwright browser
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+
       # The rendered-page tests need a real browser. Only Chromium is installed,
       # and without --with-deps, because the ubuntu-latest image already carries
       # the shared libraries the headless shell links against. Installing it
