@@ -2249,7 +2249,11 @@ describe("current settings and existing partitions", () => {
 
   it("keeps an existing past reservation reachable after a retention shrink", async () => {
     await enableLiveInstallation();
-    const date = nextOpenJstDate();
+    // Not today: the fixture books 09:00, and the day object refuses a start
+    // time that has already elapsed, so booking today fails from 09:00 JST
+    // onwards. The reservation is made past by the Date.now() mock below, not by
+    // the calendar. Offset 2 is a date no other test in this file touches.
+    const date = nextOpenJstDate(2);
     const created = await acceptedPublicCreate({ date });
     const reservationId = created.result.reservation?.reservationId as string;
     const shrunken = liveSettings();
