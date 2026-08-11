@@ -1,0 +1,23 @@
+src/reservation-day.ts
+  s_7c8b13bff90366::t_8f93ecd7357208 1588-1596
+  s_7c8b13bff90366::t_76862ca8fb6d3d 2223-2231
+  s_7c8b13bff90366::t_279b2ab6351747 2328-2335
+  s_7c8b13bff90366::t_8d86f00df80e9d 1782-1789,2074-2081
+  s_7c8b13bff90366::t_de44c556527333 1039-1091
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "df47862c5de97e2f8d8006bc361e41e88405fed1",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
