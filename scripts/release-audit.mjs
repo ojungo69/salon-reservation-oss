@@ -276,10 +276,42 @@ const WORKFLOW_COMMANDS = [
 // as a path that is not in the list.
 const WORKFLOW_ACTIONS = ["actions/checkout", "actions/setup-node"];
 const REQUIRED_WORKFLOW_LINES = ["node-version-file: .nvmrc"];
+// Every key ci.yml is allowed to contain, including the one job name. Listing
+// the permitted keys rather than the forbidden ones is what makes the two lists
+// above mean what they say: a pinned `run:` is only pinned while nothing else
+// chooses how it runs. `shell:` picks the interpreter, `container:` and
+// `services:` pick the machine, `env:` and `defaults:` reach inside node and
+// npm, `if:` turns a pinned step off, `strategy:` multiplies it, and a second
+// job name is a second place to install — none of which changes a `run:` or
+// `uses:` value. An unlisted key fails instead of being ignored.
+const WORKFLOW_KEYS = new Set([
+  "branches",
+  "cache",
+  "cancel-in-progress",
+  "check",
+  "concurrency",
+  "contents",
+  "fetch-depth",
+  "group",
+  "jobs",
+  "name",
+  "node-version-file",
+  "on",
+  "package-manager-cache",
+  "permissions",
+  "persist-credentials",
+  "pull_request",
+  "push",
+  "run",
+  "runs-on",
+  "steps",
+  "timeout-minutes",
+  "uses",
+  "with",
+]);
 
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
-  if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
   if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
   // Comments are stripped before matching, so a pinned command cannot be
   // satisfied by text that never runs: `run: npm ci # run: npm ci
@@ -291,13 +323,12 @@ const auditWorkflow = () => {
   for (const line of REQUIRED_WORKFLOW_LINES) {
     if (!activeLines.includes(line)) fail(`install-script enforcement drift: ${line}`);
   }
-  // A pinned command that never executes is the same as a deleted one, and a
-  // second job is a place to install outside the pinned sequence.
-  if (activeLines.some((line) => /^(?:if|continue-on-error)\s*:/.test(line))) {
-    fail("conditional workflow steps could skip the install-script policy");
+  for (const line of activeLines) {
+    const key = /^(?:-\s*)?([A-Za-z_][\w-]*)\s*:(?:\s|$)/.exec(line);
+    if (key !== null && !WORKFLOW_KEYS.has(key[1])) {
+      fail(`unreviewed workflow key: ${key[1]}`);
+    }
   }
-  const jobs = activeLines.filter((line) => /^runs-on\s*:/.test(line));
-  if (jobs.length !== 1) fail(`workflow must define one job, found ${jobs.length}`);
   // The leading dash is optional in both lists: `- run: npm ci` is a step just
   // as much as a `run:` under a `- name:` is, and reading only the second form
   // would let a whole extra step through.

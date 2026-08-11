@@ -111,17 +111,23 @@ bump that pulls a new `workerd`), two files must be updated together:
 That duplication is deliberate. It forces a human to look at the new install script before it runs
 in CI. Do not relax the audit to avoid the second edit.
 
-The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds the exact,
-ordered list of every command CI runs in `WORKFLOW_COMMANDS` and every action it calls in
-`WORKFLOW_ACTIONS`, requires `node-version-file: .nvmrc`, compares `.nvmrc` exactly, allows only one
-job, and rejects `if:` and `continue-on-error:`. Comments are stripped before matching, so
-commenting a step out fails the audit the same way deleting it does. Changing what CI runs therefore
-means editing those constants in the same pull request.
+The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds three lists:
 
-The lists are exhaustive rather than limited to the security-relevant steps because a partial list
-says nothing about a step someone *adds* — a second `npm ci`, a `yarn install`, a command chained
-onto a pinned one, an unfamiliar action. `WORKFLOW_ACTIONS` deliberately omits the SHA, which is
-still required and still checked separately, so Dependabot's digest bumps stay quiet.
+- `WORKFLOW_COMMANDS` — every command CI runs, in order.
+- `WORKFLOW_ACTIONS` — every action it calls, without the SHA, which is still required and checked
+  separately so Dependabot's digest bumps stay quiet.
+- `WORKFLOW_KEYS` — every YAML key the file may contain, including the single job name.
+
+It also requires `node-version-file: .nvmrc` and compares `.nvmrc` exactly. Comments are stripped
+before matching, so commenting a step out fails the audit the same way deleting it does. Changing
+what CI runs therefore means editing those constants in the same pull request.
+
+All three lists are exhaustive rather than limited to the security-relevant lines, because a partial
+list says nothing about what someone *adds* — a second `npm ci`, a `yarn install`, an unfamiliar
+action, a second job. The key list is what makes the other two mean anything: a pinned `run:` is
+only pinned while nothing else decides how it runs. `shell:` picks the interpreter, `container:`
+picks the machine, `env:` reaches inside node and npm, `if:` turns the step off. Rather than name
+each of those, anything not on the list fails.
 
 This is a drift gate, not a boundary against a hostile committer: anyone who can edit the workflow
 can edit the audit beside it. Its job is to make a weakening visible in review rather than
