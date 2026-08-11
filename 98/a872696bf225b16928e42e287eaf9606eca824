@@ -1,0 +1,51 @@
+test/journey.test.ts
+  s_7c8b13bff90366::t_95f7ecf2317027 19-23
+  s_7c8b13bff90366::t_77af7d81a9ec42 10
+  s_7c8b13bff90366::t_1cf1972792189d 371-448
+public/styles.css
+  s_7c8b13bff90366::t_213cfa7a3f4942 752-777,779-789
+  s_7c8b13bff90366::t_db68b404148972 778
+  s_7c8b13bff90366::t_e9b514eca1911a 1486-1487
+tests-browser/customer.spec.ts
+  s_7c8b13bff90366::t_c4f512a553faec 4-6
+  s_7c8b13bff90366::t_4a485240636bde 289-291
+  s_7c8b13bff90366::t_8d844fe76f2f6a 242-288,292-354
+public/journey.js
+  s_7c8b13bff90366::t_e3210b919033dd 253-304
+public/index.html
+  s_7c8b13bff90366::t_1a3868c905a6fb 139-161
+  s_7c8b13bff90366::t_9d3f2b1e43a37f 88
+  s_7c8b13bff90366::t_ec5dd90273cb3f 96
+  s_7c8b13bff90366::t_90b85d4866a072 231-260
+public/app.js
+  s_7c8b13bff90366::t_d9fa1c36692905 422-436,441-452,454-459
+  s_7c8b13bff90366::t_58a59d5229cd97 407-409
+  s_7c8b13bff90366::t_b651523221ca39 621-630
+  s_7c8b13bff90366::t_fb2a78d77db9b5 881
+  s_7c8b13bff90366::t_f7ce7bc8a4e76f 7,12
+  s_7c8b13bff90366::t_d7fa48c24c52b5 723-724
+  s_7c8b13bff90366::t_9154219107d154 307-308
+  s_7c8b13bff90366::t_b79f18c4501564 515
+  s_7c8b13bff90366::t_bbd095d75a9e70 569-585,594
+  s_7c8b13bff90366::t_622facfd354268 437-440
+  s_7c8b13bff90366::t_e97e755992cc67 675
+  s_7c8b13bff90366::t_0682eb9dbaf976 759-770
+specs/001-customer-ux-parity/tasks.md
+  s_7c8b13bff90366::t_aa8c3a63d88883 17-20,32-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "98a872696bf225b16928e42e287eaf9606eca824",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
