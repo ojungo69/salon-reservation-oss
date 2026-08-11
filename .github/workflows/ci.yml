@@ -27,12 +27,39 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.16.0
+          node-version-file: .nvmrc
           cache: npm
           package-manager-cache: false
 
+      # Node 24.16.0 bundles npm 11.13.0, which has no allowScripts allowlist at
+      # all. Corepack could pin npm, but it is experimental and gone by default
+      # in Node 25, and setup-node has no npm-version input, so an explicit
+      # global install is the durable way to run the documented npm.
+      # npm itself declares no install script, so --ignore-scripts changes
+      # nothing here beyond keeping the workflow uniformly script-free.
+      - name: Pin npm
+        run: npm install -g --ignore-scripts npm@12.0.2
+
+      - name: Report toolchain
+        run: node --version && npm --version
+
+      # --ignore-scripts skips every dependency install script uniformly, so no
+      # third-party install code runs in CI at all. It also short-circuits before
+      # the per-package allowScripts check, which is why the allowlist is
+      # verified by its own step below rather than as a side effect of the
+      # install. CI has never needed an install script to produce a green build.
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
+
+      # Makes the reviewed allowlist real rather than decorative: the listing is
+      # non-empty as soon as an installed package has an install script that no
+      # one has approved. `jq -e` rather than a string comparison because npm
+      # prints `{"error": …}` to stdout on any failure, where `.allowScripts`
+      # is null, `length` is 0, and a comparison against 0 would pass. It only
+      # covers what installs here, so an optional dependency excluded by `os`
+      # or `cpu` is left to `strict-allow-scripts` on the machine it installs on.
+      - name: Verify the install-script allowlist covers every installed script
+        run: npm install-scripts ls --json | jq -e '.allowScripts == []'
 
       - name: Verify
         run: npm run check

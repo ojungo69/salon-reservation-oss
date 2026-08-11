@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +67,11 @@ const fail = (message) => {
 };
 
 const readText = (path) => readFileSync(join(ROOT, path), "utf8");
+
+// For the config files compared byte for byte. Their content is what is being
+// pinned, and a contributor cloning on Windows with core.autocrlf=true would
+// otherwise fail the audit over line endings npm and nvm both ignore.
+const readLines = (path) => readText(path).replace(/\r\n/g, "\n");
 
 const parseArguments = () => {
   let publicTree = false;
@@ -206,8 +211,18 @@ const auditPackage = () => {
   if (packageJson.license !== AGPL || packageJson.private !== true) {
     fail("package must be private AGPL-3.0-only metadata");
   }
-  if (readText(".npmrc") !== "allow-scripts=\nstrict-allow-scripts=true\n") {
+  if (
+    readLines(".npmrc") !==
+    "allow-scripts=\nengine-strict=true\nstrict-allow-scripts=true\n"
+  ) {
     fail("strict install-script policy drift");
+  }
+  if (
+    packageJson.engines?.node !== ">=24.0.0" ||
+    packageJson.engines?.npm !== ">=12.0.0 <13.0.0" ||
+    readLines(".nvmrc") !== "24.16.0\n"
+  ) {
+    fail("supported toolchain drift");
   }
   if (packageJson.scripts?.audit !== "npm audit --audit-level=high") {
     fail("dependency audit command drift");
@@ -246,13 +261,114 @@ const auditPackage = () => {
   }
 };
 
+// Every active line of ci.yml, in order, with each `uses:` value reduced to the
+// action identity so Dependabot's SHA bumps stay quiet. Pinning the whole file
+// rather than the security-relevant subset is what makes the check hold: the
+// pinned npm is what enforces allowScripts at all, --ignore-scripts is what
+// keeps third-party install code from running, and the listing gate is what
+// makes the allowlist real rather than decorative — but a workflow may also not
+// grow a step that installs some other way, a job whose `permissions:` override
+// the read-only default, a `container:` that picks a different machine, or a
+// checkout that keeps its credentials. Only an exhaustive list says that.
+const WORKFLOW_LINES = [
+  "name: CI",
+  "on:",
+  "pull_request:",
+  "push:",
+  "branches:",
+  "- main",
+  "permissions:",
+  "contents: read",
+  "concurrency:",
+  "group: ci-${{ github.ref }}",
+  "cancel-in-progress: true",
+  "jobs:",
+  "check:",
+  "runs-on: ubuntu-latest",
+  "timeout-minutes: 15",
+  "steps:",
+  "- name: Check out source",
+  "uses: actions/checkout",
+  "with:",
+  "fetch-depth: 1",
+  "persist-credentials: false",
+  "- name: Set up Node.js",
+  "uses: actions/setup-node",
+  "with:",
+  "node-version-file: .nvmrc",
+  "cache: npm",
+  "package-manager-cache: false",
+  "- name: Pin npm",
+  "run: npm install -g --ignore-scripts npm@12.0.2",
+  "- name: Report toolchain",
+  "run: node --version && npm --version",
+  "- name: Install locked dependencies",
+  "run: npm ci --ignore-scripts",
+  "- name: Verify the install-script allowlist covers every installed script",
+  "run: npm install-scripts ls --json | jq -e '.allowScripts == []'",
+  "- name: Verify",
+  "run: npm run check",
+];
+const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
+
+// Space and tab are the only YAML whitespace, and a `#` is only a comment when
+// YAML whitespace precedes it. Both rules have to be followed exactly: cutting
+// or trimming on anything wider hides characters from the comparison that
+// Actions still executes. `run: npm run check # rest` is one command to
+// YAML and to the shell, and `String.prototype.trim` treats U+00A0 as space.
+const YAML_SPACE = " \t";
+const stripComment = (line) => {
+  const comment = line.search(/[ \t]#/);
+  const content = comment === -1 ? line : line.slice(0, comment);
+  let start = 0;
+  let end = content.length;
+  while (start < end && YAML_SPACE.includes(content[start])) start += 1;
+  while (end > start && YAML_SPACE.includes(content[end - 1])) end -= 1;
+  return content.slice(start, end);
+};
+
+// Indentation is dropped, so the list is what says where a line belongs: a
+// job-level `permissions:` block is two lines the reviewed workflow does not
+// have, wherever it sits.
 const auditWorkflow = () => {
-  const workflow = readText(".github/workflows/ci.yml");
-  if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
-  for (const match of workflow.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)) {
-    if (!/@[0-9a-f]{40}$/.test(match[1])) fail(`GitHub Action is not commit-pinned: ${match[1]}`);
+  // GitHub runs every file in this directory, so pinning one of them says
+  // nothing on its own: a second workflow is a second place to install, with
+  // its own permissions and its own triggers.
+  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort();
+  if (workflows.length !== 1 || workflows[0] !== "ci.yml") {
+    fail(`unreviewed workflow file: ${JSON.stringify(workflows)}`);
   }
-  if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
+  const workflow = readText(".github/workflows/ci.yml");
+  // Deliberately redundant with the list. This is the one key whose presence
+  // hands a write token to code from a fork, and it should fail by name however
+  // it is written.
+  if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
+  // Split the way YAML does. A lone CR is a line break to YAML and not to
+  // JavaScript, so `split("\n")` would read an injected step as the tail of a
+  // comment on the line above it. A leading byte-order mark is legal and
+  // changes nothing about what runs, so it is removed by name rather than by a
+  // whitespace rule wide enough to swallow more than it is.
+  const lines = workflow
+    .replace(/^\uFEFF/, "")
+    .split(/\r\n|\r|\n/)
+    .map(stripComment)
+    .filter((line) => line.length !== 0 && !line.startsWith("#"))
+    .map((line) => {
+      const action = WORKFLOW_ACTION.exec(line);
+      if (action === null) return line;
+      if (!/@[0-9a-f]{40}$/.test(action[2])) {
+        fail(`GitHub Action is not commit-pinned: ${action[2]}`);
+      }
+      return `${action[1] ?? ""}uses: ${action[2].slice(0, action[2].lastIndexOf("@"))}`;
+    });
+  for (let index = 0; index < Math.max(lines.length, WORKFLOW_LINES.length); index += 1) {
+    if (lines[index] !== WORKFLOW_LINES[index]) {
+      fail(
+        `workflow drift: ${JSON.stringify(lines[index] ?? null)} where the reviewed` +
+          ` workflow has ${JSON.stringify(WORKFLOW_LINES[index] ?? null)}`,
+      );
+    }
+  }
 };
 
 const auditAuthForms = () => {
