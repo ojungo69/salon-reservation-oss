@@ -156,6 +156,7 @@ test("a remembered booking can be cancelled and stays cancelled after reload", a
   await expect(page.locator("#result-reservation-id")).toHaveText(UUID);
   const reservationId = (await page.locator("#result-reservation-id").textContent()) ?? "";
   const managementKey = (await page.locator("#result-management-key").textContent()) ?? "";
+  expect(managementKey).not.toBe("");
   // fillJourney already set the date to openDateFrom; do not shift it again.
   const bookingDate = await page.locator("#booking-date").inputValue();
   await page.check("#remember-booking");

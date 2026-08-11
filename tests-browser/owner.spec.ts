@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import {
   OWNER_TOKEN,
@@ -11,31 +11,59 @@ import {
 
 const signIn = async (page: Page): Promise<void> => {
   await page.goto("/admin");
-  // Owner routes share a 10/minute limiter. Extra schedule specs can hit it mid-suite;
-  // wait out one period rather than failing the whole ordered run.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await page.fill("#owner-token", OWNER_TOKEN);
-    await page.click("#auth-form button[type=submit]");
-    const status = page.locator("#auth-status");
-    await expect(status).not.toContainText("認証しています", { timeout: 15_000 });
-    const text = (await status.textContent()) ?? "";
-    if (text.includes("認証しました")) return;
-    if (text.includes("操作が多すぎます") && attempt < 2) {
-      await page.waitForTimeout(65_000);
-      continue;
-    }
-    throw new Error(`owner sign-in failed: ${text}`);
-  }
+  // The page init fills the schedule date after its config fetch and ends in a
+  // logged-out reset; a submit that outruns it gets silently rolled back.
+  await expect(page.locator("#admin-date")).not.toHaveValue("", { timeout: 15_000 });
+  await page.fill("#owner-token", OWNER_TOKEN);
+  await page.click("#auth-form button[type=submit]");
+  await expect(page.locator("#auth-status")).toContainText("認証しました", { timeout: 20_000 });
+};
+
+// Owner routes are rate limited per route at 10/minute. The viewport specs
+// sign in four times in a burst right before the status-action test, so its
+// own sign-ins can land in a spent owner-schedule window. Retry the whole
+// attempt until the window frees instead of sleeping a fixed period; only
+// this caller carries the enlarged test budget the retries need.
+const signInWithRetry = async (page: Page): Promise<void> => {
+  await expect(async () => {
+    await signIn(page);
+  }).toPass({ intervals: [15_000], timeout: 180_000 });
+};
+
+// Opening the day board fires schedule and availability loads that draw on
+// the same spent buckets (the page swallows a rate-limited load and simply
+// leaves the board hidden), so the whole switch retries as one unit until
+// its observable milestone renders.
+const openDayBoardAt = async (page: Page, date: string, milestone: Locator): Promise<void> => {
+  await expect(async () => {
+    await page.click("#schedule-view-day");
+    await expect(page.locator("#day-board")).toBeVisible({ timeout: 3_000 });
+    await page.fill("#admin-date", date);
+    await page.locator("#admin-date").blur();
+    await milestone.waitFor({ state: "attached", timeout: 5_000 });
+  }).toPass({ intervals: [15_000], timeout: 180_000 });
+};
+
+// A date or service change refreshes availability asynchronously, and a
+// response landing after selectOption rebuilds the option list and resets
+// the selection to the placeholder. Select, verify the value stuck, and
+// reselect from the fresh list until the renders settle.
+const selectStartTime = async (page: Page, startTime?: string): Promise<void> => {
+  await expect(async () => {
+    const time = startTime
+      ? page.locator(`#owner-time option[value="${startTime}"]`)
+      : page.locator("#owner-time option:not([value=''])").first();
+    await time.waitFor({ state: "attached", timeout: 5_000 });
+    const value = (await time.getAttribute("value")) ?? "";
+    await page.selectOption("#owner-time", value);
+    await expect(page.locator("#owner-time")).toHaveValue(value, { timeout: 1_000 });
+  }).toPass({ timeout: 30_000 });
 };
 
 const chooseOpenStartTime = async (page: Page): Promise<void> => {
   await page.fill("#admin-date", openDateFrom(await page.locator("#admin-date").inputValue()));
-
-  // The placeholder option is always present, so only an option carrying a real
-  // start time means the date has availability.
-  const time = page.locator("#owner-time option:not([value=''])").first();
-  await time.waitFor({ state: "attached" });
-  await page.selectOption("#owner-time", (await time.getAttribute("value")) ?? "");
+  // Only an option carrying a real start time means the date has availability.
+  await selectStartTime(page);
 };
 
 test("an owner signs in, books on a customer's behalf and signs out", async ({ page }) => {
@@ -88,28 +116,22 @@ for (const viewport of VIEWPORTS) {
 }
 
 test("an owner status action updates the schedule and survives reload", async ({ page }) => {
-  // Cool-down (65s) plus two sign-ins exceeds the suite's default 60s budget.
+  // Rate-limit retries can spend well over the suite's default 60s budget.
   test.setTimeout(240_000);
   await stubTurnstile(page);
-  // Earlier owner specs already spend most of the 10/min owner-schedule budget.
-  // Without a cool-down the schedule reloads below fail closed on RATE_LIMITED.
-  await page.waitForTimeout(65_000);
-  await signIn(page);
-  // Sign-in defaults to the 7-day board; detail actions live on the day board only.
-  await page.click("#schedule-view-day");
-  await expect(page.locator("#day-board")).toBeVisible();
+  await signInWithRetry(page);
 
   // complete/no_show require an elapsed endAt, so a future booking cannot use them
   // without a production change. cancel is the live status action on an approved row.
   // 14:00 is free of the morning/late slots the other shared-day specs take.
   const date = openDateFrom(await page.locator("#admin-date").inputValue());
-  await page.fill("#admin-date", date);
-  await page.locator("#admin-date").blur();
-  // Service change reloads owner availability for the date above.
+  // Selecting the service ahead of the board switch lets the availability
+  // reload inside openDayBoardAt render the time options on any retry.
   await page.locator("#owner-service-list input").first().check();
   const time = page.locator('#owner-time option[value="14:00"]');
-  await time.waitFor({ state: "attached" });
-  await page.selectOption("#owner-time", "14:00");
+  // Sign-in defaults to the 7-day board; detail actions live on the day board only.
+  await openDayBoardAt(page, date, time);
+  await selectStartTime(page, "14:00");
   await page.fill("#owner-customer-name", "状態 検証");
   await page.fill("#owner-contact", "status-action@example.invalid");
   await page.click("#owner-create-form button[type=submit]");
@@ -129,12 +151,9 @@ test("an owner status action updates the schedule and survives reload", async ({
   await expect(row.locator(".badge")).toContainText("取消済み");
 
   await page.reload();
-  await signIn(page);
-  await page.click("#schedule-view-day");
-  await expect(page.locator("#day-board")).toBeVisible();
-  await page.fill("#admin-date", date);
-  await page.locator("#admin-date").blur();
+  await signInWithRetry(page);
   const rowAfterReload = page.locator("[data-reservation-list] article", { hasText: "状態 検証" });
+  await openDayBoardAt(page, date, rowAfterReload);
   await expect(rowAfterReload).toBeVisible();
   await expect(rowAfterReload.locator(".badge")).toContainText("取消済み");
   await rowAfterReload.getByRole("button", { name: "詳細を開く" }).click();
