@@ -722,7 +722,9 @@ describe("Worker HTTP trust boundary", () => {
       (siteverifyCall?.[1] as RequestInit | undefined)?.body as string,
     );
     expect(siteverifyBody).toMatchObject({ response: body.turnstileToken });
-    expect(siteverifyBody).not.toHaveProperty("idempotency_key");
+    expect(siteverifyBody.idempotency_key).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
 
     const replayResponse = await jsonRequest("/api/reservations", {
       ...body,
@@ -768,7 +770,11 @@ describe("Worker HTTP trust boundary", () => {
 
   it("does not let one validated Turnstile token authorize another command", async () => {
     await enableLiveInstallation();
-    const consumedTokens = new Set<string>();
+    // Models the real endpoint: a token is single-use, except that repeating the
+    // validation with the idempotency key it was first seen with replays the
+    // original verdict. A different command derives a different key, so reusing
+    // one token across commands is a genuine duplicate.
+    const consumedTokens = new Map<string, string | undefined>();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -776,16 +782,17 @@ describe("Worker HTTP trust boundary", () => {
           response: string;
           idempotency_key?: string;
         };
-        if (verification.idempotency_key !== undefined) {
-          return Response.json({ success: false });
-        }
-        if (consumedTokens.has(verification.response)) {
+        const firstKey = consumedTokens.get(verification.response);
+        if (
+          consumedTokens.has(verification.response) &&
+          firstKey !== verification.idempotency_key
+        ) {
           return Response.json({
             success: false,
             "error-codes": ["timeout-or-duplicate"],
           });
         }
-        consumedTokens.add(verification.response);
+        consumedTokens.set(verification.response, verification.idempotency_key);
         return Response.json({
           success: true,
           action: "reservation-create",
@@ -894,6 +901,198 @@ describe("Worker HTTP trust boundary", () => {
       receipts: 0,
       meta: 0,
     });
+  });
+
+  it("retries Siteverify only for provider failure and separates it from an invalid proof", async () => {
+    await enableLiveInstallation();
+    const { body } = await publicCreateBody();
+    const accepted = {
+      success: true,
+      action: "reservation-create",
+      hostname: "example.test",
+    };
+    const cases: Array<{
+      label: string;
+      reply: () => Response;
+      status: number;
+      calls: number;
+    }> = [
+      {
+        label: "invalid proof is terminal",
+        reply: () =>
+          Response.json({
+            success: false,
+            "error-codes": ["invalid-input-response"],
+          }),
+        status: 403,
+        calls: 1,
+      },
+      {
+        label: "a spent token is terminal",
+        reply: () =>
+          Response.json({
+            success: false,
+            "error-codes": ["timeout-or-duplicate"],
+          }),
+        status: 403,
+        calls: 1,
+      },
+      {
+        label: "internal-error is retried, then fails closed",
+        reply: () =>
+          Response.json({ success: false, "error-codes": ["internal-error"] }),
+        status: 503,
+        calls: 2,
+      },
+      {
+        label: "a provider 5xx is retried, then fails closed",
+        reply: () => Response.json({ success: false }, { status: 500 }),
+        status: 503,
+        calls: 2,
+      },
+      {
+        label: "a rejected request is not retried",
+        reply: () => Response.json({ success: false }, { status: 400 }),
+        status: 503,
+        calls: 1,
+      },
+      {
+        label: "a malformed body is not retried",
+        reply: () =>
+          new Response("not json", {
+            headers: { "content-type": "application/json" },
+          }),
+        status: 503,
+        calls: 1,
+      },
+      {
+        label: "an unexpected action is refused",
+        reply: () => Response.json({ ...accepted, action: "login" }),
+        status: 403,
+        calls: 1,
+      },
+      {
+        label: "an unexpected hostname is refused",
+        reply: () =>
+          Response.json({ ...accepted, hostname: "attacker.invalid" }),
+        status: 403,
+        calls: 1,
+      },
+    ];
+
+    for (const { label, reply, status, calls } of cases) {
+      const stub = vi.fn(async () => reply());
+      vi.stubGlobal("fetch", stub);
+      const response = await jsonRequest("/api/reservations", {
+        ...body,
+        commandId: crypto.randomUUID(),
+      });
+      expect(response.status, label).toBe(status);
+      expect(stub.mock.calls.length, label).toBe(calls);
+    }
+
+    expect(await persistedCounts()).toEqual({
+      state: 0,
+      details: 0,
+      receipts: 0,
+      meta: 0,
+    });
+  });
+
+  it("aborts a hanging Siteverify request and retries it with the same idempotency key", async () => {
+    await enableLiveInstallation();
+    const { body } = await publicCreateBody();
+    const keys: Array<string | undefined> = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        const verification = JSON.parse(init?.body as string) as {
+          idempotency_key?: string;
+        };
+        keys.push(verification.idempotency_key);
+        if (keys.length === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new Error("aborted")),
+            );
+          });
+        }
+        return Promise.resolve(
+          Response.json({
+            success: true,
+            action: "reservation-create",
+            hostname: "example.test",
+          }),
+        );
+      }),
+    );
+
+    expect((await jsonRequest("/api/reservations", body)).status).toBe(201);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+
+    const logged = warn.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(logged).toContain("turnstile.siteverify");
+    for (const secretValue of [
+      body.turnstileToken,
+      body.managementDigest,
+      body.customerName,
+      body.contact,
+      keys[0] as string,
+      "turnstile-test-secret",
+    ]) {
+      expect(logged).not.toContain(secretValue);
+    }
+  });
+
+  it("binds the Siteverify idempotency key to the exact proof, not just the command", async () => {
+    await enableLiveInstallation();
+    const { body } = await publicCreateBody();
+    const seen: Array<{ token: string; key?: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const verification = JSON.parse(init?.body as string) as {
+          response: string;
+          idempotency_key?: string;
+        };
+        seen.push({ token: verification.response, key: verification.idempotency_key });
+        return Response.json({
+          success: false,
+          "error-codes": ["invalid-input-response"],
+        });
+      }),
+    );
+
+    const commandId = crypto.randomUUID();
+    await jsonRequest("/api/reservations", { ...body, commandId });
+    await jsonRequest("/api/reservations", { ...body, commandId });
+    await jsonRequest("/api/reservations", {
+      ...body,
+      commandId,
+      turnstileToken: "turnstile-second-token",
+    });
+    await jsonRequest("/api/reservations", {
+      ...body,
+      commandId: crypto.randomUUID(),
+    });
+    await jsonRequest("/api/reservations", {
+      ...body,
+      commandId,
+      date: nextOpenJstDate(4),
+    });
+
+    expect(seen).toHaveLength(5);
+    // Same command, same token, same day replay the same validation.
+    expect(seen[0]?.key).toBe(seen[1]?.key);
+    // A fresh challenge under the same command is a different validation.
+    expect(seen[2]?.key).not.toBe(seen[0]?.key);
+    // A different command is a different validation.
+    expect(seen[3]?.key).not.toBe(seen[0]?.key);
+    // Each day is its own Durable Object and dedupes commandId only inside
+    // itself, so one solved challenge must not be replayable onto another day.
+    expect(seen[4]?.key).not.toBe(seen[0]?.key);
   });
 
   it("authenticates the owner and derives schedule, create, and transition authority server-side", async () => {
