@@ -1,0 +1,19 @@
+src/reservation-day.ts
+  s_9d6ddfd57aa340::t_57fe40f2a2dd7c 764-771,1931,1952,2366,2380
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "82d8fa81a9ac1a1a48b4bc000f8ac431408d5ff0",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
