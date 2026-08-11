@@ -1,0 +1,21 @@
+specs/001-customer-ux-parity/tasks.md
+  s_7c8b13bff90366::t_ba943bab405fe7 1-92
+specs/001-customer-ux-parity/plan.md
+  s_7c8b13bff90366::t_6d5472a089ea58 103,105-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b98d50e7acdcbdd95c5b413c67ebe53f32624e66",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
