@@ -1,0 +1,26 @@
+docs/UX-PARITY.md
+  s_7c8b13bff90366::t_2b3d7ebf72794d 39-40,44-58
+docs/PARITY.md
+  s_7c8b13bff90366::t_bbb9ffed625251 11
+  s_7c8b13bff90366::t_3a1ca12c417676 19
+public/styles.css
+  s_7c8b13bff90366::t_f2ec09d7bf6ab5 1307-1311
+specs/001-customer-ux-parity/tasks.md
+  s_7c8b13bff90366::t_8d721f9abe0175 82-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e0fc1c8384445468a6efa63c2242e235a3c21371",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
