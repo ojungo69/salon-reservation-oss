@@ -672,37 +672,162 @@ const scheduleQuery = (url: URL): { startDate: string; days: 1 | 7 } | null => {
     : null;
 };
 
+const SITEVERIFY_URL =
+  "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const SITEVERIFY_TIMEOUT_MS = 4_000;
+const SITEVERIFY_ATTEMPTS = 2;
+const SITEVERIFY_RETRY_DELAY_MS = 300;
+
+// The seven codes Cloudflare documents for this endpoint. Only internal-error is
+// described as retryable; the rest are terminal for the presented token and the
+// customer needs a fresh challenge. Anything outside this set is treated as
+// terminal and dropped from diagnostics rather than echoed back.
+const SITEVERIFY_ERROR_CODES = new Set([
+  "missing-input-secret",
+  "invalid-input-secret",
+  "missing-input-response",
+  "invalid-input-response",
+  "bad-request",
+  "timeout-or-duplicate",
+  "internal-error",
+]);
+
+type SiteverifyOutcome = "accepted" | "refused" | "unavailable";
+type SiteverifyAttempt = SiteverifyOutcome | "retry";
+
+// Siteverify's idempotency_key exists so one token's validation can be retried
+// safely: a token is otherwise single-use, and a second verification of it comes
+// back as timeout-or-duplicate. That makes the key a replay permit, so it has to
+// name the exact request being retried and nothing wider.
+//
+// Deriving it from commandId alone would be wrong twice over. The browser keeps
+// commandId when a submission is retried but calls turnstile.reset() first, so a
+// previous verdict could answer for a token it never saw. And a reservation's
+// idempotency is scoped to one day: the Durable Object is addressed by date and
+// only dedupes commandId inside it, so the same commandId on two dates is two
+// bookings. A key without the date would let one solved challenge be replayed
+// once per bookable date. Binding all three keeps "this exact submission,
+// retried" as the only case that shares a key.
+const siteverifyIdempotencyKey = async (
+  date: string,
+  commandId: string,
+  token: string,
+): Promise<string> => {
+  const digest = await sha256(`turnstile:${date}:${commandId}:${token}`);
+  const bytes = digest.slice(0, 16);
+  bytes[6] = ((bytes[6] as number) & 0x0f) | 0x80;
+  bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80;
+  const hex = [...bytes]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+// The only application log in the Worker. It carries a fixed outcome label, the
+// attempt count, and documented provider error codes: never the token, secret,
+// idempotency key, customer fields, or IP address.
+const logSiteverify = (
+  outcome: string,
+  attempts: number,
+  codes: string[] = [],
+): void => {
+  console.warn(
+    JSON.stringify({
+      event: "turnstile.siteverify",
+      outcome,
+      attempts,
+      ...(codes.length === 0 ? {} : { codes }),
+    }),
+  );
+};
+
+const siteverifyAttempt = async (
+  payload: string,
+  settings: InstallationSettings,
+  attempt: number,
+): Promise<SiteverifyAttempt> => {
+  let response: Response;
+  try {
+    response = await fetch(SITEVERIFY_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+      signal: AbortSignal.timeout(SITEVERIFY_TIMEOUT_MS),
+    });
+  } catch {
+    logSiteverify("unreachable", attempt);
+    return "retry";
+  }
+  if (response.status === 429 || response.status >= 500) {
+    logSiteverify("provider_status", attempt);
+    return "retry";
+  }
+  if (!response.ok) {
+    logSiteverify("rejected_request", attempt);
+    return "unavailable";
+  }
+  let result: unknown;
+  try {
+    result = await response.json();
+  } catch {
+    logSiteverify("malformed_response", attempt);
+    return "unavailable";
+  }
+  if (!isObject(result) || typeof result.success !== "boolean") {
+    logSiteverify("malformed_response", attempt);
+    return "unavailable";
+  }
+  if (!result.success) {
+    const raw = result["error-codes"];
+    const codes = Array.isArray(raw)
+      ? raw.filter(
+          (code): code is string =>
+            typeof code === "string" && SITEVERIFY_ERROR_CODES.has(code),
+        )
+      : [];
+    if (codes.includes("internal-error")) {
+      logSiteverify("provider_error", attempt, codes);
+      return "retry";
+    }
+    logSiteverify("refused", attempt, codes);
+    return "refused";
+  }
+  if (
+    result.action !== "reservation-create" ||
+    result.hostname !== settings.allowedHostname
+  ) {
+    logSiteverify("unexpected_proof", attempt);
+    return "refused";
+  }
+  return "accepted";
+};
+
 const verifyTurnstile = async (
   request: Request,
   env: AppEnv,
   settings: InstallationSettings,
   token: string,
-): Promise<"accepted" | "refused" | "unavailable"> => {
+  date: string,
+  commandId: string,
+): Promise<SiteverifyOutcome> => {
   const turnstileSecret = secret(env, "TURNSTILE_SECRET");
   if (turnstileSecret === null || turnstileSecret.length === 0) return "unavailable";
-  const body: Record<string, string> = { secret: turnstileSecret, response: token };
+  const body: Record<string, string> = {
+    secret: turnstileSecret,
+    response: token,
+    idempotency_key: await siteverifyIdempotencyKey(date, commandId, token),
+  };
   const remoteip = request.headers.get("cf-connecting-ip");
   if (remoteip !== null) body.remoteip = remoteip;
-  try {
-    const response = await fetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!response.ok) return "unavailable";
-    const result: unknown = await response.json();
-    return isObject(result) &&
-      result.success === true &&
-      result.action === "reservation-create" &&
-      result.hostname === settings.allowedHostname
-      ? "accepted"
-      : "refused";
-  } catch {
-    return "unavailable";
+  const payload = JSON.stringify(body);
+  for (let attempt = 1; attempt <= SITEVERIFY_ATTEMPTS; attempt += 1) {
+    const outcome = await siteverifyAttempt(payload, settings, attempt);
+    if (outcome !== "retry") return outcome;
+    if (attempt < SITEVERIFY_ATTEMPTS) {
+      await scheduler.wait(SITEVERIFY_RETRY_DELAY_MS);
+    }
   }
+  return "unavailable";
 };
 
 const allowedActions = (status: string): string[] =>
@@ -955,6 +1080,8 @@ const handlePublicCreate = async (
     env,
     context.settings,
     turnstileToken,
+    input.date,
+    dayInput.commandId,
   );
   if (verification === "refused") return errorResponse(403, "PROTECTION_REFUSED");
   if (verification === "unavailable") {
