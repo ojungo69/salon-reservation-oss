@@ -175,6 +175,8 @@
               <div class="field-row"><label for="setup-interval">開始時間の間隔（分）</label><input id="setup-interval" type="number" min="15" max="240" data-setup-interval required></div>
               <div class="field-row"><label for="setup-horizon">受付可能な日数</label><input id="setup-horizon" type="number" min="1" max="90" data-setup-horizon required></div>
               <div class="field-row"><label for="setup-retention">保存期間（日）</label><input id="setup-retention" type="number" min="1" max="365" data-setup-retention required></div>
+              <div class="field-row"><label for="setup-pending-expiry">承認待ちの有効期限（分）</label><input id="setup-pending-expiry" type="number" min="15" max="10080" data-setup-pending-expiry required aria-describedby="setup-pending-expiry-help"></div>
+              <p class="helper" id="setup-pending-expiry-help">お客様が申し込んでから、この時間までに承認も却下もされなかった予約は自動的に期限切れになり、押さえていた枠が空きに戻ります。15分から7日（10080分）まで設定できます。</p>
               <div class="field-row"><label for="setup-theme">表示テーマ</label><select id="setup-theme" data-setup-theme><option value="ink">インク</option><option value="forest">フォレスト</option><option value="clay">クレイ</option></select></div>
             </div>
             <p class="helper">日付ごとの臨時休業や担当・設備ごとの休止時間は、保存後に<a href="/admin.html#closures">運営者画面の休業設定</a>から管理できます。</p>

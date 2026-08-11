@@ -19,6 +19,11 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 - A branch ruleset protecting `main` (pull request required, `check` must pass, branch must be up to
   date, review conversations must be resolved, force pushes and deletion blocked, linear history),
   and a tag ruleset protecting `v*` tags against deletion and rewriting.
+- A lifetime for bookings awaiting approval, configurable in the setup screen between 15 minutes and
+  7 days and defaulting to 24 hours. A request that is neither approved nor rejected within it
+  becomes `expired`, and the time it was holding goes back on sale — until now an abandoned request
+  blocked its slot until the day itself was purged. The customer's status page and the operator's
+  schedule both show the deadline while a request is still waiting.
 
 - `.nvmrc` pinning the exact Node.js version, which CI now reads as its single source of truth.
 - A CI assertion that fails when an installed package has an install script outside the

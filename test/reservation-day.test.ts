@@ -1223,3 +1223,262 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
     });
   });
 });
+
+describe("T012 pending expiry", () => {
+  const EXPIRY_MINUTES = 15;
+  const START = Date.parse("2025-01-14T15:00:00.000Z");
+  const DEADLINE = START + EXPIRY_MINUTES * 60_000;
+  const expiring: TargetDayConfig = { ...day, pendingExpiryMinutes: EXPIRY_MINUTES };
+
+  const managementKey = "k".repeat(43);
+  const digestOf = async (value: string): Promise<string> =>
+    [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+
+  beforeEach(() => {
+    // The outer hook mocks Date.now only, which leaves `new Date()` -- the
+    // clock that writes created_at -- on the real time. The deadline compares
+    // the two, so both have to come from the same fake clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(START);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const statusOf = (result: unknown): string =>
+    typeof result === "object" && result !== null && "status" in result
+      ? String(result.status)
+      : "";
+
+  it("releases the slot an abandoned pending booking was holding", async () => {
+    const stub = stubFor();
+    const created = await stub.createPublic(expiring, createInput(expiring));
+    const reservationId = reservationIdOf(created);
+    expect(statusOf(created)).toBe("pending");
+    expect(
+      startsFor(await stub.availability(expiring, ["service-cut", "service-color"]), "resource-chair-a"),
+    ).not.toContain("09:00");
+
+    vi.setSystemTime(DEADLINE);
+
+    expect(
+      startsFor(await stub.availability(expiring, ["service-cut", "service-color"]), "resource-chair-a"),
+    ).toContain("09:00");
+    expect(await stub.listOwner(expiring)).toMatchObject({
+      ok: true,
+      reservations: [{ reservationId, status: "expired", outcomeAt: new Date(DEADLINE).toISOString() }],
+    });
+    // The slot is genuinely free, not merely displayed as free.
+    expect(
+      await stub.createPublic(expiring, createInput(expiring, { startTime: "09:00" })),
+    ).toMatchObject({ ok: true, status: "pending" });
+  });
+
+  it("expires every booking that is due, and leaves the rest alone", async () => {
+    const stub = stubFor();
+    const first = reservationIdOf(await stub.createPublic(expiring, createInput(expiring)));
+    const second = reservationIdOf(
+      await stub.createPublic(
+        expiring,
+        createInput(expiring, { resourceId: "resource-chair-b", serviceIds: ["service-cut"] }),
+      ),
+    );
+
+    vi.setSystemTime(START + 10 * 60_000);
+    const late = reservationIdOf(
+      await stub.createPublic(
+        expiring,
+        createInput(expiring, { startTime: "11:00", serviceIds: ["service-cut"] }),
+      ),
+    );
+    const approved = reservationIdOf(
+      await stub.createOwner(
+        expiring,
+        createInput(expiring, { startTime: "12:00", serviceIds: ["service-cut"] }),
+      ),
+    );
+
+    vi.setSystemTime(DEADLINE);
+    const projection = await stub.listOwner(expiring);
+    const byId = new Map(
+      (projection as { reservations: Array<{ reservationId: string; status: string }> }).reservations
+        .map((reservation) => [reservation.reservationId, reservation.status] as const),
+    );
+    expect(byId.get(first)).toBe("expired");
+    expect(byId.get(second)).toBe("expired");
+    expect(byId.get(late)).toBe("pending");
+    expect(byId.get(approved)).toBe("approved");
+  });
+
+  it("expires exactly at the deadline millisecond and not before it", async () => {
+    const stub = stubFor();
+    await stub.createPublic(expiring, createInput(expiring));
+
+    vi.setSystemTime(DEADLINE - 1);
+    expect(await stub.listOwner(expiring)).toMatchObject({
+      ok: true,
+      reservations: [{ status: "pending", expiresAt: new Date(DEADLINE).toISOString() }],
+    });
+
+    vi.setSystemTime(DEADLINE);
+    expect(await stub.listOwner(expiring)).toMatchObject({
+      ok: true,
+      reservations: [{ status: "expired" }],
+    });
+  });
+
+  it("resolves approve, reject and cancel racing the deadline to one outcome", async () => {
+    for (const action of ["approve", "reject", "cancel"] as const) {
+      const config = configFor("2025-01-15");
+      const target: TargetDayConfig = { ...config, pendingExpiryMinutes: EXPIRY_MINUTES };
+      const stub = stubFor(target);
+      vi.setSystemTime(START);
+      const reservationId = reservationIdOf(
+        await stub.createPublic(target, createInput(target)),
+      );
+
+      vi.setSystemTime(DEADLINE);
+      expect(
+        await callTarget(stub, "transitionOwner", target, {
+          commandId: crypto.randomUUID(),
+          date: target.date,
+          reservationId,
+          action,
+          ...(action === "reject" ? { reason: "架空の理由" } : {}),
+        }),
+      ).toEqual({ ok: false, code: "NOT_FOUND_OR_UNAUTHORIZED" });
+      expect(await stub.listOwner(target)).toMatchObject({
+        ok: true,
+        reservations: [{ reservationId, status: "expired" }],
+      });
+      await reset();
+    }
+  });
+
+  it("refuses a customer cancellation after the deadline and keeps the expiry", async () => {
+    const stub = stubFor();
+    const reservationId = reservationIdOf(
+      await stub.createPublic(
+        expiring,
+        createInput(expiring, { managementDigest: await digestOf(managementKey) }),
+      ),
+    );
+
+    vi.setSystemTime(DEADLINE);
+    expect(
+      await stub.cancelPublic(expiring, {
+        commandId: crypto.randomUUID(),
+        date: expiring.date,
+        reservationId,
+        managementKey,
+      }),
+    ).toEqual({ ok: false, code: "NOT_FOUND_OR_UNAUTHORIZED" });
+    expect(await stub.statusPublic(expiring, {
+      date: expiring.date,
+      reservationId,
+      managementKey,
+    })).toMatchObject({ ok: true, status: "expired", allowedActions: [] });
+  });
+
+  it("keeps a replayed create and a replayed cancel answering as they first did", async () => {
+    const stub = stubFor();
+    const createCommandId = crypto.randomUUID();
+    const input = createInput(expiring, {
+      commandId: createCommandId,
+      managementDigest: await digestOf(managementKey),
+    });
+    const created = await stub.createPublic(expiring, input);
+    expect(statusOf(created)).toBe("pending");
+
+    const other = reservationIdOf(
+      await stub.createPublic(
+        expiring,
+        createInput(expiring, {
+          resourceId: "resource-chair-b",
+          serviceIds: ["service-cut"],
+          managementDigest: await digestOf(managementKey),
+        }),
+      ),
+    );
+    const cancelCommandId = crypto.randomUUID();
+    const cancelled = await stub.cancelPublic(expiring, {
+      commandId: cancelCommandId,
+      date: expiring.date,
+      reservationId: other,
+      managementKey,
+    });
+    expect(statusOf(cancelled)).toBe("cancelled");
+
+    vi.setSystemTime(DEADLINE);
+    expect(await stub.createPublic(expiring, input)).toEqual({
+      ...(created as Record<string, unknown>),
+      replayed: true,
+    });
+    expect(
+      await stub.cancelPublic(expiring, {
+        commandId: cancelCommandId,
+        date: expiring.date,
+        reservationId: other,
+        managementKey,
+      }),
+    ).toEqual({ ...(cancelled as Record<string, unknown>), replayed: true });
+  });
+
+  it("keeps the expiry across a restart of the object", async () => {
+    const stub = stubFor();
+    const reservationId = reservationIdOf(await stub.createPublic(expiring, createInput(expiring)));
+
+    vi.setSystemTime(DEADLINE);
+    expect(await stub.listOwner(expiring)).toMatchObject({
+      ok: true,
+      reservations: [{ status: "expired" }],
+    });
+
+    // A second entry into the object reads the row back rather than recomputing
+    // it, so a status that only existed in memory would show up here.
+    const reentered = stubFor();
+    expect(await reentered.listOwner(expiring)).toMatchObject({
+      ok: true,
+      reservations: [{ reservationId, status: "expired" }],
+    });
+    const detail = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{ status: string; created_at: string; outcome_at: string | null }>(
+          "SELECT status, created_at, outcome_at FROM booking_details WHERE reservation_id = ?",
+          reservationId,
+        )
+        .toArray()[0],
+    );
+    expect(detail).toEqual({
+      status: "expired",
+      created_at: new Date(START).toISOString(),
+      outcome_at: new Date(DEADLINE).toISOString(),
+    });
+  });
+
+  it("never expires anything when the lifetime is not configured", async () => {
+    const stub = stubFor();
+    const reservationId = reservationIdOf(await stub.createPublic(day, createInput()));
+
+    vi.setSystemTime(START + 400 * 24 * 60 * 60_000);
+    expect(await stub.listOwner(day)).toMatchObject({
+      ok: true,
+      reservations: [{ reservationId, status: "pending" }],
+    });
+    expect(await stub.listOwner(day)).not.toMatchObject({
+      reservations: [{ expiresAt: expect.anything() }],
+    });
+  });
+
+  it("refuses a lifetime outside the supported range", async () => {
+    const stub = stubFor();
+    for (const pendingExpiryMinutes of [14, 10081, 0, -15, 1.5]) {
+      expect(
+        await stub.availability({ ...expiring, pendingExpiryMinutes }, ["service-cut"]),
+      ).toEqual({ ok: false, code: "CONFIGURATION_CONFLICT" });
+    }
+  });
+});

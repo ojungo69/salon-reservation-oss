@@ -370,6 +370,7 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     closesAt: settings.closesAt,
     startIntervalMinutes: settings.startIntervalMinutes,
     consentVersion: settings.consentVersion,
+    pendingExpiryMinutes: settings.pendingExpiryMinutes,
   };
 };
 

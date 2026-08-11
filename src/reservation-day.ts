@@ -54,6 +54,12 @@ export type DayConfig = {
   closesAt?: string;
   startIntervalMinutes?: number;
   consentVersion?: string;
+  // How long a booking may stay pending before it expires. Absent means no
+  // expiry, which is what every caller got before the setting existed, and it
+  // is deliberately not part of scheduleJson: a day pinned before the setting
+  // changed must not start failing with CONFIGURATION_CONFLICT because an
+  // operator shortened the lifetime.
+  pendingExpiryMinutes?: number;
 };
 
 type TargetDayConfig = DayConfig & {
@@ -135,6 +141,7 @@ export type BookingStatus =
   | "rejected"
   | "cancelled"
   | "completed"
+  | "expired"
   | "no_show";
 
 export type BookingSnapshot = {
@@ -197,6 +204,7 @@ export type DayPublicStatusSuccess = {
   snapshot: BookingSnapshot;
   rejectionReason: string | null;
   outcomeAt: string | null;
+  expiresAt?: string;
   allowedActions: Array<"cancel">;
 };
 
@@ -235,6 +243,7 @@ export type DayOwnerListResult =
         snapshot?: BookingSnapshot;
         rejectionReason?: string | null;
         outcomeAt?: string | null;
+        expiresAt?: string;
         rescheduleHistory?: Array<{
           from: { resourceId: string; startTime: string };
           to: { resourceId: string; startTime: string };
@@ -442,7 +451,11 @@ const isDayConfig = (config: DayConfig): boolean => {
     config.slotMinutes >= 15 &&
     config.slotMinutes <= 600 &&
     Number.isSafeInteger(config.purgeAt) &&
-    config.purgeAt > 0;
+    config.purgeAt > 0 &&
+    (config.pendingExpiryMinutes === undefined ||
+      (Number.isSafeInteger(config.pendingExpiryMinutes) &&
+        config.pendingExpiryMinutes >= 15 &&
+        config.pendingExpiryMinutes <= 10080));
   if (!base) return false;
   if (!hasTargetField(config)) return true;
   return isTargetDayConfig(config);
@@ -736,6 +749,18 @@ const isElapsedStart = (date: string, startTime: string): boolean => {
   return date < today || (date === today && startTime <= now.slice(11, 16));
 };
 
+// A pending booking expires this long after it was created. The deadline is
+// derived rather than stored: booking_details is created with
+// CREATE TABLE IF NOT EXISTS, so a new column would never reach a Durable
+// Object that already exists, and the snapshot is validated against an exact
+// key list. Deriving it also gives the setting the behaviour an operator
+// expects — shortening the lifetime moves the deadline of bookings that are
+// still pending, rather than only applying to future ones.
+const pendingDeadline = (config: DayConfig, createdAt: string): number | null =>
+  config.pendingExpiryMinutes === undefined
+    ? null
+    : Date.parse(createdAt) + config.pendingExpiryMinutes * 60_000;
+
 const isStoredSuccess = (value: unknown): value is StoredSuccess => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
@@ -759,6 +784,7 @@ const isStoredSuccess = (value: unknown): value is StoredSuccess => {
         "rejected",
         "cancelled",
         "completed",
+        "expired",
         "no_show",
       ].includes(candidate.status as string) &&
       (candidate.rejectionReason === undefined ||
@@ -1020,6 +1046,7 @@ export class ReservationDay extends DurableObject<Env> {
       "rejected",
       "cancelled",
       "completed",
+      "expired",
       "no_show",
     ];
     if (
@@ -1123,6 +1150,79 @@ export class ReservationDay extends DurableObject<Env> {
           removedAt: row.removed_at,
         };
       });
+  }
+
+  // Only the two columns the deadline needs, so the common case where nothing
+  // is due costs one query and no row validation.
+  #readPendingDeadlines(config: DayConfig): Array<{
+    reservationId: string;
+    deadline: number;
+  }> {
+    if (config.pendingExpiryMinutes === undefined) return [];
+    return this.ctx.storage.sql
+      .exec<{ reservation_id: string; created_at: string }>(
+        "SELECT reservation_id, created_at FROM booking_details WHERE status = 'pending'",
+      )
+      .toArray()
+      .map((row) => {
+        const deadline =
+          isCanonicalTimestamp(row.created_at) === true
+            ? pendingDeadline(config, row.created_at)
+            : null;
+        if (!UUID.test(row.reservation_id) || deadline === null) {
+          throw new Error("corrupt booking detail");
+        }
+        return { reservationId: row.reservation_id, deadline };
+      });
+  }
+
+  // Expiry is applied when the object is next used rather than on a timer. A
+  // Durable Object has exactly one alarm and it already carries the retention
+  // purge, and every path that can observe or change a booking calls this
+  // first, inside the same transaction it makes its decision in. A lazily
+  // expired booking is therefore indistinguishable from an eagerly expired one
+  // to anything outside the object, and an approve, reject or cancel that
+  // arrives after the deadline loses to the expiry deterministically.
+  #expire(config: DayConfig): void {
+    const now = Date.now();
+    const due = this.#readPendingDeadlines(config).filter(
+      ({ deadline }) => deadline <= now,
+    );
+    if (due.length === 0) return;
+    let { state } = this.#readState();
+    const outcomeAt = new Date().toISOString();
+    for (const { reservationId } of due) {
+      const detail = this.#readDetail(reservationId);
+      if (detail === null || detail.status !== "pending") {
+        throw new Error("missing expiring booking");
+      }
+      const cancelled = executeReservationCommand(state, {
+        version: 1,
+        commandId: crypto.randomUUID(),
+        expectedRevision: state.revision,
+        actor: {
+          subject: "actor-system-expiry",
+          capabilities: ["reservation:cancel"],
+        },
+        type: "reservation.cancel",
+        payload: { reservationId },
+      });
+      // Releasing the interval in the kernel is the point: a status label on
+      // its own would leak the capacity the abandoned booking is holding. A
+      // pending booking whose kernel reservation is not active is corruption
+      // rather than a race, because nothing can cancel one without writing
+      // its detail row in the same transaction.
+      if (!cancelled.ok) throw new Error("expiring booking could not be released");
+      state = cancelled.state;
+      this.#writeDetail({
+        ...detail,
+        status: "expired",
+        rejectionReason: null,
+        outcomeAt,
+        updatedAt: outcomeAt,
+      });
+    }
+    this.#writeState(state);
   }
 
   #writeState(state: ReservationState): void {
@@ -1248,6 +1348,7 @@ export class ReservationDay extends DurableObject<Env> {
       let closures: Closure[] = [];
       let persisted = false;
       if (this.#hasSchema()) {
+        this.ctx.storage.transactionSync(() => this.#expire(config));
         meta = this.#readMeta();
         ({ state, persisted } = this.#readState());
         closures = this.#readClosures();
@@ -1405,6 +1506,7 @@ export class ReservationDay extends DurableObject<Env> {
       if (allowFresh) await this.#prepareStorage(config);
       else if (!this.#hasSchema()) return failure("UNAVAILABLE");
       return this.ctx.storage.transactionSync(() => {
+        this.#expire(config);
         const meta = this.#readMeta();
         const { state, persisted } = this.#readState();
         const effective = this.#effectiveConfig(config, meta, persisted);
@@ -1597,6 +1699,7 @@ export class ReservationDay extends DurableObject<Env> {
     try {
       if (!this.#hasSchema()) return failure("NOT_FOUND_OR_UNAUTHORIZED");
       return this.ctx.storage.transactionSync(() => {
+        this.#expire(config);
         const meta = this.#readMeta();
         const { state, persisted } = this.#readState();
         const effective = this.#effectiveConfig(config, meta, persisted);
@@ -1788,6 +1891,7 @@ export class ReservationDay extends DurableObject<Env> {
     const presentedDigest = await sha256Hex(input.managementKey);
     try {
       if (!this.#hasSchema()) return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      this.ctx.storage.transactionSync(() => this.#expire(config));
       const meta = this.#readMeta();
       const { state, persisted } = this.#readState();
       const effective = this.#effectiveConfig(config, meta, persisted);
@@ -1816,10 +1920,16 @@ export class ReservationDay extends DurableObject<Env> {
         ({ id }) => id === reservation.resourceId,
       );
       if (resource === undefined) return failure("TEMPORARILY_UNAVAILABLE");
+      // The sweep above already expired everything that was due, so a booking
+      // still pending here has a deadline in the future.
+      const deadline =
+        detail.status === "pending" ? pendingDeadline(config, detail.createdAt) : null;
+      const expiresAt = deadline === null ? null : new Date(deadline).toISOString();
 
       const coreShouldBeActive = ![
         "rejected",
         "cancelled",
+        "expired",
       ].includes(detail.status);
       if ((reservation.status === "active") !== coreShouldBeActive) {
         return failure("TEMPORARILY_UNAVAILABLE");
@@ -1835,6 +1945,7 @@ export class ReservationDay extends DurableObject<Env> {
         snapshot: detail.snapshot,
         rejectionReason: detail.rejectionReason,
         outcomeAt: detail.outcomeAt,
+        ...(expiresAt === null ? {} : { expiresAt }),
         allowedActions:
           detail.status === "pending" || detail.status === "approved"
             ? ["cancel"]
@@ -1871,6 +1982,7 @@ export class ReservationDay extends DurableObject<Env> {
     try {
       if (!this.#hasSchema()) return failure("NOT_FOUND_OR_UNAUTHORIZED");
       return this.ctx.storage.transactionSync(() => {
+        this.#expire(config);
         const meta = this.#readMeta();
         const { state, persisted } = this.#readState();
         const effective = this.#effectiveConfig(config, meta, persisted);
@@ -2020,6 +2132,7 @@ export class ReservationDay extends DurableObject<Env> {
       if (allowFresh) await this.#prepareStorage(config);
       else if (!this.#hasSchema()) return failure("UNAVAILABLE");
       return this.ctx.storage.transactionSync(() => {
+        this.#expire(config);
         const meta = this.#readMeta();
         const { state, persisted } = this.#readState();
         const effective = this.#effectiveConfig(config, meta, persisted);
@@ -2139,6 +2252,7 @@ export class ReservationDay extends DurableObject<Env> {
     try {
       if (!this.#hasSchema()) return failure("NOT_FOUND_OR_UNAUTHORIZED");
       return this.ctx.storage.transactionSync(() => {
+        this.#expire(config);
         const meta = this.#readMeta();
         const { persisted } = this.#readState();
         const effective = this.#effectiveConfig(config, meta, persisted);
@@ -2211,6 +2325,7 @@ export class ReservationDay extends DurableObject<Env> {
             }
           : { ok: true, reservations: [] };
       }
+      this.ctx.storage.transactionSync(() => this.#expire(config));
       const meta = this.#readMeta();
       const { state, persisted } = this.#readState();
       const effective = this.#effectiveConfig(config, meta, persisted);
@@ -2244,6 +2359,9 @@ export class ReservationDay extends DurableObject<Env> {
             ? effective.resources.find(({ id }) => id === reservation.resourceId)
             : undefined;
           if (target && resource === undefined) throw new Error("missing resource");
+          const deadline =
+            detail.status === "pending" ? pendingDeadline(config, detail.createdAt) : null;
+          const expiresAt = deadline === null ? null : new Date(deadline).toISOString();
           return {
             reservationId: reservation.id,
             resourceId: reservation.resourceId,
@@ -2257,6 +2375,7 @@ export class ReservationDay extends DurableObject<Env> {
               ? {}
               : { rejectionReason: detail.rejectionReason }),
             ...(detail.outcomeAt === null ? {} : { outcomeAt: detail.outcomeAt }),
+            ...(expiresAt === null ? {} : { expiresAt }),
             ...(detail.rescheduleHistory.length === 0
               ? {}
               : { rescheduleHistory: detail.rescheduleHistory }),
