@@ -68,6 +68,11 @@ const fail = (message) => {
 
 const readText = (path) => readFileSync(join(ROOT, path), "utf8");
 
+// For the config files compared byte for byte. Their content is what is being
+// pinned, and a contributor cloning on Windows with core.autocrlf=true would
+// otherwise fail the audit over line endings npm and nvm both ignore.
+const readLines = (path) => readText(path).replace(/\r\n/g, "\n");
+
 const parseArguments = () => {
   let publicTree = false;
   let denylist = null;
@@ -207,7 +212,7 @@ const auditPackage = () => {
     fail("package must be private AGPL-3.0-only metadata");
   }
   if (
-    readText(".npmrc") !==
+    readLines(".npmrc") !==
     "allow-scripts=\nengine-strict=true\nstrict-allow-scripts=true\n"
   ) {
     fail("strict install-script policy drift");
@@ -215,7 +220,7 @@ const auditPackage = () => {
   if (
     packageJson.engines?.node !== ">=24.0.0" ||
     packageJson.engines?.npm !== ">=12.0.0 <13.0.0" ||
-    readText(".nvmrc") !== "24.16.0\n"
+    readLines(".nvmrc") !== "24.16.0\n"
   ) {
     fail("supported toolchain drift");
   }

@@ -169,7 +169,7 @@ what says where a line belongs, so a job-level `permissions:` block is two lines
 workflow does not have, wherever it sits.
 
 Both of those follow YAML's rule that space and tab are the only whitespace, and that a `#` starts a
-comment only when whitespace precedes it. Anything wider would hide characters from the comparison
+comment when whitespace precedes it or when it is the first character on the line. Anything wider would hide characters from the comparison
 that Actions still executes — `run: npm run check<U+00A0># rest` is one command to YAML and to the
 shell, but `String.prototype.trim` and `\s` both treat U+00A0 as space. A byte-order mark and CRLF
 endings are removed by name instead, because they are legal and change nothing about what runs.
