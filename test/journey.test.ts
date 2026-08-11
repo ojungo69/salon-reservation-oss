@@ -473,18 +473,20 @@ test("filters the service catalog by folded label and category text", () => {
 test("totals the compact selection and withholds a partial price sum", () => {
   const summarizeServiceSelection = journey("summarizeServiceSelection");
   const services = [
-    { id: "cut", label: "カット", durationMinutes: 60, priceYen: 5_000 },
+    { id: "cut", label: "カット", durationMinutes: 60, cleanupMinutes: 15, priceYen: 5_000 },
     { id: "color", label: "カラー", durationMinutes: 90, priceYen: 8_000 },
     { id: "spa", label: "スパ", durationMinutes: 30, priceYen: null },
   ];
 
+  // Cleanup counts toward the estimate: the server reserves it, and the
+  // details card will report the same occupied total.
   assert.deepEqual(summarizeServiceSelection(services, ["cut", "color"]), {
     selected: [
       { id: "cut", label: "カット" },
       { id: "color", label: "カラー" },
     ],
     count: 2,
-    durationMinutes: 150,
+    durationMinutes: 165,
     priceYen: 13_000,
   });
   // One unlisted price poisons the sum: showing 13,000円 for a set that also

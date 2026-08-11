@@ -673,6 +673,7 @@ const startCustomer = async () => {
         // A response landing while the details step is open must not leave the
         // card showing the previous selection's services or totals.
         if (journeyStep === "details") renderSummaryCard();
+        else if (journeyStep === "review") renderReview();
       }
       setPendingMode();
     }
@@ -908,10 +909,11 @@ const startCustomer = async () => {
       busy = true;
       updateActions();
       let needsAcknowledgement = false;
+      const lookupDate = dateInput.value;
       try {
         const candidates = duplicateCheckCandidates(
           readOwnedRecords(),
-          dateInput.value,
+          lookupDate,
           Date.now(),
         );
         const statuses = await Promise.all(
@@ -939,10 +941,16 @@ const startCustomer = async () => {
         busy = false;
         updateActions();
       }
-      // The lookup can outlast the review screen: if the visitor went back to
-      // edit while it ran, drop this gesture instead of submitting or warning
-      // about values they are no longer confirming.
-      if (journeyStep !== "review") return;
+      // The lookup can outlast the review screen: if the visitor left it, or
+      // came back through history with a different date, drop this gesture
+      // instead of submitting or warning about values it never checked.
+      if (journeyStep !== "review" || dateInput.value !== lookupDate) return;
+      // The anti-bot token can expire while the lookup runs; a submission
+      // without it is doomed server-side, so ask for the check again instead.
+      if (!turnstileToken) {
+        setStatus(status, "自動送信防止の確認を完了してください。", "error");
+        return;
+      }
       if (needsAcknowledgement) {
         // Esc closes without setting a value; clear the previous verdict so a
         // stale "confirm" cannot replay as an acknowledgement.

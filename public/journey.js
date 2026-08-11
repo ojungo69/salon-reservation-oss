@@ -333,8 +333,13 @@ export const summarizeServiceSelection = (services, selectedIds) => {
   return {
     selected: selected.map(({ id, label }) => ({ id, label })),
     count: selected.length,
+    // Mirror what the server reserves (service time plus cleanup) so the
+    // estimate agrees with the occupied total shown on the details card.
     durationMinutes: selected.reduce(
-      (sum, { durationMinutes }) => sum + (isInteger(durationMinutes) ? durationMinutes : 0),
+      (sum, { durationMinutes, cleanupMinutes }) =>
+        sum +
+        (isInteger(durationMinutes) ? durationMinutes : 0) +
+        (isInteger(cleanupMinutes) ? cleanupMinutes : 0),
       0,
     ),
     priceYen:
