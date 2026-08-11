@@ -1,0 +1,21 @@
+CONTRIBUTING.md
+  s_9d6ddfd57aa340::t_ec9d18137d34e1 172
+scripts/release-audit.mjs
+  s_9d6ddfd57aa340::t_d78279f70a7a26 71-75,215,223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "2e17f6a8cb252cfaf4b6245e6244d93211b40ea4",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
