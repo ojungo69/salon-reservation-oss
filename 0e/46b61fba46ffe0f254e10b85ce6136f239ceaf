@@ -1,0 +1,33 @@
+tests-browser/customer.spec.ts
+  s_d039e857cfe6e0::t_3d761bf60522cc 16,20-25,29-36,38,41-42,112-158,160-202
+  s_7c8b13bff90366::t_789df2e76340c6 159
+tests-browser/owner.spec.ts
+  s_d039e857cfe6e0::t_222f2f5e231b6e 88-89,91-92,94-127,129-138
+  s_7c8b13bff90366::t_a0f8b317b1227a 14-27
+  s_7c8b13bff90366::t_e89a53cb26c20f 90,93
+  s_7c8b13bff90366::t_7001ed0f0b6db2 128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0e46b61fba46ffe0f254e10b85ce6136f239ceaf",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_d039e857cfe6e0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ablue-review-29-346e5129335c5670",
+        "model": "unknown"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
