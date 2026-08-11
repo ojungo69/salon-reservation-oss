@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -318,6 +318,13 @@ const stripComment = (line) => {
 // job-level `permissions:` block is two lines the reviewed workflow does not
 // have, wherever it sits.
 const auditWorkflow = () => {
+  // GitHub runs every file in this directory, so pinning one of them says
+  // nothing on its own: a second workflow is a second place to install, with
+  // its own permissions and its own triggers.
+  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort();
+  if (workflows.length !== 1 || workflows[0] !== "ci.yml") {
+    fail(`unreviewed workflow file: ${JSON.stringify(workflows)}`);
+  }
   const workflow = readText(".github/workflows/ci.yml");
   // Deliberately redundant with the list. This is the one key whose presence
   // hands a write token to code from a fork, and it should fail by name however

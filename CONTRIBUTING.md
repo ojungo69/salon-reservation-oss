@@ -151,6 +151,10 @@ deleting it does, and rewording a comment does not. Indentation is stripped as w
 what says where a line belongs, so a job-level `permissions:` block is two lines the reviewed
 workflow does not have, wherever it sits.
 
+`ci.yml` must also be the only file in `.github/workflows/`. GitHub runs every workflow in that
+directory, so a second one is a second place to install, with triggers and permissions of its own,
+and pinning one file would say nothing about it.
+
 The list is exhaustive rather than limited to the security-relevant lines, because a partial list
 says nothing about what someone *adds* or *retunes* — a second `npm ci`, a `yarn install`, an
 unfamiliar action, a second job, `persist-credentials: true`, `runs-on: self-hosted`, an `env:` that
