@@ -57,7 +57,11 @@ const validSettings = () => ({
   themeId: "ink",
 });
 
-type Settings = ReturnType<typeof validSettings>;
+// Widened so invalid-case mutators can plant the optional keys with wrong shapes.
+type Settings = ReturnType<typeof validSettings> & {
+  availabilityNotice?: unknown;
+  exposeResourceChoice?: unknown;
+};
 type InstallationState = ReturnType<typeof createDefaultInstallationState>;
 
 const maximumSettings = (): Settings => {
@@ -145,6 +149,9 @@ test("fictional defaults stay demo-only while projecting all public legal notice
   assert.equal(Object.hasOwn(publicConfig, "retentionDays"), false);
   assert.equal(publicConfig.turnstileSiteKey, active.settings.turnstileSiteKey);
   assert.equal(Object.hasOwn(publicConfig, "allowedHostname"), false);
+  // Absent on a fresh installation, but the projection resolves the defaults.
+  assert.equal(publicConfig.availabilityNotice, null);
+  assert.equal(publicConfig.exposeResourceChoice, true);
 
   const live = await executeInstallationCommand(
     state,
@@ -226,6 +233,11 @@ test("accepts exact settings boundaries and rejects adjacent invalid values", ()
     ["turnstileSiteKey", (value) => { value.turnstileSiteKey = "k".repeat(129); }],
     ["allowedHostname", (value) => { value.allowedHostname = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(62)}`; }],
     ["themeId", (value) => { value.themeId = "unknown"; }],
+    ["availabilityNotice empty", (value) => { value.availabilityNotice = ""; }],
+    ["availabilityNotice whitespace", (value) => { value.availabilityNotice = "   "; }],
+    ["availabilityNotice long", (value) => { value.availabilityNotice = "😀".repeat(201); }],
+    ["availabilityNotice control", (value) => { value.availabilityNotice = "本日\u0000短縮"; }],
+    ["exposeResourceChoice type", (value) => { value.exposeResourceChoice = "true"; }],
     ["96 offerings", (value) => {
       value.resources = Array.from({ length: 8 }, (_, index) => ({
         id: `resource-${index}`,
@@ -252,6 +264,31 @@ test("accepts exact settings boundaries and rejects adjacent invalid values", ()
     undefined,
     "unknown top-level field",
   );
+});
+
+test("keeps optional customer-screen settings absent until set and round-trips stored values", async () => {
+  const parsed = parseInstallationSettings(validSettings());
+  assert.equal(Object.hasOwn(parsed, "availabilityNotice"), false);
+  assert.equal(Object.hasOwn(parsed, "exposeResourceChoice"), false);
+
+  assert.doesNotThrow(() => parseInstallationSettings({ ...validSettings(), availabilityNotice: "短" }));
+  assert.doesNotThrow(() =>
+    parseInstallationSettings({ ...validSettings(), availabilityNotice: "😀".repeat(200) }),
+  );
+
+  const withValues = {
+    ...validSettings(),
+    availabilityNotice: "  本日は短縮営業です  ",
+    exposeResourceChoice: false,
+  };
+  const parsedValues = parseInstallationSettings(withValues);
+  assert.equal(parsedValues.availabilityNotice, "本日は短縮営業です");
+  assert.equal(parsedValues.exposeResourceChoice, false);
+
+  const configured = await applyUpdate(createDefaultInstallationState(NOW), 1, withValues);
+  const publicConfig = projectPublicConfig(configured.state);
+  assert.equal(publicConfig.availabilityNotice, "本日は短縮営業です");
+  assert.equal(publicConfig.exposeResourceChoice, false);
 });
 
 test("normalizes an empty service category and rejects control characters from public snapshots", () => {

@@ -2152,6 +2152,8 @@ const startSetup = async () => {
     // The setup projection resolves the effective value, so this is only a
     // guard against an older server that does not send it at all.
     $("[data-setup-pending-expiry]").value = state.settings.pendingExpiryMinutes ?? 1440;
+    $("[data-setup-availability-notice]").value = state.settings.availabilityNotice ?? "";
+    $("[data-setup-expose-resource-choice]").checked = state.settings.exposeResourceChoice ?? true;
     for (const input of weekdayInputs) {
       input.checked = state.settings.openWeekdays.includes(Number(input.value));
     }
@@ -2196,6 +2198,12 @@ const startSetup = async () => {
     horizonDays: Number($("[data-setup-horizon]").value),
     retentionDays: Number($("[data-setup-retention]").value),
     pendingExpiryMinutes: Number($("[data-setup-pending-expiry]").value),
+    // An empty notice omits the key entirely: absence is the stored form of
+    // "no notice", and the server refuses an empty string.
+    ...($("[data-setup-availability-notice]").value.trim() === ""
+      ? {}
+      : { availabilityNotice: $("[data-setup-availability-notice]").value.trim() }),
+    exposeResourceChoice: $("[data-setup-expose-resource-choice]").checked,
     consentVersion: $("[data-setup-consent-version]").value.trim(),
     operatorDisplayName: $("[data-setup-operator-name]").value.trim(),
     operatorContact: $("[data-setup-operator-contact]").value.trim(),

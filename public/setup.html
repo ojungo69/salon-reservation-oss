@@ -177,8 +177,15 @@
               <div class="field-row"><label for="setup-retention">保存期間（日）</label><input id="setup-retention" type="number" min="1" max="365" data-setup-retention required></div>
               <div class="field-row"><label for="setup-pending-expiry">承認待ちの有効期限（分）</label><input id="setup-pending-expiry" type="number" min="15" max="10080" data-setup-pending-expiry required aria-describedby="setup-pending-expiry-help"></div>
               <p class="helper" id="setup-pending-expiry-help">お客様が申し込んでから、この時間までに承認も却下もされなかった予約は自動的に期限切れになり、押さえていた枠が空きに戻ります。15分から7日（10080分）まで設定できます。</p>
+              <div class="field-row"><label for="setup-availability-notice">空き状況のお知らせ（任意）</label><input id="setup-availability-notice" type="text" maxlength="200" data-setup-availability-notice aria-describedby="setup-availability-notice-help"></div>
+              <p class="helper" id="setup-availability-notice-help">予約画面の空き時間のそばに表示する短いお知らせです（200文字まで）。空欄にすると何も表示されません。</p>
               <div class="field-row"><label for="setup-theme">表示テーマ</label><select id="setup-theme" data-setup-theme><option value="ink">インク</option><option value="forest">フォレスト</option><option value="clay">クレイ</option></select></div>
             </div>
+            <fieldset class="slot-field">
+              <legend>担当・設備の選択欄</legend>
+              <label class="slot-option"><input type="checkbox" data-setup-expose-resource-choice><span>お客様に担当・設備を選んでもらう</span></label>
+              <p class="helper" id="setup-expose-resource-choice-help">オフにすると予約画面から選択欄が消え、空いている担当・設備を自動で割り当てます。割り当て結果はお客様の確認画面に表示されます。</p>
+            </fieldset>
             <p class="helper">日付ごとの臨時休業や担当・設備ごとの休止時間は、保存後に<a href="/admin.html#closures">運営者画面の休業設定</a>から管理できます。</p>
           </section>
 

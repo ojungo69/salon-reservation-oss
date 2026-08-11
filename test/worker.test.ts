@@ -2386,6 +2386,49 @@ describe("T035 guided setup API", () => {
     );
   });
 
+  it("resolves customer screen settings defaults and round-trips stored values", async () => {
+    expect((await updateInstallation()).status).toBe(200);
+
+    const setupDefaults = await SELF.fetch("https://example.test/api/admin/setup", {
+      headers: ownerHeaders,
+    });
+    const setupBody = await setupDefaults.json<{ settings: Record<string, unknown> }>();
+    expect(setupBody.settings.exposeResourceChoice).toBe(true);
+    expect(Object.hasOwn(setupBody.settings, "availabilityNotice")).toBe(false);
+
+    const configDefaults = await SELF.fetch("https://example.test/api/config");
+    expect(await configDefaults.json()).toMatchObject({
+      availabilityNotice: null,
+      exposeResourceChoice: true,
+    });
+
+    const withPair = {
+      ...liveSettings(),
+      availabilityNotice: "  本日は短縮営業です  ",
+      exposeResourceChoice: false,
+    };
+    const updated = await updateInstallation(withPair, crypto.randomUUID(), 2);
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ settingsVersion: 3 });
+
+    const config = await SELF.fetch("https://example.test/api/config");
+    expect(await config.json()).toMatchObject({
+      availabilityNotice: "本日は短縮営業です",
+      exposeResourceChoice: false,
+    });
+
+    const oversizedPair = { ...liveSettings(), availabilityNotice: "あ".repeat(201) };
+    const rejected = await updateInstallation(oversizedPair, crypto.randomUUID(), 3);
+    expect(rejected.status).toBe(400);
+    const current = await SELF.fetch("https://example.test/api/admin/setup", {
+      headers: ownerHeaders,
+    });
+    expect(await current.json()).toMatchObject({
+      settingsVersion: 3,
+      settings: { availabilityNotice: "本日は短縮営業です" },
+    });
+  });
+
   it("updates once, replays before version checking, and rejects both command and version conflicts", async () => {
     const commandId = crypto.randomUUID();
     const first = await updateInstallation(liveSettings(), commandId);
