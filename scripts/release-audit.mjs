@@ -306,12 +306,20 @@ const WORKFLOW_LINES = [
 ];
 const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
 
-// Comments are stripped before matching, so a pinned command cannot be
-// satisfied by text that never runs: `run: npm ci # run: npm ci
-// --ignore-scripts` keeps the string and drops the flag.
+// Space and tab are the only YAML whitespace, and a `#` is only a comment when
+// YAML whitespace precedes it. Both rules have to be followed exactly: cutting
+// or trimming on anything wider hides characters from the comparison that
+// Actions still executes. `run: npm run check # rest` is one command to
+// YAML and to the shell, and `String.prototype.trim` treats U+00A0 as space.
+const YAML_SPACE = " \t";
 const stripComment = (line) => {
-  const comment = line.search(/\s#/);
-  return (comment === -1 ? line : line.slice(0, comment)).trim();
+  const comment = line.search(/[ \t]#/);
+  const content = comment === -1 ? line : line.slice(0, comment);
+  let start = 0;
+  let end = content.length;
+  while (start < end && YAML_SPACE.includes(content[start])) start += 1;
+  while (end > start && YAML_SPACE.includes(content[end - 1])) end -= 1;
+  return content.slice(start, end);
 };
 
 // Indentation is dropped, so the list is what says where a line belongs: a
@@ -330,8 +338,12 @@ const auditWorkflow = () => {
   // hands a write token to code from a fork, and it should fail by name however
   // it is written.
   if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
+  // A leading byte-order mark and CRLF endings are both legal and change
+  // nothing about what runs, so they are removed by name rather than by a
+  // whitespace rule wide enough to swallow more than they are.
   const lines = workflow
-    .split("\n")
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
     .map(stripComment)
     .filter((line) => line.length !== 0 && !line.startsWith("#"))
     .map((line) => {
