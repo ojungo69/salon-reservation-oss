@@ -1036,6 +1036,59 @@ export class ReservationDay extends DurableObject<Env> {
     return { fingerprint: row.fingerprint, response };
   }
 
+  // Shared transactional prologue: replay the stored receipt for a command
+  // (refusing a same-id retry whose payload fingerprint differs), then admit
+  // a fresh command against the day's acceptance budget. Replay must stay
+  // ahead of the budget check so an already-accepted command still replays
+  // on a day whose budget is spent. Returns null when the handler may
+  // proceed with a fresh command.
+  #commandGate(
+    commandId: string,
+    fingerprint: string,
+    kind: "reservation",
+    meta: Meta | null,
+    budget: "creates" | "mutations",
+    allowFresh?: boolean,
+  ): DayMutationResult | null;
+  #commandGate(
+    commandId: string,
+    fingerprint: string,
+    kind: "closure",
+    meta: Meta | null,
+    budget: "creates" | "mutations",
+    allowFresh?: boolean,
+  ): DayClosureResult | null;
+  #commandGate(
+    commandId: string,
+    fingerprint: string,
+    kind: "reservation" | "closure",
+    meta: Meta | null,
+    budget: "creates" | "mutations",
+    allowFresh = true,
+  ): DayMutationResult | DayClosureResult | null {
+    const receipt = this.#readReceipt(commandId);
+    if (receipt !== null) {
+      if (kind === "reservation") {
+        return receipt.fingerprint === fingerprint &&
+          "reservationId" in receipt.response
+          ? { ...receipt.response, replayed: true }
+          : failure("IDEMPOTENCY_CONFLICT");
+      }
+      return receipt.fingerprint === fingerprint &&
+        "closureId" in receipt.response
+        ? { ...receipt.response, replayed: true }
+        : failure("IDEMPOTENCY_CONFLICT");
+    }
+    if (!allowFresh) return failure("UNAVAILABLE");
+    const spent =
+      budget === "creates"
+        ? meta?.acceptedCreates ?? 0
+        : meta?.acceptedMutations ?? 0;
+    const limit =
+      budget === "creates" ? MAX_ACCEPTED_CREATES : MAX_ACCEPTED_MUTATIONS;
+    return spent >= limit ? failure("CAPACITY_REACHED") : null;
+  }
+
   #readDetail(reservationId: string): BookingDetail | null {
     const row = this.ctx.storage.sql
       .exec<{
@@ -1532,17 +1585,15 @@ export class ReservationDay extends DurableObject<Env> {
         const effective = this.#effectiveConfig(config, meta, persisted);
         if ("ok" in effective) return effective;
 
-        const receipt = this.#readReceipt(input.commandId);
-        if (receipt !== null) {
-          return receipt.fingerprint === fingerprint &&
-            "reservationId" in receipt.response
-            ? { ...receipt.response, replayed: true }
-            : failure("IDEMPOTENCY_CONFLICT");
-        }
-        if (!allowFresh) return failure("UNAVAILABLE");
-        if ((meta?.acceptedCreates ?? 0) >= MAX_ACCEPTED_CREATES) {
-          return failure("CAPACITY_REACHED");
-        }
+        const gate = this.#commandGate(
+          input.commandId,
+          fingerprint,
+          "reservation",
+          meta,
+          "creates",
+          allowFresh,
+        );
+        if (gate !== null) return gate;
 
         let durationMinutes = effective.slotMinutes;
         let snapshot: BookingSnapshot | null = null;
@@ -1728,14 +1779,14 @@ export class ReservationDay extends DurableObject<Env> {
           return failure("BAD_REQUEST");
         }
 
-        const receipt = this.#readReceipt(input.commandId);
-        if (receipt !== null) {
-          return receipt.fingerprint === fingerprint &&
-            "reservationId" in receipt.response
-            ? { ...receipt.response, replayed: true }
-            : failure("IDEMPOTENCY_CONFLICT");
-        }
-        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
+        const gate = this.#commandGate(
+          input.commandId,
+          fingerprint,
+          "reservation",
+          meta,
+          "mutations",
+        );
+        if (gate !== null) return gate;
 
         const reservation = state.reservations.find(
           ({ id }) => id === input.reservationId,
@@ -2020,14 +2071,14 @@ export class ReservationDay extends DurableObject<Env> {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
 
-        const receipt = this.#readReceipt(input.commandId);
-        if (receipt !== null) {
-          return receipt.fingerprint === fingerprint &&
-            "reservationId" in receipt.response
-            ? { ...receipt.response, replayed: true }
-            : failure("IDEMPOTENCY_CONFLICT");
-        }
-        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
+        const gate = this.#commandGate(
+          input.commandId,
+          fingerprint,
+          "reservation",
+          meta,
+          "mutations",
+        );
+        if (gate !== null) return gate;
         if (!["active", "pending", "approved"].includes(detail.status)) {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
@@ -2169,17 +2220,15 @@ export class ReservationDay extends DurableObject<Env> {
           return failure("BAD_REQUEST");
         }
 
-        const receipt = this.#readReceipt(input.commandId);
-        if (receipt !== null) {
-          return receipt.fingerprint === fingerprint &&
-            "closureId" in receipt.response
-            ? { ...receipt.response, replayed: true }
-            : failure("IDEMPOTENCY_CONFLICT");
-        }
-        if (!allowFresh) return failure("UNAVAILABLE");
-        if ((meta?.acceptedMutations ?? 0) >= MAX_ACCEPTED_MUTATIONS) {
-          return failure("CAPACITY_REACHED");
-        }
+        const gate = this.#commandGate(
+          input.commandId,
+          fingerprint,
+          "closure",
+          meta,
+          "mutations",
+          allowFresh,
+        );
+        if (gate !== null) return gate;
         const start = minutes(input.startTime);
         const end = minutes(input.endTime);
         if (
@@ -2276,14 +2325,14 @@ export class ReservationDay extends DurableObject<Env> {
         if (!isTargetDayConfig(effective) || meta === null) {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
-        const receipt = this.#readReceipt(input.commandId);
-        if (receipt !== null) {
-          return receipt.fingerprint === fingerprint &&
-            "closureId" in receipt.response
-            ? { ...receipt.response, replayed: true }
-            : failure("IDEMPOTENCY_CONFLICT");
-        }
-        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
+        const gate = this.#commandGate(
+          input.commandId,
+          fingerprint,
+          "closure",
+          meta,
+          "mutations",
+        );
+        if (gate !== null) return gate;
         const closure = this.#readClosures().find(
           ({ closureId }) => closureId === input.closureId,
         );
