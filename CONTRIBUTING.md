@@ -65,8 +65,14 @@ npm 12 matters specifically: it blocks dependency install scripts by default, an
 `strict-allow-scripts=true` turns an unreviewed install script into a failed install rather than a
 silent skip. Node 24.16.0 bundles npm 11.13.0, which has neither behavior — `allowScripts` and
 `strict-allow-scripts` do not exist there at all, and npm reports them as unknown config — so CI
-installs npm 12 explicitly. Corepack cannot do this: it has no npm shim, which is why there is no
-`packageManager` field.
+installs npm 12 explicitly.
+
+Corepack could pin npm instead: `corepack enable npm` does install an npm shim, and
+`packageManager: "npm@12.0.2"` is honoured. It is not used here because Corepack is Stability 1 —
+Experimental, is not distributed by default from Node.js 25, and `corepack enable npm` replaces
+Node's own npm launcher without `corepack disable npm` restoring it. A global install has no such
+shelf life. `actions/setup-node` has no npm-version input either, so an explicit step is the only
+mechanism in CI.
 
 **Install npm 12 before your first `npm ci`.** `nvm use` alone leaves you on the bundled npm 11.13.0,
 and `engine-strict=true` with `engines.npm` turns that into a failed install:

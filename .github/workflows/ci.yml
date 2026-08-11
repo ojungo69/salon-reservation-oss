@@ -31,9 +31,10 @@ jobs:
           cache: npm
           package-manager-cache: false
 
-      # Node 24.16.0 bundles npm 11, which does not enforce the allowScripts
-      # allowlist. Corepack has no npm shim, so packageManager cannot pin npm;
-      # an explicit global install is the only way to run the documented npm.
+      # Node 24.16.0 bundles npm 11.13.0, which has no allowScripts allowlist at
+      # all. Corepack could pin npm, but it is experimental and gone by default
+      # in Node 25, and setup-node has no npm-version input, so an explicit
+      # global install is the durable way to run the documented npm.
       # npm itself declares no install script, so --ignore-scripts changes
       # nothing here beyond keeping the workflow uniformly script-free.
       - name: Pin npm
