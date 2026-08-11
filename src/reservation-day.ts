@@ -16,6 +16,18 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const MANAGEMENT_KEY = /^[A-Za-z0-9_-]{43}$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+// The day partition's cumulative acceptance budget. 96 matches the maximum
+// offer grid (8 resources x 12 start times); 192 allows two lifecycle actions
+// per created booking. Deliberately never decremented: a cancellation,
+// rejection or expiry releases the booking's interval, so the time goes back
+// on sale, but the rows the booking created (details, receipts, kernel
+// records) survive until the retention purge, and a decrementing budget would
+// let a create/cancel loop grow one partition without bound. Turnstile and
+// the public rate limiter stand in front of this bound, and the projection
+// reports `capacityReached` so both screens can say which limit was hit.
+// See docs/CLOUDFLARE.md "Free-plan fit" and issue #22.
+const MAX_ACCEPTED_CREATES = 96;
+const MAX_ACCEPTED_MUTATIONS = 192;
 const TABLES = [
   "adapter_receipts",
   "booking_details",
@@ -890,8 +902,8 @@ export class ReservationDay extends DurableObject<Env> {
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         date TEXT NOT NULL,
         schedule_json TEXT NOT NULL,
-        accepted_creates INTEGER NOT NULL CHECK (accepted_creates BETWEEN 0 AND 96),
-        accepted_mutations INTEGER NOT NULL CHECK (accepted_mutations BETWEEN 0 AND 192),
+        accepted_creates INTEGER NOT NULL CHECK (accepted_creates BETWEEN 0 AND ${MAX_ACCEPTED_CREATES}),
+        accepted_mutations INTEGER NOT NULL CHECK (accepted_mutations BETWEEN 0 AND ${MAX_ACCEPTED_MUTATIONS}),
         purge_at INTEGER NOT NULL
       )
       `);
@@ -929,10 +941,10 @@ export class ReservationDay extends DurableObject<Env> {
       typeof row.schedule_json !== "string" ||
       !Number.isSafeInteger(row.accepted_creates) ||
       row.accepted_creates < 0 ||
-      row.accepted_creates > 96 ||
+      row.accepted_creates > MAX_ACCEPTED_CREATES ||
       !Number.isSafeInteger(row.accepted_mutations) ||
       row.accepted_mutations < 0 ||
-      row.accepted_mutations > 192 ||
+      row.accepted_mutations > MAX_ACCEPTED_MUTATIONS ||
       !Number.isSafeInteger(row.purge_at) ||
       row.purge_at <= 0
     ) {
@@ -1363,7 +1375,7 @@ export class ReservationDay extends DurableObject<Env> {
       }
       const effective = this.#effectiveConfig(config, meta, persisted);
       if ("ok" in effective) return effective;
-      const capacityReached = (meta?.acceptedCreates ?? 0) >= 96;
+      const capacityReached = (meta?.acceptedCreates ?? 0) >= MAX_ACCEPTED_CREATES;
       const movingReservation = state.reservations.find(
         ({ id, status }) => status === "active" && id === reservationId,
       );
@@ -1387,7 +1399,7 @@ export class ReservationDay extends DurableObject<Env> {
         ) {
           return failure("BAD_REQUEST");
         }
-        if ((meta?.acceptedMutations ?? 0) >= 192) {
+        if ((meta?.acceptedMutations ?? 0) >= MAX_ACCEPTED_MUTATIONS) {
           return failure("CAPACITY_REACHED");
         }
       }
@@ -1528,7 +1540,7 @@ export class ReservationDay extends DurableObject<Env> {
             : failure("IDEMPOTENCY_CONFLICT");
         }
         if (!allowFresh) return failure("UNAVAILABLE");
-        if ((meta?.acceptedCreates ?? 0) >= 96) {
+        if ((meta?.acceptedCreates ?? 0) >= MAX_ACCEPTED_CREATES) {
           return failure("CAPACITY_REACHED");
         }
 
@@ -1723,7 +1735,7 @@ export class ReservationDay extends DurableObject<Env> {
             ? { ...receipt.response, replayed: true }
             : failure("IDEMPOTENCY_CONFLICT");
         }
-        if (meta.acceptedMutations >= 192) return failure("CAPACITY_REACHED");
+        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
 
         const reservation = state.reservations.find(
           ({ id }) => id === input.reservationId,
@@ -2015,7 +2027,7 @@ export class ReservationDay extends DurableObject<Env> {
             ? { ...receipt.response, replayed: true }
             : failure("IDEMPOTENCY_CONFLICT");
         }
-        if (meta.acceptedMutations >= 192) return failure("CAPACITY_REACHED");
+        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
         if (!["active", "pending", "approved"].includes(detail.status)) {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
@@ -2165,7 +2177,7 @@ export class ReservationDay extends DurableObject<Env> {
             : failure("IDEMPOTENCY_CONFLICT");
         }
         if (!allowFresh) return failure("UNAVAILABLE");
-        if ((meta?.acceptedMutations ?? 0) >= 192) {
+        if ((meta?.acceptedMutations ?? 0) >= MAX_ACCEPTED_MUTATIONS) {
           return failure("CAPACITY_REACHED");
         }
         const start = minutes(input.startTime);
@@ -2271,7 +2283,7 @@ export class ReservationDay extends DurableObject<Env> {
             ? { ...receipt.response, replayed: true }
             : failure("IDEMPOTENCY_CONFLICT");
         }
-        if (meta.acceptedMutations >= 192) return failure("CAPACITY_REACHED");
+        if (meta.acceptedMutations >= MAX_ACCEPTED_MUTATIONS) return failure("CAPACITY_REACHED");
         const closure = this.#readClosures().find(
           ({ closureId }) => closureId === input.closureId,
         );

@@ -615,6 +615,18 @@ describe("ReservationDay storage boundary", () => {
         .one(),
     );
     expect(meta).toEqual({ accepted_creates: 96, accepted_mutations: 96 });
+
+    // Every slot is free again, yet the day's cumulative acceptance budget is
+    // spent: the projection must say which limit was hit instead of offering
+    // a bookable grid it would refuse.
+    const exhausted = await stub.availability(maxDay);
+    expect(exhausted).toMatchObject({ ok: true, capacityReached: true });
+    if (!("resources" in exhausted)) {
+      throw new Error("availability response does not contain resources");
+    }
+    expect(
+      exhausted.resources.every(({ startTimes: offered }) => offered.length === 0),
+    ).toBe(true);
   });
 });
 

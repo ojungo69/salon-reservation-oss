@@ -74,7 +74,11 @@ hostname; do not assume a branch build is isolated from real state or use it for
 
 The intended installation is deliberately bounded: one location, 1–8 resources, 1–16 services,
 1–4 selected services, 96 offered resource/start pairs, 96 creates, and 192 accepted mutations per
-day. The final candidate's performance report must calculate its request/write budget against the
+day. The per-day create and mutation budgets are cumulative: a cancellation, rejection, or expiry
+puts the time slot back on sale but does not refund the day's budget, because the stored rows it
+created remain until the retention purge. A day that exhausts its create budget says so on the
+booking and operator screens instead of presenting as fully booked; a spent mutation budget
+surfaces as an error on the refused action itself. The final candidate's performance report must calculate its request/write budget against the
 then-current [Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
 [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/),
 [static-assets limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/),
