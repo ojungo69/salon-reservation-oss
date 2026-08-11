@@ -1,0 +1,37 @@
+src/reservation-day.ts
+  s_c49f0fed87bcac::t_646b4f7d5ac7c2 1543
+  s_c49f0fed87bcac::t_65d340ba09335e 1402,2180
+  s_c49f0fed87bcac::t_290c954fa26391 905-906
+  s_c49f0fed87bcac::t_c5c1636b0548e4 1738,2030,2286
+  s_c49f0fed87bcac::t_d4d27bb1143f6b 944
+  s_c49f0fed87bcac::t_75daa1f5ebb225 1378
+  s_c49f0fed87bcac::t_26efa79af782cc 19-30
+  s_c49f0fed87bcac::t_716ac50c351cf5 947
+docs/CLOUDFLARE.md
+  s_c49f0fed87bcac::t_5b8a6862a14a08 79-81
+  s_c49f0fed87bcac::t_977dd06ee8b911 77-78
+test/worker.test.ts
+  s_c49f0fed87bcac::t_4ab2aa0d419a7a 618-628
+src/worker.ts
+  s_c49f0fed87bcac::t_795686e00be87d 62
+  s_c49f0fed87bcac::t_d2cff03473bf0c 63
+public/app.js
+  s_c49f0fed87bcac::t_179b4587dad836 1462-1472
+  s_c49f0fed87bcac::t_3b5fc535bf48ed 514-520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "189d944ca19ef3ba9340f2014e9ff5b85d14a038",
+  "prompts": {},
+  "sessions": {
+    "s_c49f0fed87bcac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b61a5b7e-b51a-4399-a679-f638450b8139",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
