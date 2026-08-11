@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -606,5 +607,25 @@ test("settings stored before the pending lifetime existed still round-trip byte 
     assert.throws(() =>
       parseInstallationSettings({ ...legacy, pendingExpiryMinutes: invalid }),
     );
+  }
+});
+
+test("every theme the setup screen offers is accepted and has a palette", () => {
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const setup = read("../public/setup.html");
+  const select = /<select id="setup-theme"[^>]*>(.*?)<\/select>/s.exec(setup);
+  assert.ok(select, "the setup screen no longer has a theme select");
+  const offered = [...select[1].matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]);
+  // app.js writes the chosen id to documentElement.dataset.theme, so a theme
+  // with no rule in the stylesheet is offered but silently does nothing. The
+  // first palette lives in :root rather than in a block of its own.
+  const styles = read("../public/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const declared = new Set(
+    [...styles.matchAll(/\[data-theme="([^"]+)"\]/g)].map((match) => match[1]),
+  );
+  assert.deepEqual([...declared].sort(), offered.filter((id) => id !== "ink").sort());
+
+  for (const themeId of offered) {
+    assert.equal(parseInstallationSettings({ ...validSettings(), themeId }).themeId, themeId);
   }
 });
