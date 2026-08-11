@@ -285,7 +285,7 @@ const WORKFLOW_LINES = [
   "jobs:",
   "check:",
   "runs-on: ubuntu-latest",
-  "timeout-minutes: 15",
+  "timeout-minutes: 25",
   "steps:",
   "- name: Check out source",
   "uses: actions/checkout",
@@ -308,6 +308,17 @@ const WORKFLOW_LINES = [
   "run: npm install-scripts ls --json | jq -e '.allowScripts == []'",
   "- name: Verify",
   "run: npm run check",
+  "- name: Install the browser the rendered-page tests drive",
+  "run: npx playwright install chromium",
+  "- name: Verify the rendered pages",
+  "run: npm run test:browser",
+  "- name: Keep a failing run's traces",
+  "if: failure()",
+  "uses: actions/upload-artifact",
+  "with:",
+  "name: rendered-page-failures",
+  "path: .playwright",
+  "retention-days: 3",
 ];
 const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
 

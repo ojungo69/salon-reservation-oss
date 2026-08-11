@@ -17,6 +17,7 @@
 # Node.js generated artifacts
 node_modules/
 .wrangler/
+.playwright/
 .playwright-cli/
 .playwright-mcp/
 output/

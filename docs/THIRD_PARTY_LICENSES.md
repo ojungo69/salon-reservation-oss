@@ -9,7 +9,9 @@ platform APIs supplied by the deployer's environment.
 
 | Package | Version | License |
 |---|---:|---|
+| `@axe-core/playwright` | 4.12.1 | MPL-2.0 |
 | `@cloudflare/vitest-pool-workers` | 0.20.3 | MIT |
+| `@playwright/test` | 1.62.1 | Apache-2.0 |
 | `@types/node` | 24.13.3 | MIT |
 | `typescript` | 7.0.2 | Apache-2.0 |
 | `vitest` | 4.1.10 | MIT |
