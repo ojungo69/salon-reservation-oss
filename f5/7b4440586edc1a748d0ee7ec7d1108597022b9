@@ -1,0 +1,30 @@
+specs/001-customer-ux-parity/research.md
+  s_7c8b13bff90366::t_fba4dcdbf42283 21
+  s_7c8b13bff90366::t_a4000a313f662b 14
+specs/001-customer-ux-parity/plan.md
+  s_7c8b13bff90366::t_6fb9bfd3660054 99
+  s_7c8b13bff90366::t_06b3b11559e240 25
+  s_7c8b13bff90366::t_9f26383b3e5382 9
+  s_7c8b13bff90366::t_8ece53cf544a5b 81
+  s_7c8b13bff90366::t_95406a4171159a 88
+  s_7c8b13bff90366::t_8cef69931082d0 68
+  s_7c8b13bff90366::t_36f8869f490ee1 94
+specs/001-customer-ux-parity/spec.md
+  s_7c8b13bff90366::t_2a87247b527938 152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f57b4440586edc1a748d0ee7ec7d1108597022b9",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
