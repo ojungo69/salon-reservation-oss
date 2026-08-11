@@ -1,0 +1,21 @@
+src/worker.ts
+  s_c49f0fed87bcac::t_f1671dc62cc820 63
+test/worker.test.ts
+  s_c49f0fed87bcac::t_46152a75bd7e9c 624-625,627-629
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "374cf7330b18bfa515fc9f6a977b48ffe36fc776",
+  "prompts": {},
+  "sessions": {
+    "s_c49f0fed87bcac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b61a5b7e-b51a-4399-a679-f638450b8139",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
