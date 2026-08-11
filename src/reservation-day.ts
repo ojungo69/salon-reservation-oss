@@ -761,6 +761,14 @@ const pendingDeadline = (config: DayConfig, createdAt: string): number | null =>
     ? null
     : Date.parse(createdAt) + config.pendingExpiryMinutes * 60_000;
 
+// Only ever called after the sweep, so a booking still pending here has a
+// deadline in the future.
+const expiresAt = (config: DayConfig, detail: BookingDetail): string | null => {
+  const deadline =
+    detail.status === "pending" ? pendingDeadline(config, detail.createdAt) : null;
+  return deadline === null ? null : new Date(deadline).toISOString();
+};
+
 const isStoredSuccess = (value: unknown): value is StoredSuccess => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
@@ -1920,11 +1928,7 @@ export class ReservationDay extends DurableObject<Env> {
         ({ id }) => id === reservation.resourceId,
       );
       if (resource === undefined) return failure("TEMPORARILY_UNAVAILABLE");
-      // The sweep above already expired everything that was due, so a booking
-      // still pending here has a deadline in the future.
-      const deadline =
-        detail.status === "pending" ? pendingDeadline(config, detail.createdAt) : null;
-      const expiresAt = deadline === null ? null : new Date(deadline).toISOString();
+      const deadline = expiresAt(config, detail);
 
       const coreShouldBeActive = ![
         "rejected",
@@ -1945,7 +1949,7 @@ export class ReservationDay extends DurableObject<Env> {
         snapshot: detail.snapshot,
         rejectionReason: detail.rejectionReason,
         outcomeAt: detail.outcomeAt,
-        ...(expiresAt === null ? {} : { expiresAt }),
+        ...(deadline === null ? {} : { expiresAt: deadline }),
         allowedActions:
           detail.status === "pending" || detail.status === "approved"
             ? ["cancel"]
@@ -2359,9 +2363,7 @@ export class ReservationDay extends DurableObject<Env> {
             ? effective.resources.find(({ id }) => id === reservation.resourceId)
             : undefined;
           if (target && resource === undefined) throw new Error("missing resource");
-          const deadline =
-            detail.status === "pending" ? pendingDeadline(config, detail.createdAt) : null;
-          const expiresAt = deadline === null ? null : new Date(deadline).toISOString();
+          const deadline = expiresAt(config, detail);
           return {
             reservationId: reservation.id,
             resourceId: reservation.resourceId,
@@ -2375,7 +2377,7 @@ export class ReservationDay extends DurableObject<Env> {
               ? {}
               : { rejectionReason: detail.rejectionReason }),
             ...(detail.outcomeAt === null ? {} : { outcomeAt: detail.outcomeAt }),
-            ...(expiresAt === null ? {} : { expiresAt }),
+            ...(deadline === null ? {} : { expiresAt: deadline }),
             ...(detail.rescheduleHistory.length === 0
               ? {}
               : { rescheduleHistory: detail.rescheduleHistory }),
