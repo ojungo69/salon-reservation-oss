@@ -1,0 +1,25 @@
+test/journey.test.ts
+  s_7c8b13bff90366::t_5e628702064995 476,481-482,489
+public/journey.js
+  s_7c8b13bff90366::t_f8c23cef6f9a21 336-337,339-342
+public/app.js
+  s_7c8b13bff90366::t_a97d22f51d6b8c 676
+  s_7c8b13bff90366::t_cac61670a7d276 912,916
+  s_7c8b13bff90366::t_2c75f0f960b412 944-953
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "57aa27e4fedc92cd780fd4383907946ad8b6974a",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
