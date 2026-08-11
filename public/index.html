@@ -118,10 +118,12 @@
             <p id="slot-help" class="helper" data-availability-help>
               表示時点の空き状況です。送信時にもう一度確認します。
             </p>
-            <button id="availability-refresh" class="text-button" type="button" data-availability-refresh>
-              空き時間を更新する
-            </button>
           </fieldset>
+          <!-- Outside the fieldset: the refresh must stay usable when a failed
+               load has disabled the slot list, which is when it matters most. -->
+          <button id="availability-refresh" class="text-button" type="button" data-availability-refresh>
+            空き時間を更新する
+          </button>
 
           <div class="action-bar">
             <p id="selection-help" class="action-help" data-journey-help="selection">
@@ -162,7 +164,7 @@
                 <dd data-summary-services>未選択</dd>
                 <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="service-field" aria-label="サービスを選び直す">変更</button></dd>
               </div>
-              <div data-summary-resource-row>
+              <div>
                 <dt>担当・設備</dt>
                 <dd data-summary-resource>未選択</dd>
                 <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="booking-resource" aria-label="担当・設備を選び直す">変更</button></dd>

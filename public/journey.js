@@ -249,8 +249,7 @@ export const duplicateCheckCandidates = (records, date, now) =>
 
 // A warn-worthy duplicate is a remembered same-day booking the server still
 // reports as waiting or confirmed. Unknown or failed lookups never block.
-export const duplicateAcknowledgementNeeded = (statuses, acknowledged) =>
-  acknowledged !== true &&
+export const duplicateAcknowledgementNeeded = (statuses) =>
   (Array.isArray(statuses) ? statuses : []).some(
     (status) => status === "pending" || status === "approved",
   );

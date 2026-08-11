@@ -762,7 +762,10 @@ textarea::placeholder {
   background: var(--surface-muted);
 }
 
+/* One column at every width: five rows read cleanly and the two-column
+   divider/border pattern of the base list never misaligns mid-row. */
 .summary-card .summary-list {
+  grid-template-columns: 1fr;
   margin-bottom: 0;
   border-top: 0;
 }
@@ -771,7 +774,11 @@ textarea::placeholder {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.summary-card .summary-list > div:nth-last-child(-n + 2) {
+.summary-card .summary-list > div:nth-child(odd) {
+  border-inline-end: 0;
+}
+
+.summary-card .summary-list > div:last-child {
   border-bottom: 0;
 }
 

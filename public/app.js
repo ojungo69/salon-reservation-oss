@@ -591,10 +591,7 @@ const startCustomer = async () => {
     const exposed = resourceChoiceExposed();
     resourceRow.hidden = !exposed;
     $("[data-summary-edit='booking-resource']").hidden = !exposed;
-    if (exposed) {
-      assignedResource.hidden = true;
-      assignedResource.textContent = "";
-    }
+    if (exposed) clearAssignedResource();
   };
 
   const clearAssignedResource = () => {
@@ -667,7 +664,12 @@ const startCustomer = async () => {
       resetAvailability();
       if (!quiet) setStatus(status, error.message, "error");
     } finally {
-      if (sequence === availabilitySequence) root.removeAttribute("aria-busy");
+      if (sequence === availabilitySequence) {
+        root.removeAttribute("aria-busy");
+        // A response landing while the details step is open must not leave the
+        // card showing the previous selection's services or totals.
+        if (journeyStep === "details") renderSummaryCard();
+      }
       setPendingMode();
     }
   };
@@ -699,6 +701,9 @@ const startCustomer = async () => {
           if (!input) return;
           input.checked = false;
           input.dispatchEvent(new Event("change"));
+          // The rebuild just destroyed the focused chip; keep keyboard users
+          // on the surface instead of dropping them to the page top.
+          focusWithoutScroll($("button", serviceChips) ?? serviceFilterInput);
         });
         item.append(button);
         return item;
@@ -852,8 +857,12 @@ const startCustomer = async () => {
       queueMicrotask(() => {
         const target = document.getElementById(button.dataset.summaryEdit);
         if (!target) return;
+        // In the service fieldset the first input can be the hidden filter
+        // field; a service checkbox is always focusable.
         focusWithoutScroll(
-          target.matches("fieldset") ? ($("input", target) ?? target) : target,
+          target.matches("fieldset")
+            ? ($("input[name='serviceIds']", target) ?? $("input", target) ?? target)
+            : target,
         );
       });
     });
@@ -918,12 +927,15 @@ const startCustomer = async () => {
             }
           }),
         );
-        needsAcknowledgement = duplicateAcknowledgementNeeded(statuses, duplicateAcknowledged);
+        needsAcknowledgement = duplicateAcknowledgementNeeded(statuses);
       } finally {
         busy = false;
         updateActions();
       }
       if (needsAcknowledgement) {
+        // Esc closes without setting a value; clear the previous verdict so a
+        // stale "confirm" cannot replay as an acknowledgement.
+        duplicateDialog.returnValue = "";
         duplicateDialog.showModal();
         return;
       }

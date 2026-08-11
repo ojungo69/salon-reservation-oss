@@ -4,7 +4,7 @@ import test from "node:test";
 type JourneyModule = {
   decodeJourneyDraft: (encoded: unknown, now: number) => unknown;
   decodePendingMutationRecord: (encoded: unknown, now: number) => unknown;
-  duplicateAcknowledgementNeeded: (statuses: unknown, acknowledged: unknown) => unknown;
+  duplicateAcknowledgementNeeded: (statuses: unknown) => unknown;
   duplicateCheckCandidates: (records: unknown, date: unknown, now: number) => unknown;
   encodeJourneyDraft: (draft: unknown) => unknown;
   encodePendingMutationRecord: (record: unknown) => unknown;
@@ -526,12 +526,10 @@ test("selects at most three same-day remembered bookings for the duplicate check
 test("requires acknowledgement only for live duplicate statuses", () => {
   const duplicateAcknowledgementNeeded = journey("duplicateAcknowledgementNeeded");
 
-  assert.equal(duplicateAcknowledgementNeeded(["pending"], false), true);
-  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "approved"], false), true);
+  assert.equal(duplicateAcknowledgementNeeded(["pending"]), true);
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "approved"]), true);
   // Finished or failed lookups never block the journey.
-  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "expired", null], false), false);
-  assert.equal(duplicateAcknowledgementNeeded([], false), false);
-  assert.equal(duplicateAcknowledgementNeeded(undefined, false), false);
-  // One acknowledgement clears the gate.
-  assert.equal(duplicateAcknowledgementNeeded(["pending"], true), false);
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "expired", null]), false);
+  assert.equal(duplicateAcknowledgementNeeded([]), false);
+  assert.equal(duplicateAcknowledgementNeeded(undefined), false);
 });
