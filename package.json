@@ -32,6 +32,7 @@
     "release:audit": "node scripts/release-audit.mjs",
     "release:audit:public": "node scripts/release-audit.mjs --public-tree",
     "test": "npm run test:core && npm run test:worker",
+    "test:browser": "playwright test",
     "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts",
     "test:worker": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -39,7 +40,9 @@
     "types:check": "wrangler types --check"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@cloudflare/vitest-pool-workers": "0.20.3",
+    "@playwright/test": "1.62.1",
     "@types/node": "24.13.3",
     "typescript": "7.0.2",
     "vitest": "4.1.10",

@@ -28,6 +28,35 @@ For non-trivial behavior, add the smallest test that fails for the intended asse
 implementation. Reuse the pure reservation kernel and native Worker/browser/SQLite features before
 adding a dependency or abstraction.
 
+### Rendered-page tests
+
+`npm run check` does not launch a browser, so the rendered-page suite is a separate command and a
+separate CI step. It needs Chromium once per machine:
+
+```bash
+npx playwright install chromium
+npm run test:browser
+```
+
+It starts its own `wrangler dev` over HTTPS, wipes `.wrangler/browser-test-state` first so every run
+begins from the shipped defaults, and leaves your own `npm run dev` data untouched. Three details
+are load-bearing and will look arbitrary otherwise:
+
+- **HTTPS, not HTTP.** `public/app.js` uses `crypto.randomUUID` and `crypto.subtle`, which exist
+  only in a secure context. The one insecure origin browsers treat as secure is `localhost` — and
+  `localhost` is exactly the hostname an installation refuses to go live on.
+- **A hostname Chromium is told to resolve.** Going live requires the request hostname to equal the
+  configured `allowedHostname` and to be non-local, so the browser is launched with
+  `--host-resolver-rules` pointing `booking.salon.example` at the dev server.
+- **One forwarded request.** A public reservation needs a Turnstile token only Cloudflare can
+  issue, and reaching Cloudflare is what the suite must not do. That single request is forwarded to
+  the owner endpoint, which takes the same command and returns the same response, so the booking the
+  customer sees afterwards is a real one. The server's own Turnstile handling is covered by
+  `test/worker.test.ts` against a mocked siteverify.
+
+The suite enters fictional fixtures only. Never point it at a real installation, and never put a
+real token, customer detail or site key in it: a failing CI run uploads its traces as an artifact.
+
 ## Branch and merge policy
 
 `main` is protected by an active repository ruleset and is treated as releasable code. The ruleset

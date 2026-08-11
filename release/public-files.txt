@@ -22,6 +22,7 @@ docs/RELEASING.md
 docs/THIRD_PARTY_LICENSES.md
 package-lock.json
 package.json
+playwright.config.ts
 public/404.html
 public/_headers
 public/admin.html
@@ -49,6 +50,10 @@ test/journey.test.ts
 test/reservation-core.test.ts
 test/reservation-day.test.ts
 test/worker.test.ts
+tests-browser/customer.spec.ts
+tests-browser/harness.ts
+tests-browser/install.spec.ts
+tests-browser/owner.spec.ts
 tsconfig.json
 vitest.config.ts
 worker-configuration.d.ts

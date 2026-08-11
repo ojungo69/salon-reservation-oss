@@ -16,7 +16,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,3 +63,24 @@ jobs:
 
       - name: Verify
         run: npm run check
+
+      # The rendered-page tests need a real browser. Only Chromium is installed,
+      # and without --with-deps, because the ubuntu-latest image already carries
+      # the shared libraries the headless shell links against. Installing it
+      # here rather than through an install script keeps the allowlist empty.
+      - name: Install the browser the rendered-page tests drive
+        run: ./node_modules/.bin/playwright install chromium
+
+      - name: Verify the rendered pages
+        run: npm run test:browser
+
+      # Only produced by a failing run. The suite enters fictional fixtures
+      # only, never a real credential or customer detail, so nothing sensitive
+      # can reach the artifact; it expires quickly regardless.
+      - name: Keep a failing run's traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rendered-page-failures
+          path: .playwright
+          retention-days: 3
