@@ -112,7 +112,12 @@ The two are not redundant, and the precedence matters:
   the per-package `allowScripts` check, so on its own it would make the allowlist decorative.
 - The separate `npm install-scripts ls` step is therefore what enforces the allowlist in CI. It
   fails the build as soon as an installed package has an install script nobody has approved, whether
-  or not that script would have run.
+  or not that script would have run. It asserts with `jq -e` rather than comparing a count, because
+  npm prints `{"error": …}` to standard output on any failure and a count taken from that is `0` —
+  the gate would have passed green every time npm itself failed.
+- The listing covers what actually installs on the CI runner, so an optional dependency excluded by
+  `os` or `cpu` — `fsevents` is the one here — is not in it. Those are covered by
+  `strict-allow-scripts` on the machine they do install on.
 - On a contributor's machine `npm ci` runs without the flag, and there `strict-allow-scripts` is the
   live enforcement.
 
@@ -123,12 +128,23 @@ an install script to succeed.
 `npm install-scripts prune` will offer to remove the `"fsevents": false` entry because fsevents is
 not installed on Linux. Do not accept that: the entry is a deliberate denial that matters on macOS.
 
-The empty `allow-scripts=` line in [`.npmrc`](.npmrc) looks redundant — npm reports that
-`package.json` takes precedence and warns that the line is ignored — but it is load-bearing. It is a
-*different* npm mechanism, meant for global installs and `npx`, and it is commonly set in a personal
-`~/.npmrc`. Without the empty project-level override, a personal value leaks into project-scoped
-commands and npm 12 fails them outright with `EALLOWSCRIPTS`, so `npm run check` would pass or fail
-depending on the contributor's home directory. Keep the line.
+The empty `allow-scripts=` line in [`.npmrc`](.npmrc) looks redundant — it is a *different* npm
+mechanism, aimed at global installs and `npx`, and npm ignores it while `package.json` declares an
+`allowScripts` field — but it is load-bearing, for a reason that is easy to test for and get wrong.
+`allow-scripts` is commonly set in a personal `~/.npmrc`, and running `npm audit` directly with one
+is harmless: a value from a config file is ignored. But npm exports every resolved config to child
+processes as `npm_config_*`, and a value arriving from the *environment* is refused outright:
+
+```
+$ npm run check                  # with the project line removed
+npm error code EALLOWSCRIPTS
+npm error --allow-scripts is not allowed in project-scoped installs.
+```
+
+So the personal value reaches `npm audit` inside `npm run check` as an environment variable and
+fails it, while the same command run on its own passes. The empty project-level line wins the
+config resolution, so what gets exported is empty. Keep the line, and test any change to it through
+`npm run check` rather than by invoking the inner command yourself.
 
 When a dependency update changes a package that runs an install script (for example, a `wrangler`
 bump that pulls a new `workerd`), two files must be updated together:
@@ -146,8 +162,9 @@ and the SHA is checked separately for being a 40-character commit pin, so Depend
 stay quiet. `.nvmrc` is compared exactly too. Changing what CI runs therefore means editing
 `WORKFLOW_LINES` in the same pull request.
 
-Comments are stripped before matching, so commenting a step out fails the audit the same way
-deleting it does, and rewording a comment does not. Indentation is stripped as well: the list is
+Lines are split the way YAML splits them, including on a lone carriage return, which YAML treats
+as a line break and JavaScript does not. Comments are stripped before matching, so commenting a step
+out fails the audit the same way deleting it does, and rewording a comment does not. Indentation is stripped as well: the list is
 what says where a line belongs, so a job-level `permissions:` block is two lines the reviewed
 workflow does not have, wherever it sits.
 

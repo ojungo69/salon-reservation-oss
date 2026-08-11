@@ -299,8 +299,8 @@ const WORKFLOW_LINES = [
   "run: node --version && npm --version",
   "- name: Install locked dependencies",
   "run: npm ci --ignore-scripts",
-  "- name: Verify the install-script allowlist covers every install script",
-  `run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
+  "- name: Verify the install-script allowlist covers every installed script",
+  "run: npm install-scripts ls --json | jq -e '.allowScripts == []'",
   "- name: Verify",
   "run: npm run check",
 ];
@@ -338,12 +338,14 @@ const auditWorkflow = () => {
   // hands a write token to code from a fork, and it should fail by name however
   // it is written.
   if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
-  // A leading byte-order mark and CRLF endings are both legal and change
-  // nothing about what runs, so they are removed by name rather than by a
-  // whitespace rule wide enough to swallow more than they are.
+  // Split the way YAML does. A lone CR is a line break to YAML and not to
+  // JavaScript, so `split("\n")` would read an injected step as the tail of a
+  // comment on the line above it. A leading byte-order mark is legal and
+  // changes nothing about what runs, so it is removed by name rather than by a
+  // whitespace rule wide enough to swallow more than it is.
   const lines = workflow
     .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
+    .split(/\r\n|\r|\n/)
     .map(stripComment)
     .filter((line) => line.length !== 0 && !line.startsWith("#"))
     .map((line) => {
