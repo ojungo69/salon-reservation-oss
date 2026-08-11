@@ -691,22 +691,29 @@ const SITEVERIFY_ERROR_CODES = new Set([
   "timeout-or-duplicate",
   "internal-error",
 ]);
-const SITEVERIFY_RETRYABLE_CODE = "internal-error";
 
 type SiteverifyOutcome = "accepted" | "refused" | "unavailable";
 type SiteverifyAttempt = SiteverifyOutcome | "retry";
 
 // Siteverify's idempotency_key exists so one token's validation can be retried
-// safely. It has to be stable for the same proof and different for a different
-// proof. Deriving it from commandId alone would be wrong: the browser keeps
+// safely: a token is otherwise single-use, and a second verification of it comes
+// back as timeout-or-duplicate. That makes the key a replay permit, so it has to
+// name the exact request being retried and nothing wider.
+//
+// Deriving it from commandId alone would be wrong twice over. The browser keeps
 // commandId when a submission is retried but calls turnstile.reset() first, so a
-// previous verdict could answer for a token it never saw. Binding the key to the
-// token as well keeps "same proof, retried" as the only case that shares a key.
+// previous verdict could answer for a token it never saw. And a reservation's
+// idempotency is scoped to one day: the Durable Object is addressed by date and
+// only dedupes commandId inside it, so the same commandId on two dates is two
+// bookings. A key without the date would let one solved challenge be replayed
+// once per bookable date. Binding all three keeps "this exact submission,
+// retried" as the only case that shares a key.
 const siteverifyIdempotencyKey = async (
+  date: string,
   commandId: string,
   token: string,
 ): Promise<string> => {
-  const digest = await sha256(`turnstile:${commandId}:${token}`);
+  const digest = await sha256(`turnstile:${date}:${commandId}:${token}`);
   const bytes = digest.slice(0, 16);
   bytes[6] = ((bytes[6] as number) & 0x0f) | 0x80;
   bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80;
@@ -778,7 +785,7 @@ const siteverifyAttempt = async (
             typeof code === "string" && SITEVERIFY_ERROR_CODES.has(code),
         )
       : [];
-    if (codes.includes(SITEVERIFY_RETRYABLE_CODE)) {
+    if (codes.includes("internal-error")) {
       logSiteverify("provider_error", attempt, codes);
       return "retry";
     }
@@ -800,6 +807,7 @@ const verifyTurnstile = async (
   env: AppEnv,
   settings: InstallationSettings,
   token: string,
+  date: string,
   commandId: string,
 ): Promise<SiteverifyOutcome> => {
   const turnstileSecret = secret(env, "TURNSTILE_SECRET");
@@ -807,7 +815,7 @@ const verifyTurnstile = async (
   const body: Record<string, string> = {
     secret: turnstileSecret,
     response: token,
-    idempotency_key: await siteverifyIdempotencyKey(commandId, token),
+    idempotency_key: await siteverifyIdempotencyKey(date, commandId, token),
   };
   const remoteip = request.headers.get("cf-connecting-ip");
   if (remoteip !== null) body.remoteip = remoteip;
@@ -1072,6 +1080,7 @@ const handlePublicCreate = async (
     env,
     context.settings,
     turnstileToken,
+    input.date,
     dayInput.commandId,
   );
   if (verification === "refused") return errorResponse(403, "PROTECTION_REFUSED");

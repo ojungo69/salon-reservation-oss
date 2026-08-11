@@ -1077,14 +1077,22 @@ describe("Worker HTTP trust boundary", () => {
       ...body,
       commandId: crypto.randomUUID(),
     });
+    await jsonRequest("/api/reservations", {
+      ...body,
+      commandId,
+      date: nextOpenJstDate(4),
+    });
 
-    expect(seen).toHaveLength(4);
-    // Same command and same token replay the same validation.
+    expect(seen).toHaveLength(5);
+    // Same command, same token, same day replay the same validation.
     expect(seen[0]?.key).toBe(seen[1]?.key);
     // A fresh challenge under the same command is a different validation.
     expect(seen[2]?.key).not.toBe(seen[0]?.key);
     // A different command is a different validation.
     expect(seen[3]?.key).not.toBe(seen[0]?.key);
+    // Each day is its own Durable Object and dedupes commandId only inside
+    // itself, so one solved challenge must not be replayable onto another day.
+    expect(seen[4]?.key).not.toBe(seen[0]?.key);
   });
 
   it("authenticates the owner and derives schedule, create, and transition authority server-side", async () => {
