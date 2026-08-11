@@ -32,9 +32,10 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
   while a separate step fails the build if any installed package has an install script outside the
   reviewed allowlist. `.npmrc` gains `engine-strict=true`, and `package.json` declares the supported
   npm range.
-- The release audit now pins the CI workflow itself: the ordered list of commands it runs, the
-  actions it calls, the YAML keys it may contain, and the plain line form it must be written in.
-  Removing or neutralising the install-script policy fails the audit instead of passing quietly.
+- The release audit now pins the CI workflow itself, line for line, with only the action SHAs left
+  free so Dependabot's digest bumps stay quiet. Removing or neutralising the install-script policy,
+  granting the job write permissions, or keeping the checkout credentials fails the audit instead of
+  passing quietly.
 - `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md` now describe the repository's private
   security advisory form as the concrete private reporting route. Private vulnerability reporting is
   enabled, so the form is available to any GitHub user.

@@ -256,114 +256,92 @@ const auditPackage = () => {
   }
 };
 
-// Everything the workflow executes, in order. Naming the whole set rather than
-// the security-relevant subset is what makes the check hold: the pinned npm is
-// what enforces allowScripts at all, --ignore-scripts is what keeps third-party
-// install code from running, and the listing gate is what makes the allowlist
-// real rather than decorative — but a workflow may also not grow a step that
-// installs some other way, which only an exhaustive list can say. Dependabot
-// bumps `uses:` SHAs and never touches these, so the list stays quiet.
-const WORKFLOW_COMMANDS = [
-  "npm install -g --ignore-scripts npm@12.0.2",
-  "node --version && npm --version",
-  "npm ci --ignore-scripts",
-  `test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
-  "npm run check",
+// Every active line of ci.yml, in order, with each `uses:` value reduced to the
+// action identity so Dependabot's SHA bumps stay quiet. Pinning the whole file
+// rather than the security-relevant subset is what makes the check hold: the
+// pinned npm is what enforces allowScripts at all, --ignore-scripts is what
+// keeps third-party install code from running, and the listing gate is what
+// makes the allowlist real rather than decorative — but a workflow may also not
+// grow a step that installs some other way, a job whose `permissions:` override
+// the read-only default, a `container:` that picks a different machine, or a
+// checkout that keeps its credentials. Only an exhaustive list says that.
+const WORKFLOW_LINES = [
+  "name: CI",
+  "on:",
+  "pull_request:",
+  "push:",
+  "branches:",
+  "- main",
+  "permissions:",
+  "contents: read",
+  "concurrency:",
+  "group: ci-${{ github.ref }}",
+  "cancel-in-progress: true",
+  "jobs:",
+  "check:",
+  "runs-on: ubuntu-latest",
+  "timeout-minutes: 15",
+  "steps:",
+  "- name: Check out source",
+  "uses: actions/checkout",
+  "with:",
+  "fetch-depth: 1",
+  "persist-credentials: false",
+  "- name: Set up Node.js",
+  "uses: actions/setup-node",
+  "with:",
+  "node-version-file: .nvmrc",
+  "cache: npm",
+  "package-manager-cache: false",
+  "- name: Pin npm",
+  "run: npm install -g --ignore-scripts npm@12.0.2",
+  "- name: Report toolchain",
+  "run: node --version && npm --version",
+  "- name: Install locked dependencies",
+  "run: npm ci --ignore-scripts",
+  "- name: Verify the install-script allowlist covers every install script",
+  `run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
+  "- name: Verify",
+  "run: npm run check",
 ];
-// The same list for actions, without the SHA so Dependabot's digest bumps do
-// not touch it. A step that calls an action is executing someone else's code
-// just as much as a `run:` line is, and a reusable workflow would appear here
-// as a path that is not in the list.
-const WORKFLOW_ACTIONS = ["actions/checkout", "actions/setup-node"];
-const REQUIRED_WORKFLOW_LINES = ["node-version-file: .nvmrc"];
-// Every key ci.yml is allowed to contain, including the one job name. Listing
-// the permitted keys rather than the forbidden ones is what makes the two lists
-// above mean what they say: a pinned `run:` is only pinned while nothing else
-// chooses how it runs. `shell:` picks the interpreter, `container:` and
-// `services:` pick the machine, `env:` and `defaults:` reach inside node and
-// npm, `if:` turns a pinned step off, `strategy:` multiplies it, and a second
-// job name is a second place to install — none of which changes a `run:` or
-// `uses:` value. An unlisted key fails instead of being ignored.
-const WORKFLOW_KEYS = new Set([
-  "branches",
-  "cache",
-  "cancel-in-progress",
-  "check",
-  "concurrency",
-  "contents",
-  "fetch-depth",
-  "group",
-  "jobs",
-  "name",
-  "node-version-file",
-  "on",
-  "package-manager-cache",
-  "permissions",
-  "persist-credentials",
-  "pull_request",
-  "push",
-  "run",
-  "runs-on",
-  "steps",
-  "timeout-minutes",
-  "uses",
-  "with",
-]);
-// The only sequence entry that is a bare value rather than a key.
-const WORKFLOW_SEQUENCE_VALUES = new Set(["- main"]);
-const KEY_LINE = /^(?:-\s+)?"?([A-Za-z_][\w-]*)"?\s*:(?:\s+(.*))?$/;
+const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
 
+// Comments are stripped before matching, so a pinned command cannot be
+// satisfied by text that never runs: `run: npm ci # run: npm ci
+// --ignore-scripts` keeps the string and drops the flag.
+const stripComment = (line) => {
+  const comment = line.search(/\s#/);
+  return (comment === -1 ? line : line.slice(0, comment)).trim();
+};
+
+// Indentation is dropped, so the list is what says where a line belongs: a
+// job-level `permissions:` block is two lines the reviewed workflow does not
+// have, wherever it sits.
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
-  if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
-  // Comments are stripped before matching, so a pinned command cannot be
-  // satisfied by text that never runs: `run: npm ci # run: npm ci
-  // --ignore-scripts` keeps the string and drops the flag.
-  const activeLines = workflow
-    .split("\n")
-    .map((line) => line.replace(/\s+#.*$/, "").trim())
-    .filter((line) => line.length !== 0 && !line.startsWith("#"));
-  for (const line of REQUIRED_WORKFLOW_LINES) {
-    if (!activeLines.includes(line)) fail(`install-script enforcement drift: ${line}`);
-  }
-  // Every line has to be one this reader understands. Without that the lists
-  // below would only cover the spellings anticipated here, and YAML has many:
-  // a folded plain scalar continues a pinned command on the next line, a block
-  // scalar hides a script under it, `{run: …}` is a step, `"run"` is `run`, and
-  // `---` starts a second document. None of those is a key line.
-  for (const line of activeLines) {
-    if (WORKFLOW_SEQUENCE_VALUES.has(line)) continue;
-    const key = KEY_LINE.exec(line);
-    if (key === null) fail(`unreviewed workflow line: ${line}`);
-    if (!WORKFLOW_KEYS.has(key[1])) fail(`unreviewed workflow key: ${key[1]}`);
-    // A flow value carries keys of its own that this reader would never see:
-    // `on: {pull_request: null, pull_request_target: null}` is one allowed key
-    // on one line.
-    if (/^[[{]/.test(key[2] ?? "")) fail(`unreviewed workflow flow value: ${line}`);
-  }
-  // Deliberately redundant with the key list above. This is the one key whose
-  // presence hands a write token to code from a fork, and it should fail by
-  // name however it is written.
+  // Deliberately redundant with the list. This is the one key whose presence
+  // hands a write token to code from a fork, and it should fail by name however
+  // it is written.
   if (/pull_request_target\s*:/.test(workflow)) fail("pull_request_target is forbidden");
-  // The leading dash is optional: `- run: npm ci` is a step just as much as a
-  // `run:` under a `- name:` is, and reading only the second form would let a
-  // whole extra step through.
-  const values = (keyword) =>
-    activeLines
-      .map((line) => KEY_LINE.exec(line))
-      .filter((match) => match !== null && match[1] === keyword)
-      .map((match) => match[2].trim());
-  const commands = values("run");
-  if (JSON.stringify(commands) !== JSON.stringify(WORKFLOW_COMMANDS)) {
-    fail(`workflow command drift: ${JSON.stringify(commands)}`);
-  }
-  const actions = values("uses");
-  for (const action of actions) {
-    if (!/@[0-9a-f]{40}$/.test(action)) fail(`GitHub Action is not commit-pinned: ${action}`);
-  }
-  const identities = actions.map((action) => action.slice(0, action.lastIndexOf("@")));
-  if (JSON.stringify(identities) !== JSON.stringify(WORKFLOW_ACTIONS)) {
-    fail(`workflow action drift: ${JSON.stringify(identities)}`);
+  const lines = workflow
+    .split("\n")
+    .map(stripComment)
+    .filter((line) => line.length !== 0 && !line.startsWith("#"))
+    .map((line) => {
+      const action = WORKFLOW_ACTION.exec(line);
+      if (action === null) return line;
+      if (!/@[0-9a-f]{40}$/.test(action[2])) {
+        fail(`GitHub Action is not commit-pinned: ${action[2]}`);
+      }
+      return `${action[1] ?? ""}uses: ${action[2].slice(0, action[2].lastIndexOf("@"))}`;
+    });
+  for (let index = 0; index < Math.max(lines.length, WORKFLOW_LINES.length); index += 1) {
+    if (lines[index] !== WORKFLOW_LINES[index]) {
+      fail(
+        `workflow drift: ${JSON.stringify(lines[index] ?? null)} where the reviewed` +
+          ` workflow has ${JSON.stringify(WORKFLOW_LINES[index] ?? null)}`,
+      );
+    }
   }
 };
 

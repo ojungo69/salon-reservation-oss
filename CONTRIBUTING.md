@@ -139,28 +139,30 @@ bump that pulls a new `workerd`), two files must be updated together:
 That duplication is deliberate. It forces a human to look at the new install script before it runs
 in CI. Do not relax the audit to avoid the second edit.
 
-The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds three lists:
+The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds
+`WORKFLOW_LINES`: every active line of `.github/workflows/ci.yml`, in order. The file must match it
+exactly, with one exemption — each `uses:` value is reduced to the action identity before comparing,
+and the SHA is checked separately for being a 40-character commit pin, so Dependabot's digest bumps
+stay quiet. `.nvmrc` is compared exactly too. Changing what CI runs therefore means editing
+`WORKFLOW_LINES` in the same pull request.
 
-- `WORKFLOW_COMMANDS` — every command CI runs, in order.
-- `WORKFLOW_ACTIONS` — every action it calls, without the SHA, which is still required and checked
-  separately so Dependabot's digest bumps stay quiet.
-- `WORKFLOW_KEYS` — every YAML key the file may contain, including the single job name.
+Comments are stripped before matching, so commenting a step out fails the audit the same way
+deleting it does, and rewording a comment does not. Indentation is stripped as well: the list is
+what says where a line belongs, so a job-level `permissions:` block is two lines the reviewed
+workflow does not have, wherever it sits.
 
-It also requires `node-version-file: .nvmrc` and compares `.nvmrc` exactly. Comments are stripped
-before matching, so commenting a step out fails the audit the same way deleting it does. Changing
-what CI runs therefore means editing those constants in the same pull request.
+The list is exhaustive rather than limited to the security-relevant lines, because a partial list
+says nothing about what someone *adds* or *retunes* — a second `npm ci`, a `yarn install`, an
+unfamiliar action, a second job, `persist-credentials: true`, `runs-on: self-hosted`, an `env:` that
+reaches inside node and npm, an `if:` that turns a pinned step off. A pinned `run:` is only pinned
+while nothing else decides how it runs, so rather than name each way, anything that is not the
+reviewed line fails.
 
-The reader is line-based, so it insists every line be one it understands: `key: value`, optionally
-dashed. That rules out the YAML spellings it would otherwise miss — a folded scalar continuing a
-pinned command on the next line, a block scalar hiding a script under `run: |`, a flow mapping step,
-a second `---` document. Write the workflow in the plain style already there.
-
-All three lists are exhaustive rather than limited to the security-relevant lines, because a partial
-list says nothing about what someone *adds* — a second `npm ci`, a `yarn install`, an unfamiliar
-action, a second job. The key list is what makes the other two mean anything: a pinned `run:` is
-only pinned while nothing else decides how it runs. `shell:` picks the interpreter, `container:`
-picks the machine, `env:` reaches inside node and npm, `if:` turns the step off. Rather than name
-each of those, anything not on the list fails.
+Matching whole lines is also what rules out the YAML spellings a looser reader would miss: a folded
+scalar continuing a pinned command on the next line, a block scalar hiding a script under `run: |`,
+a flow mapping step, `on: {pull_request: null, pull_request_target: null}` on one line, a quoted
+`"run":` key, an anchor, a second `---` document. None of them is the reviewed line. Write the
+workflow in the plain style already there.
 
 This is a drift gate, not a boundary against a hostile committer: anyone who can edit the workflow
 can edit the audit beside it. Its job is to make a weakening visible in review rather than
