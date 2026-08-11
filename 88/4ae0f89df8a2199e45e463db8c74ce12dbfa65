@@ -1,0 +1,24 @@
+test/worker.test.ts
+  s_7c8b13bff90366::t_212c76c7fae60e 1931
+  s_7c8b13bff90366::t_1734fb24489129 2036
+  s_7c8b13bff90366::t_6e034350e0b81f 2304
+  s_7c8b13bff90366::t_c27764aca5b3c9 2287-2289
+  s_7c8b13bff90366::t_1f2e71e49c5f9a 1999
+  s_7c8b13bff90366::t_8f0afd5bcdf527 1896-1900
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "884ae0f89df8a2199e45e463db8c74ce12dbfa65",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
