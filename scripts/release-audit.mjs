@@ -309,7 +309,7 @@ const WORKFLOW_LINES = [
   "- name: Verify",
   "run: npm run check",
   "- name: Install the browser the rendered-page tests drive",
-  "run: npx playwright install chromium",
+  "run: ./node_modules/.bin/playwright install chromium",
   "- name: Verify the rendered pages",
   "run: npm run test:browser",
   "- name: Keep a failing run's traces",

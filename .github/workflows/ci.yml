@@ -69,7 +69,7 @@ jobs:
       # the shared libraries the headless shell links against. Installing it
       # here rather than through an install script keeps the allowlist empty.
       - name: Install the browser the rendered-page tests drive
-        run: npx playwright install chromium
+        run: ./node_modules/.bin/playwright install chromium
 
       - name: Verify the rendered pages
         run: npm run test:browser
