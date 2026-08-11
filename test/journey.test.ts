@@ -7,6 +7,7 @@ type JourneyModule = {
   encodeJourneyDraft: (draft: unknown) => unknown;
   encodePendingMutationRecord: (record: unknown) => unknown;
   getJourneyStep: (state: unknown) => unknown;
+  pickAutoResource: (resources: unknown, previousId: unknown) => unknown;
   readOwnedBookingRecords: (records: unknown, now: number) => unknown;
   removeOwnedBookingRecord: (records: unknown, reservationId: string) => unknown;
   restoreJourneyDraft: (draft: unknown, current: unknown) => unknown;
@@ -14,6 +15,11 @@ type JourneyModule = {
     records: unknown,
     record: unknown,
     remember: boolean,
+  ) => unknown;
+  summarizeJourney: (
+    selection: unknown,
+    config: unknown,
+    availability: unknown,
   ) => unknown;
 };
 
@@ -361,4 +367,82 @@ test("accepts an 80-code-point astral customer name in a pending mutation", () =
     decodePendingMutationRecord(encodePendingMutationRecord(pending), now),
     pending,
   );
+});
+
+test("summarizes the journey from catalog labels and server-derived totals", () => {
+  const summarizeJourney = journey("summarizeJourney");
+  const config = {
+    services: [
+      { id: "trim", label: "カット" },
+      { id: "color", label: "カラー" },
+    ],
+    resources: [{ id: "chair-a", label: "担当 A" }],
+  };
+
+  assert.deepEqual(
+    summarizeJourney({ ...completeSelection, serviceIds: ["trim", "color"] }, config, null),
+    {
+      serviceLabels: ["カット", "カラー"],
+      resourceLabel: "担当 A",
+      date: "2026-08-20",
+      startTime: "10:00",
+      serviceMinutes: null,
+      cleanupMinutes: null,
+      occupiedMinutes: null,
+      priceYen: null,
+    },
+  );
+
+  const availability = {
+    services: [{ id: "trim", label: "カット（確定）" }],
+    resources: [{ id: "chair-a", label: "担当 A（確定）", startTimes: ["10:00"] }],
+    serviceMinutes: 60,
+    cleanupMinutes: 15,
+    occupiedMinutes: 75,
+    priceYen: 5_000,
+  };
+  assert.deepEqual(summarizeJourney(completeSelection, config, availability), {
+    serviceLabels: ["カット（確定）"],
+    resourceLabel: "担当 A（確定）",
+    date: "2026-08-20",
+    startTime: "10:00",
+    serviceMinutes: 60,
+    cleanupMinutes: 15,
+    occupiedMinutes: 75,
+    priceYen: 5_000,
+  });
+
+  assert.deepEqual(summarizeJourney(null, null, null), {
+    serviceLabels: [],
+    resourceLabel: null,
+    date: null,
+    startTime: null,
+    serviceMinutes: null,
+    cleanupMinutes: null,
+    occupiedMinutes: null,
+    priceYen: null,
+  });
+});
+
+test("auto-assigns the steadiest resource when choice is hidden", () => {
+  const pickAutoResource = journey("pickAutoResource");
+  const resources = [
+    { id: "chair-a", label: "担当 A", startTimes: ["10:00"] },
+    { id: "chair-b", label: "担当 B", startTimes: ["10:00", "11:00"] },
+    { id: "chair-c", label: "担当 C", startTimes: ["09:00", "13:00"] },
+  ];
+
+  assert.deepEqual(pickAutoResource(resources, "chair-a"), resources[0]);
+  assert.deepEqual(pickAutoResource(resources, null), resources[1]);
+  assert.deepEqual(pickAutoResource(resources, "unknown"), resources[1]);
+  assert.deepEqual(
+    pickAutoResource([{ ...resources[0], startTimes: [] }, resources[1]], "chair-a"),
+    resources[1],
+  );
+  assert.deepEqual(
+    pickAutoResource([{ ...resources[0], startTimes: [] }], "chair-a"),
+    { ...resources[0], startTimes: [] },
+  );
+  assert.equal(pickAutoResource([], "chair-a"), null);
+  assert.equal(pickAutoResource(undefined, null), null);
 });

@@ -14,10 +14,10 @@
 
 **Purpose**: `availabilityNotice` + `exposeResourceChoice` end to end (validation → public config → setup screen), riding the existing settings-version mechanics so drafts reset correctly.
 
-- [ ] T001 Add `availabilityNotice` (optional string, trimmed, 1–200 chars, plain text) and `exposeResourceChoice` (boolean, default true) to the settings shape, validation, defaults and OPTIONAL_SETTINGS_KEYS in `src/installation-config.ts`
-- [ ] T002 Expose both fields in the public `/api/config` projection and the owner setup projection in `src/worker.ts`
-- [ ] T003 Add the notice textarea and the resource-choice checkbox to the setup screen: markup in `public/setup.html`, load/save wiring in `startSetup` in `public/app.js`
-- [ ] T004 Worker tests in `test/worker.test.ts`: notice bounds (empty/1/200/201 chars, whitespace trim), flag default and round-trip, both fields visible in public config, settings-version bump on change
+- [X] T001 Add `availabilityNotice` (optional string, trimmed, 1–200 chars, plain text) and `exposeResourceChoice` (boolean, default true) to the settings shape, validation, defaults and OPTIONAL_SETTINGS_KEYS in `src/installation-config.ts`
+- [X] T002 Expose both fields in the public `/api/config` projection and the owner setup projection in `src/worker.ts`
+- [X] T003 Add the notice textarea and the resource-choice checkbox to the setup screen: markup in `public/setup.html`, load/save wiring in `startSetup` in `public/app.js`
+- [X] T004 Worker tests in `test/worker.test.ts`: notice bounds (empty/1/200/201 chars, whitespace trim), flag default and round-trip, both fields visible in public config, settings-version bump on change
 
 **Checkpoint**: `npm run check` green; setup screen edits and persists both fields.
 
@@ -29,11 +29,11 @@
 
 **Independent Test**: Rendered browser test walks selection → details → review at 320/360/768/1440 px, edits from the card, and sees the change reflected.
 
-- [ ] T005 [US1] Summary derivation as pure functions in `public/journey.js` (selection/service labels, duration and price totals from server-derived values, resource label, date/slot) with unit tests in `test/journey.test.ts`
-- [ ] T006 [US1] Details-step summary card markup with per-field edit links and review-step confirmation panel markup in `public/index.html`
-- [ ] T007 [US1] Wire the card in `startCustomer` in `public/app.js`: render from journey state, edit links jump to the owning step, review panel isolation, `exposeResourceChoice=false` hides the select and shows the auto-assigned resource
-- [ ] T008 [US1] Card, confirmation panel and CTA styles in `public/styles.css` (all themes, forced-colors, reduced-motion)
-- [ ] T009 [US1] Browser tests in `tests-browser/customer.spec.ts`: card contents match choices, edit-link jump round-trip, confirmation panel present, resource line visible, axe + overflow at the four viewports
+- [X] T005 [US1] Summary derivation as pure functions in `public/journey.js` (selection/service labels, duration and price totals from server-derived values, resource label, date/slot) with unit tests in `test/journey.test.ts`
+- [X] T006 [US1] Details-step summary card markup with per-field edit links and review-step confirmation panel markup in `public/index.html`
+- [X] T007 [US1] Wire the card in `startCustomer` in `public/app.js`: render from journey state, edit links jump to the owning step, review panel isolation, `exposeResourceChoice=false` hides the select and shows the auto-assigned resource
+- [X] T008 [US1] Card, confirmation panel and CTA styles in `public/styles.css` (all themes, forced-colors, reduced-motion)
+- [X] T009 [US1] Browser tests in `tests-browser/customer.spec.ts`: card contents match choices, edit-link jump round-trip, confirmation panel present, resource line visible, axe + overflow at the four viewports
 
 **Checkpoint**: US1 demoable on its own; suite green.
 

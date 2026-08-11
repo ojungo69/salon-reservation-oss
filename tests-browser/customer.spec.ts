@@ -1,6 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import {
+  BROWSER_ORIGIN,
+  OWNER_TOKEN,
+  SERVER_ORIGIN,
   VIEWPORTS,
   expectNoAxeViolations,
   expectNoHorizontalOverflow,
@@ -236,3 +239,116 @@ for (const viewport of VIEWPORTS) {
     }
   });
 }
+
+/**
+ * Rewrites the stored settings with the resource-choice flag set, cleared, or
+ * restored. Talks to the dev server from Node the same way the create forward
+ * does, so a wedged page cannot strand the shared installation in the hidden
+ * state for the specs that follow.
+ */
+const setResourceChoice = async (page: Page, expose: boolean | null): Promise<void> => {
+  const headers = {
+    host: new URL(BROWSER_ORIGIN).host,
+    origin: BROWSER_ORIGIN,
+    authorization: `Bearer ${OWNER_TOKEN}`,
+  };
+  const currentResponse = await page.request.fetch(`${SERVER_ORIGIN}/api/admin/setup`, { headers });
+  expect(currentResponse.status()).toBe(200);
+  const current = (await currentResponse.json()) as {
+    settingsVersion: number;
+    settings: Record<string, unknown>;
+  };
+  const { exposeResourceChoice: _previous, ...settings } = current.settings;
+  const response = await page.request.fetch(`${SERVER_ORIGIN}/api/admin/setup`, {
+    method: "PUT",
+    headers: { ...headers, "content-type": "application/json" },
+    data: {
+      commandId: crypto.randomUUID(),
+      expectedSettingsVersion: current.settingsVersion,
+      settings: expose === null ? settings : { ...settings, exposeResourceChoice: expose },
+    },
+  });
+  expect(response.status(), "resource-choice settings update").toBe(200);
+};
+
+test("the details step summarizes the choices and edit links jump back to the owning field", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+  await page.locator("#service-list input").first().check();
+  await chooseSlot(page, "11:00");
+  const date = await page.locator("#booking-date").inputValue();
+  const resourceLabel = (await page.locator("#booking-resource option:checked").textContent()) ?? "";
+  expect(resourceLabel).not.toBe("");
+  await page.click("#selection-next");
+
+  await expect(page.locator("[data-summary-card]")).toBeVisible();
+  await expect(page.locator("[data-summary-services]")).not.toHaveText("未選択");
+  await expect(page.locator("[data-summary-resource]")).toHaveText(resourceLabel);
+  await expect(page.locator("[data-summary-time]")).toHaveText(`${date} 11:00`);
+  await expect(page.locator("[data-summary-duration]")).toContainText("計");
+  // The demo catalog publishes no price, so the availability-backed wording is
+  // the announce-on-site copy rather than a number.
+  await expect(page.locator("[data-summary-price]")).toHaveText("料金は当日ご案内します");
+
+  await page.click("[data-summary-edit='booking-date']");
+  await expect(page.locator("#journey-selection")).toBeVisible();
+  await expect(page.locator("#booking-date")).toBeFocused();
+  await page.locator('#slot-list input[value="12:00"]').check();
+  await page.click("#selection-next");
+  await expect(page.locator("[data-summary-time]")).toHaveText(`${date} 12:00`);
+
+  await page.fill("#customer-name", "要約 確認");
+  await page.fill("#customer-contact", "summary-card@example.invalid");
+  await page.check("#booking-consent");
+  await page.click("#details-next");
+  await expect(page.locator("[data-confirmation-panel]")).toBeVisible();
+  await expect(page.locator("[data-review-resource]")).toHaveText(resourceLabel);
+  await expect(page.locator("[data-review-time]")).toHaveText(`${date} 12:00`);
+});
+
+test("the summary card and confirmation panel fit every supported viewport", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+  // 13:00 stays free: the booking specs take the first morning slot, 15:00 and 16:00.
+  await fillJourney(page, { startTime: "13:00" });
+  await expectNoAxeViolations(page);
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expectNoHorizontalOverflow(page);
+  }
+
+  await page.click("[data-journey-back='details']");
+  await expect(page.locator("[data-summary-card]")).toBeVisible();
+  await expectNoAxeViolations(page);
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expectNoHorizontalOverflow(page);
+  }
+});
+
+test("hiding the resource choice auto-assigns and shows the assignment on every surface", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+  await setResourceChoice(page, false);
+  try {
+    await page.reload();
+    await page.locator("#service-list input").first().check();
+    await chooseSlot(page, "14:00");
+    await expect(page.locator("[data-resource-row]")).toBeHidden();
+    await expect(page.locator("[data-assigned-resource]")).toBeVisible();
+    await expect(page.locator("[data-assigned-resource]")).toContainText("自動で割り当てました");
+
+    await page.click("#selection-next");
+    await expect(page.locator("[data-summary-resource]")).not.toHaveText("未選択");
+    await expect(page.locator("[data-summary-edit='booking-resource']")).toBeHidden();
+
+    await page.fill("#customer-name", "自動 割当");
+    await page.fill("#customer-contact", "auto-resource@example.invalid");
+    await page.check("#booking-consent");
+    await page.click("#details-next");
+    await expect(page.locator("[data-confirmation-panel]")).toBeVisible();
+    await expect(page.locator("[data-review-resource]")).not.toHaveText("未選択");
+  } finally {
+    await setResourceChoice(page, null);
+  }
+});

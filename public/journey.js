@@ -250,3 +250,55 @@ export const decodePendingMutationRecord = (encoded, now) => {
     ? record
     : null;
 };
+
+const findById = (entries, id) =>
+  Array.isArray(entries) && id !== null
+    ? entries.find((entry) => isObject(entry) && entry.id === id) ?? null
+    : null;
+
+// Summary shared by the details-step card and the review panel. Labels fall
+// back to the public catalog until an availability response is loaded;
+// server-derived totals stay null until the server confirms them.
+export const summarizeJourney = (selection, config, availability) => {
+  const serviceIds =
+    isObject(selection) && Array.isArray(selection.serviceIds)
+      ? selection.serviceIds.filter(isIdentifier)
+      : [];
+  const services =
+    Array.isArray(availability?.services) && availability.services.length > 0
+      ? availability.services
+      : serviceIds.map((id) => findById(config?.services, id)).filter(Boolean);
+  const resourceId =
+    isObject(selection) && isIdentifier(selection.resourceId) ? selection.resourceId : null;
+  const resource =
+    findById(availability?.resources, resourceId) ?? findById(config?.resources, resourceId);
+  const total = (value) => (isInteger(value) ? value : null);
+  return {
+    serviceLabels: services
+      .map((service) => (isObject(service) ? service.label : null))
+      .filter((label) => typeof label === "string"),
+    resourceLabel: typeof resource?.label === "string" ? resource.label : null,
+    date: isObject(selection) && isDate(selection.date) ? selection.date : null,
+    startTime: isObject(selection) && isTime(selection.startTime) ? selection.startTime : null,
+    serviceMinutes: total(availability?.serviceMinutes),
+    cleanupMinutes: total(availability?.cleanupMinutes),
+    occupiedMinutes: total(availability?.occupiedMinutes),
+    priceYen: total(availability?.priceYen),
+  };
+};
+
+// Auto-assignment when the operator hides resource choice: keep the previous
+// pick while it still has open times, otherwise take the resource with the
+// most start times (ties keep server order).
+export const pickAutoResource = (resources, previousId) => {
+  const eligible = (Array.isArray(resources) ? resources : []).filter(
+    (entry) => isObject(entry) && isIdentifier(entry.id) && Array.isArray(entry.startTimes),
+  );
+  const previous = eligible.find(({ id }) => id === previousId) ?? null;
+  if (previous && previous.startTimes.length > 0) return previous;
+  let best = previous;
+  for (const entry of eligible) {
+    if (best === null || entry.startTimes.length > best.startTimes.length) best = entry;
+  }
+  return best;
+};

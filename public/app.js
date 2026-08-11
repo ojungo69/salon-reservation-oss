@@ -4,10 +4,12 @@ import {
   encodeJourneyDraft,
   encodePendingMutationRecord,
   getJourneyStep,
+  pickAutoResource,
   readOwnedBookingRecords,
   removeOwnedBookingRecord,
   restoreJourneyDraft,
   saveOwnedBookingRecord,
+  summarizeJourney,
 } from "./journey.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -302,6 +304,8 @@ const startCustomer = async () => {
   const remember = $("[data-remember-booking]");
   const keyStatus = $("#key-status");
   const modeNotice = $("[data-installation-mode-notice]");
+  const resourceRow = $("[data-resource-row]");
+  const assignedResource = $("[data-assigned-resource]");
   let config;
   let availability = null;
   let journeyStep = "selection";
@@ -400,6 +404,9 @@ const startCustomer = async () => {
     $$("input[name='serviceIds']", serviceList).forEach((input) => {
       input.disabled = active;
     });
+    $$("[data-summary-edit]").forEach((button) => {
+      button.disabled = active;
+    });
     dateInput.disabled = active;
     resourceSelect.disabled = active || !availability;
     slotField.disabled = active || !availability;
@@ -412,27 +419,44 @@ const startCustomer = async () => {
     updateActions();
   };
 
+  const resourceChoiceExposed = () => config?.exposeResourceChoice !== false;
+
+  const summaryText = () => {
+    const summary = summarizeJourney(selection(), config, availability);
+    return {
+      services: summary.serviceLabels.join("、") || "未選択",
+      resource: summary.resourceLabel ?? "未選択",
+      time:
+        summary.date && summary.startTime
+          ? formatDateTime(summary.date, summary.startTime)
+          : "未選択",
+      duration:
+        summary.occupiedMinutes === null
+          ? "送信時に再確認します"
+          : `${summary.serviceMinutes}分 + 準備 ${summary.cleanupMinutes}分（計 ${summary.occupiedMinutes}分）`,
+      // occupiedMinutes doubles as the loaded-availability signal: a null price
+      // on loaded availability legitimately means the price is announced on site.
+      price:
+        summary.occupiedMinutes === null ? "送信時に再確認します" : formatPrice(summary.priceYen),
+    };
+  };
+
+  const renderSummaryCard = () => {
+    const text = summaryText();
+    $("[data-summary-services]").textContent = text.services;
+    $("[data-summary-resource]").textContent = text.resource;
+    $("[data-summary-time]").textContent = text.time;
+    $("[data-summary-duration]").textContent = text.duration;
+    $("[data-summary-price]").textContent = text.price;
+  };
+
   const renderReview = () => {
-    const current = selection();
-    const selectedServices = availability?.services ?? current.serviceIds
-      .map((id) => config.services.find((service) => service.id === id))
-      .filter(Boolean);
-    const resource =
-      availability?.resources?.find(({ id }) => id === current.resourceId) ??
-      config.resources.find(({ id }) => id === current.resourceId);
-    $("[data-review-services]").textContent =
-      selectedServices.map(({ label }) => label).join("、") || "未選択";
-    $("[data-review-resource]").textContent = resource?.label ?? "未選択";
-    $("[data-review-time]").textContent =
-      current.date && current.startTime
-        ? formatDateTime(current.date, current.startTime)
-        : "未選択";
-    $("[data-review-duration]").textContent = availability
-      ? `${availability.serviceMinutes}分 + 準備 ${availability.cleanupMinutes}分（計 ${availability.occupiedMinutes}分）`
-      : "送信時に再確認します";
-    $("[data-review-price]").textContent = availability
-      ? formatPrice(availability.priceYen)
-      : "送信時に再確認します";
+    const text = summaryText();
+    $("[data-review-services]").textContent = text.services;
+    $("[data-review-resource]").textContent = text.resource;
+    $("[data-review-time]").textContent = text.time;
+    $("[data-review-duration]").textContent = text.duration;
+    $("[data-review-price]").textContent = text.price;
     $("[data-review-name]").textContent = details().customerName || "未入力";
     $("[data-review-contact]").textContent = details().contact || "未入力";
   };
@@ -488,6 +512,7 @@ const startCustomer = async () => {
     } else if (history === "replace") {
       window.history.replaceState({ journeyStep: nextStep }, "");
     }
+    if (nextStep === "details") renderSummaryCard();
     if (nextStep === "review") {
       renderReview();
       void ensureTurnstile();
@@ -541,6 +566,23 @@ const startCustomer = async () => {
     updateActions();
   };
 
+  // Hides the resource select when the operator keeps assignment automatic.
+  // The select stays in the DOM as the single source of the chosen resource.
+  const applyResourceMode = () => {
+    const exposed = resourceChoiceExposed();
+    resourceRow.hidden = !exposed;
+    $("[data-summary-edit='booking-resource']").hidden = !exposed;
+    if (exposed) {
+      assignedResource.hidden = true;
+      assignedResource.textContent = "";
+    }
+  };
+
+  const clearAssignedResource = () => {
+    assignedResource.hidden = true;
+    assignedResource.textContent = "";
+  };
+
   const resetAvailability = () => {
     availability = null;
     resourceSelect.replaceChildren(new Option("サービスと日付を選ぶと表示されます", ""));
@@ -549,6 +591,7 @@ const startCustomer = async () => {
       createElement("p", "empty-note", "サービス、日付、担当・設備を選んでください。"),
     );
     slotField.disabled = true;
+    clearAssignedResource();
     updateActions();
   };
 
@@ -575,7 +618,16 @@ const startCustomer = async () => {
         resourceSelect.append(new Option(resource.label, resource.id));
       }
       const requestedResource = pending?.request.resourceId ?? previousResource;
-      if (loaded.resources.some(({ id }) => id === requestedResource)) {
+      if (!resourceChoiceExposed()) {
+        const assigned = pending
+          ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
+          : pickAutoResource(loaded.resources, requestedResource);
+        resourceSelect.value = assigned?.id ?? "";
+        assignedResource.textContent = assigned
+          ? `担当・設備は「${assigned.label}」を自動で割り当てました。`
+          : "";
+        assignedResource.hidden = assigned === null;
+      } else if (loaded.resources.some(({ id }) => id === requestedResource)) {
         resourceSelect.value = requestedResource;
       } else if (loaded.resources.length === 1 && !pending) {
         resourceSelect.value = loaded.resources[0].id;
@@ -620,6 +672,7 @@ const startCustomer = async () => {
   try {
     config = await api("/api/config");
     applyPublicConfig(config);
+    applyResourceMode();
     modeNotice.hidden = config.mode === "live";
     const today = jstToday();
     dateInput.min = today;
@@ -667,7 +720,8 @@ const startCustomer = async () => {
         if (restored.serviceIds.join() !== selected.join()) renderServices(restored.serviceIds);
         dateInput.value = restored.date ?? today;
         if (availability) {
-          resourceSelect.value = restored.resourceId ?? "";
+          // Under automatic assignment loadAvailability already picked the value.
+          if (resourceChoiceExposed()) resourceSelect.value = restored.resourceId ?? "";
           renderSlots(restored.startTime);
         }
         setStep(restored.step, { history: "replace", focus: false });
@@ -702,6 +756,18 @@ const startCustomer = async () => {
   consentInput.addEventListener("change", updateActions);
   selectionNext.addEventListener("click", () => setStep("details"));
   detailsNext.addEventListener("click", () => setStep("review"));
+  $$("[data-summary-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setStep("selection", { focus: false });
+      queueMicrotask(() => {
+        const target = document.getElementById(button.dataset.summaryEdit);
+        if (!target) return;
+        focusWithoutScroll(
+          target.matches("fieldset") ? ($("input", target) ?? target) : target,
+        );
+      });
+    });
+  });
   $$("[data-journey-back]").forEach((button) => {
     button.addEventListener("click", () => setStep(button.dataset.journeyBack));
   });
@@ -812,6 +878,7 @@ const startCustomer = async () => {
             const selected = selectedServiceIds();
             config = await api("/api/config");
             applyPublicConfig(config);
+            applyResourceMode();
             modeNotice.hidden = config.mode === "live";
             dateInput.max = addDays(jstToday(), config.schedule.horizonDays - 1);
             renderServices(selected.filter((id) => config.services.some((service) => service.id === id)));

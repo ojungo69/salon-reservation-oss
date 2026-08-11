@@ -85,7 +85,7 @@
               <label for="booking-date">日付</label>
               <input id="booking-date" name="date" type="date" required>
             </div>
-            <div class="field-row">
+            <div class="field-row" data-resource-row>
               <label for="booking-resource">担当・設備</label>
               <select id="booking-resource" name="resourceId" required disabled aria-describedby="resource-help">
                 <option value="">サービスと日付を選ぶと表示されます</option>
@@ -93,6 +93,7 @@
               <p id="resource-help" class="helper">対応できる候補だけを表示します。</p>
             </div>
           </div>
+          <p class="helper" data-assigned-resource hidden></p>
 
           <fieldset id="slot-field" class="slot-field" disabled aria-describedby="slot-help">
             <legend>開始時間</legend>
@@ -134,6 +135,29 @@
               <p>予約内容の確認に必要な情報だけを入力します。</p>
             </div>
           </div>
+
+          <section class="summary-card" data-summary-card aria-labelledby="summary-card-title">
+            <h3 id="summary-card-title">ここまでの選択</h3>
+            <dl class="summary-list">
+              <div>
+                <dt>サービス</dt>
+                <dd data-summary-services>未選択</dd>
+                <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="service-field" aria-label="サービスを選び直す">変更</button></dd>
+              </div>
+              <div data-summary-resource-row>
+                <dt>担当・設備</dt>
+                <dd data-summary-resource>未選択</dd>
+                <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="booking-resource" aria-label="担当・設備を選び直す">変更</button></dd>
+              </div>
+              <div>
+                <dt>日時</dt>
+                <dd data-summary-time>未選択</dd>
+                <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="booking-date" aria-label="日時を選び直す">変更</button></dd>
+              </div>
+              <div><dt>所要時間</dt><dd data-summary-duration>送信時に再確認します</dd></div>
+              <div><dt>表示料金</dt><dd data-summary-price>送信時に再確認します</dd></div>
+            </dl>
+          </section>
 
           <div class="field-grid">
             <div class="field-row">
@@ -204,34 +228,36 @@
             </div>
           </div>
 
-          <dl id="booking-review" class="summary-list" data-booking-review>
-            <div><dt>サービス</dt><dd data-review-services>選択後に表示されます</dd></div>
-            <div><dt>担当・設備</dt><dd data-review-resource>選択後に表示されます</dd></div>
-            <div><dt>日時</dt><dd data-review-time>選択後に表示されます</dd></div>
-            <div><dt>所要時間</dt><dd data-review-duration>選択後に表示されます</dd></div>
-            <div><dt>表示料金</dt><dd data-review-price>選択後に表示されます</dd></div>
-            <div><dt>お名前</dt><dd data-review-name>入力後に表示されます</dd></div>
-            <div><dt>ご連絡先</dt><dd data-review-contact>入力後に表示されます</dd></div>
-            <div><dt>同意する文書版</dt><dd data-consent-version>読込後に表示されます</dd></div>
-          </dl>
+          <div class="confirmation-panel" data-confirmation-panel>
+            <dl id="booking-review" class="summary-list" data-booking-review>
+              <div><dt>サービス</dt><dd data-review-services>選択後に表示されます</dd></div>
+              <div><dt>担当・設備</dt><dd data-review-resource>選択後に表示されます</dd></div>
+              <div><dt>日時</dt><dd data-review-time>選択後に表示されます</dd></div>
+              <div><dt>所要時間</dt><dd data-review-duration>選択後に表示されます</dd></div>
+              <div><dt>表示料金</dt><dd data-review-price>選択後に表示されます</dd></div>
+              <div><dt>お名前</dt><dd data-review-name>入力後に表示されます</dd></div>
+              <div><dt>ご連絡先</dt><dd data-review-contact>入力後に表示されます</dd></div>
+              <div><dt>同意する文書版</dt><dd data-consent-version>読込後に表示されます</dd></div>
+            </dl>
 
-          <div id="turnstile-widget" class="turnstile-box" aria-label="自動送信防止の確認"></div>
-          <div class="action-bar">
-            <button class="text-button" type="button" data-journey-back="details">連絡先の入力に戻る</button>
-            <div class="action-stack">
-              <p id="review-help" class="action-help" data-journey-help="review">
-                内容を確認し、自動送信防止の確認を完了すると送信できます。
-              </p>
-              <button
-                id="booking-submit"
-                class="primary-button"
-                type="submit"
-                data-booking-submit
-                aria-describedby="review-help"
-                disabled
-              >
-                この内容で予約を申請する
-              </button>
+            <div id="turnstile-widget" class="turnstile-box" aria-label="自動送信防止の確認"></div>
+            <div class="action-bar">
+              <button class="text-button" type="button" data-journey-back="details">連絡先の入力に戻る</button>
+              <div class="action-stack">
+                <p id="review-help" class="action-help" data-journey-help="review">
+                  内容を確認し、自動送信防止の確認を完了すると送信できます。
+                </p>
+                <button
+                  id="booking-submit"
+                  class="primary-button"
+                  type="submit"
+                  data-booking-submit
+                  aria-describedby="review-help"
+                  disabled
+                >
+                  この内容で予約を申請する
+                </button>
+              </div>
             </div>
           </div>
           <p id="booking-status" class="status" role="status" aria-live="polite" data-booking-status></p>

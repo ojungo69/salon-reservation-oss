@@ -749,6 +749,44 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 
+.summary-card {
+  margin-bottom: 1.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
+.summary-card .summary-list {
+  margin-bottom: 0;
+  border-top: 0;
+}
+
+.summary-card .summary-list > div {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.summary-card .summary-list > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.summary-card .summary-list dt,
+.summary-card .summary-list dd {
+  grid-column: 1;
+}
+
+.summary-card .summary-list .summary-edit {
+  grid-area: 1 / 2 / span 2 / auto;
+  align-self: center;
+}
+
+.confirmation-panel {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
 .result-box {
   margin-top: 1rem;
   padding: clamp(1.15rem, 3vw, 2rem);
@@ -1445,6 +1483,8 @@ textarea::placeholder {
   .mode-notice,
   .panel,
   .journey-stage,
+  .summary-card,
+  .confirmation-panel,
   .empty-state,
   .result-box,
   .reservation-item,
