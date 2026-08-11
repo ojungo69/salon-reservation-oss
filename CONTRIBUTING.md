@@ -111,15 +111,20 @@ bump that pulls a new `workerd`), two files must be updated together:
 That duplication is deliberate. It forces a human to look at the new install script before it runs
 in CI. Do not relax the audit to avoid the second edit.
 
-The workflow steps that carry this policy — `node-version-file: .nvmrc`, the pinned global npm, both
-`--ignore-scripts`, and the `npm install-scripts ls` gate — are themselves pinned by
-`REQUIRED_WORKFLOW_STEPS` in `scripts/release-audit.mjs`, and `.nvmrc` is compared exactly. Each has
-to appear as an active line: comments are stripped before matching, so commenting a step out fails
-the audit the same way deleting it does. The workflow must also install packages exactly twice —
-adding another `npm ci`, `npm install`, or `npm rebuild`, or chaining one onto an existing step,
-fails the audit. Editing any of those lines fails it too, until the constant is updated in the same
-change. Without that, removing the enforcement would leave a build that still passes every other
-check.
+The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds the exact,
+ordered list of every command CI runs in `WORKFLOW_COMMANDS`, requires `node-version-file: .nvmrc`,
+compares `.nvmrc` exactly, allows only one job, and rejects `if:` and `continue-on-error:`. Comments
+are stripped before matching, so commenting a step out fails the audit the same way deleting it
+does. Changing what CI runs therefore means editing that constant in the same pull request.
+
+The list is exhaustive rather than limited to the security-relevant steps because a partial list
+says nothing about a step someone *adds* — a second `npm ci`, a `yarn install`, a command chained
+onto a pinned one. Dependabot only bumps `uses:` SHAs, which the list does not cover, so it stays
+quiet in practice.
+
+This is a drift gate, not a boundary against a hostile committer: anyone who can edit the workflow
+can edit the audit beside it. Its job is to make a weakening visible in review rather than
+accidental.
 
 ## Pull requests
 

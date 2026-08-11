@@ -256,19 +256,21 @@ const auditPackage = () => {
   }
 };
 
-// The install-script policy is only worth anything while every one of these
-// lines is present: the pinned npm is what enforces allowScripts at all, the two
-// --ignore-scripts keep third-party install code from running, and the listing
-// gate is what makes the allowlist real rather than decorative. Deleting any of
-// them leaves a workflow that still passes every other check, so they are named
-// here for the same reason .npmrc and engines are.
-const REQUIRED_WORKFLOW_STEPS = [
-  "node-version-file: .nvmrc",
-  "run: npm install -g --ignore-scripts npm@12.0.2",
-  "run: npm ci --ignore-scripts",
-  `run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
+// Everything the workflow executes, in order. Naming the whole set rather than
+// the security-relevant subset is what makes the check hold: the pinned npm is
+// what enforces allowScripts at all, --ignore-scripts is what keeps third-party
+// install code from running, and the listing gate is what makes the allowlist
+// real rather than decorative — but a workflow may also not grow a step that
+// installs some other way, which only an exhaustive list can say. Dependabot
+// bumps `uses:` SHAs and never touches these, so the list stays quiet.
+const WORKFLOW_COMMANDS = [
+  "npm install -g --ignore-scripts npm@12.0.2",
+  "node --version && npm --version",
+  "npm ci --ignore-scripts",
+  `test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
+  "npm run check",
 ];
-const REQUIRED_WORKFLOW_INSTALLS = 2;
+const REQUIRED_WORKFLOW_LINES = ["node-version-file: .nvmrc"];
 
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
@@ -277,26 +279,28 @@ const auditWorkflow = () => {
     if (!/@[0-9a-f]{40}$/.test(match[1])) fail(`GitHub Action is not commit-pinned: ${match[1]}`);
   }
   if (!/^permissions:\n\s+contents: read$/m.test(workflow)) fail("workflow permissions drift");
-  // Comments are stripped before matching, so a required line cannot be
+  // Comments are stripped before matching, so a pinned command cannot be
   // satisfied by text that never runs: `run: npm ci # run: npm ci
   // --ignore-scripts` keeps the string and drops the flag.
   const activeLines = workflow
     .split("\n")
     .map((line) => line.replace(/\s+#.*$/, "").trim())
     .filter((line) => line.length !== 0 && !line.startsWith("#"));
-  const active = new Set(activeLines);
-  for (const step of REQUIRED_WORKFLOW_STEPS) {
-    if (!active.has(step)) fail(`install-script enforcement drift: ${step}`);
+  for (const line of REQUIRED_WORKFLOW_LINES) {
+    if (!activeLines.includes(line)) fail(`install-script enforcement drift: ${line}`);
   }
-  // Requiring the two known installs is not enough on its own: a third one
-  // added later would run install scripts past the point where the allowlist
-  // gate has already reported on them. Since both permitted installs are pinned
-  // above as whole lines, counting every install in the file is what closes
-  // that off — including a second command chained onto a permitted line, which
-  // would no longer match it.
-  const installs = activeLines.join("\n").match(/\bnpm (?:ci|install|rebuild)(?![\w-])/g) ?? [];
-  if (installs.length !== REQUIRED_WORKFLOW_INSTALLS) {
-    fail(`workflow installs packages ${installs.length} times, expected ${REQUIRED_WORKFLOW_INSTALLS}`);
+  // A pinned command that never executes is the same as a deleted one, and a
+  // second job is a place to install outside the pinned sequence.
+  if (activeLines.some((line) => /^(?:if|continue-on-error)\s*:/.test(line))) {
+    fail("conditional workflow steps could skip the install-script policy");
+  }
+  const jobs = activeLines.filter((line) => /^runs-on\s*:/.test(line));
+  if (jobs.length !== 1) fail(`workflow must define one job, found ${jobs.length}`);
+  const commands = activeLines
+    .filter((line) => line.startsWith("run:"))
+    .map((line) => line.slice("run:".length).trim());
+  if (JSON.stringify(commands) !== JSON.stringify(WORKFLOW_COMMANDS)) {
+    fail(`workflow command drift: ${JSON.stringify(commands)}`);
   }
 };
 
