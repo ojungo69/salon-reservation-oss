@@ -1,0 +1,34 @@
+tests-browser/owner.spec.ts
+  s_7c8b13bff90366::t_0667206d3dd294 14-16
+  s_7c8b13bff90366::t_27693330f02630 117
+  s_7c8b13bff90366::t_fa57b884446613 27-28
+  s_7c8b13bff90366::t_a0f8b317b1227a 17-21
+  s_7c8b13bff90366::t_e05a52e26b951f 29-42,47-48
+  s_7c8b13bff90366::t_c77d701f3724fb 119
+  s_7c8b13bff90366::t_db560db549d9a7 1
+  s_7c8b13bff90366::t_b68c5ef8399e3a 92-95,98-103,105-106
+  s_7c8b13bff90366::t_68b6331ddc2e47 22-26
+  s_7c8b13bff90366::t_5a85eab8a999b2 89-91
+  s_7c8b13bff90366::t_6ced144e031861 139,141
+  s_7c8b13bff90366::t_a2e6e4d44f9df4 110,118
+tests-browser/customer.spec.ts
+  s_7c8b13bff90366::t_789df2e76340c6 159
+playwright.config.ts
+  s_7c8b13bff90366::t_dc5f36a586c664 55-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "8098bb7b8fb91a44513300d6aee61fb6d0bd3aa2",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": null
+    }
+  }
+}
