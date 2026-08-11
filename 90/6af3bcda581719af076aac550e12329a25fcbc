@@ -1,0 +1,20 @@
+playwright.config.ts
+  s_7c8b13bff90366::t_b513cca1e35828 17-34,39-41,55-70
+  s_7c8b13bff90366::t_aa3f1c8bd14131 71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "906af3bcda581719af076aac550e12329a25fcbc",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
