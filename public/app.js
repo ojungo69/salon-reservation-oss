@@ -25,6 +25,7 @@ const STATUS_LABELS = {
   rejected: "受付見送り",
   cancelled: "取消済み",
   completed: "来店済み",
+  expired: "期限切れ",
   no_show: "無断不来",
 };
 
@@ -137,6 +138,15 @@ const formatPrice = (priceYen) =>
     : `${new Intl.NumberFormat("ja-JP").format(priceYen)}円`;
 
 const formatDateTime = (date, time) => `${date} ${time}`;
+
+// The store's clock, not the visitor's: a customer in another timezone reading
+// "18:00までに承認されないと期限切れ" has to be reading the salon's 18:00.
+const formatDeadline = (iso) =>
+  new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(iso));
 
 const sourceUrl = (value) => {
   try {
@@ -921,9 +931,12 @@ const startBookings = async () => {
     if (Object.hasOwn(STATUS_LABELS, booking.status)) badge.classList.add(`badge-${booking.status}`);
     $("[data-booking-time]", card).textContent = formatDateTime(booking.date, booking.startTime);
     $("[data-booking-resource]", card).textContent = booking.resourceLabel;
+    const statusLabel = STATUS_LABELS[booking.status] ?? "状態を確認できません";
     $("[data-booking-status-description]", card).textContent = booking.rejectionReason
       ? `${STATUS_LABELS[booking.status] ?? booking.status}（${booking.rejectionReason}）`
-      : STATUS_LABELS[booking.status] ?? "状態を確認できません";
+      : booking.expiresAt
+        ? `${statusLabel}（${formatDeadline(booking.expiresAt)}までに確認されないと期限切れになります）`
+        : statusLabel;
     $("[data-booking-allowed-actions]", card).textContent = booking.allowedActions.includes("cancel")
       ? "このページから取り消せます"
       : "現在利用できる操作はありません";
@@ -1097,6 +1110,7 @@ const startAdmin = async () => {
     ["rejected", "受付見送り"],
     ["cancelled", "取消済み"],
     ["completed", "来店済み"],
+    ["expired", "期限切れ"],
     ["no_show", "無断不来"],
   ]) statusFilter.append(new Option(label, value));
   filterField.append(filterLabel, statusFilter);
@@ -1183,7 +1197,9 @@ const startAdmin = async () => {
     selectedReservation = reservation;
     detail.hidden = false;
     $("[data-reservation-detail-title]").textContent = `予約番号 ${reservation.reservationId}`;
-    $("[data-detail-status]").textContent = STATUS_LABELS[reservation.status] ?? reservation.status;
+    $("[data-detail-status]").textContent = reservation.expiresAt
+      ? `${STATUS_LABELS[reservation.status] ?? reservation.status}（${formatDeadline(reservation.expiresAt)}で期限切れ）`
+      : STATUS_LABELS[reservation.status] ?? reservation.status;
     $("[data-detail-time]").textContent = formatDateTime(reservation.date, reservation.startTime);
     $("[data-detail-services]").textContent = reservationSummary(reservation);
     $("[data-detail-customer]").textContent = `${reservation.customerName} / ${reservation.contact}`;
@@ -2117,6 +2133,9 @@ const startSetup = async () => {
     $("[data-setup-interval]").value = state.settings.startIntervalMinutes;
     $("[data-setup-horizon]").value = state.settings.horizonDays;
     $("[data-setup-retention]").value = state.settings.retentionDays;
+    // The setup projection resolves the effective value, so this is only a
+    // guard against an older server that does not send it at all.
+    $("[data-setup-pending-expiry]").value = state.settings.pendingExpiryMinutes ?? 1440;
     for (const input of weekdayInputs) {
       input.checked = state.settings.openWeekdays.includes(Number(input.value));
     }
@@ -2160,6 +2179,7 @@ const startSetup = async () => {
     openWeekdays: weekdayInputs.filter(({ checked }) => checked).map(({ value }) => Number(value)),
     horizonDays: Number($("[data-setup-horizon]").value),
     retentionDays: Number($("[data-setup-retention]").value),
+    pendingExpiryMinutes: Number($("[data-setup-pending-expiry]").value),
     consentVersion: $("[data-setup-consent-version]").value.trim(),
     operatorDisplayName: $("[data-setup-operator-name]").value.trim(),
     operatorContact: $("[data-setup-operator-contact]").value.trim(),

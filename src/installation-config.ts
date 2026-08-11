@@ -43,6 +43,12 @@ export interface InstallationSettings {
   openWeekdays: number[];
   horizonDays: number;
   retentionDays: number;
+  // Optional on purpose. Stored settings are validated by re-serialising them
+  // and comparing the string to what is in storage, so a key this parser adds
+  // to an installation that predates it turns that installation into corrupt
+  // storage on the next read. Absence is preserved here and resolved to
+  // DEFAULT_PENDING_EXPIRY_MINUTES where the value is used.
+  pendingExpiryMinutes?: number;
   consentVersion: string;
   operatorDisplayName: string;
   operatorContact: string;
@@ -144,6 +150,7 @@ const SETTINGS_KEYS = [
   "openWeekdays",
   "horizonDays",
   "retentionDays",
+  "pendingExpiryMinutes",
   "consentVersion",
   "operatorDisplayName",
   "operatorContact",
@@ -178,6 +185,7 @@ const TEST_SITE_KEYS = new Set([
   "3x00000000000000000000FF",
 ]);
 const STORED_STATE_BYTE_BUDGET = 1_800_000;
+export const DEFAULT_PENDING_EXPIRY_MINUTES = 1440;
 
 const DEFAULT_SETTINGS = {
   locationName: "架空予約サロン",
@@ -201,6 +209,7 @@ const DEFAULT_SETTINGS = {
   openWeekdays: [1, 2, 3, 4, 5, 6],
   horizonDays: 30,
   retentionDays: 30,
+  pendingExpiryMinutes: DEFAULT_PENDING_EXPIRY_MINUTES,
   consentVersion: "demo-consent-v1",
   operatorDisplayName: "未設定",
   operatorContact: "未設定です",
@@ -232,6 +241,22 @@ const hasExactKeys = (
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
 };
+
+// Settings written before a key existed are still valid settings. The same
+// parser reads a stored version record and an incoming update, so refusing a
+// missing key would turn every installation that predates the key into corrupt
+// storage. Only keys listed here may be absent, and absence is carried through
+// rather than filled in, because the stored JSON has to round-trip byte for
+// byte. An unknown key is still refused.
+const OPTIONAL_SETTINGS_KEYS = ["pendingExpiryMinutes"] as const;
+
+const hasKnownKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+  optional: readonly string[],
+): boolean =>
+  Object.keys(value).every((key) => keys.includes(key)) &&
+  keys.every((key) => optional.includes(key) || Object.hasOwn(value, key));
 
 const codePointLength = (value: string): number => Array.from(value).length;
 
@@ -368,7 +393,9 @@ const parseService = (value: unknown, index: number): InstallationService => {
 };
 
 export const parseInstallationSettings = (value: unknown): InstallationSettings => {
-  if (!isRecord(value) || !hasExactKeys(value, SETTINGS_KEYS)) return invalid("settings");
+  if (!isRecord(value) || !hasKnownKeys(value, SETTINGS_KEYS, OPTIONAL_SETTINGS_KEYS)) {
+    return invalid("settings");
+  }
   if (!Array.isArray(value.services) || value.services.length < 1 || value.services.length > 16) {
     return invalid("services");
   }
@@ -447,6 +474,16 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
     openWeekdays,
     horizonDays: boundedInteger(value.horizonDays, "horizonDays", 1, 90),
     retentionDays: boundedInteger(value.retentionDays, "retentionDays", 1, 365),
+    ...(value.pendingExpiryMinutes === undefined
+      ? {}
+      : {
+          pendingExpiryMinutes: boundedInteger(
+            value.pendingExpiryMinutes,
+            "pendingExpiryMinutes",
+            15,
+            10080,
+          ),
+        }),
     consentVersion: identifier(value.consentVersion, "consentVersion"),
     operatorDisplayName: boundedString(
       value.operatorDisplayName,

@@ -43,6 +43,7 @@ const validSettings = () => ({
   openWeekdays: [1, 2, 3, 4, 5, 6],
   horizonDays: 60,
   retentionDays: 30,
+  pendingExpiryMinutes: 720,
   consentVersion: "consent-v1",
   operatorDisplayName: "青空予約室 運営者",
   operatorContact: "お問い合わせフォームをご利用ください",
@@ -83,6 +84,7 @@ const maximumSettings = (): Settings => {
     openWeekdays: [0, 1, 2, 3, 4, 5, 6],
     horizonDays: 90,
     retentionDays: 365,
+    pendingExpiryMinutes: 10_080,
     consentVersion: "c".repeat(64),
     operatorDisplayName: "😀".repeat(120),
     operatorContact: "😀".repeat(200),
@@ -182,6 +184,7 @@ test("accepts exact settings boundaries and rejects adjacent invalid values", ()
     openWeekdays: [0],
     horizonDays: 1,
     retentionDays: 1,
+    pendingExpiryMinutes: 15,
     consentVersion: "v",
     operatorDisplayName: "運",
     operatorContact: "連絡先",
@@ -582,4 +585,26 @@ test("creates an exact secret-free installation receipt", async () => {
     assert.equal(new URL(link).protocol, "https:");
   }
   assert.doesNotMatch(JSON.stringify(receipt), /customer|ownerToken|secret|turnstileSecret/i);
+});
+
+test("settings stored before the pending lifetime existed still round-trip byte for byte", () => {
+  const legacy = validSettings();
+  delete (legacy as Partial<Settings>).pendingExpiryMinutes;
+  const stored = JSON.stringify(legacy);
+
+  // This is what the Durable Object asserts on every read: re-serialising the
+  // stored settings has to reproduce the stored string exactly. A parser that
+  // filled the missing key in would turn every installation created before the
+  // key existed into corrupt storage.
+  const parsed = parseInstallationSettings(JSON.parse(stored));
+  assert.equal(JSON.stringify(parsed), stored);
+  assert.equal(Object.hasOwn(parsed, "pendingExpiryMinutes"), false);
+
+  const configured = parseInstallationSettings({ ...legacy, pendingExpiryMinutes: 15 });
+  assert.equal(configured.pendingExpiryMinutes, 15);
+  for (const invalid of [14, 10_081, 0, -15, 1.5, "60", null]) {
+    assert.throws(() =>
+      parseInstallationSettings({ ...legacy, pendingExpiryMinutes: invalid }),
+    );
+  }
 });
