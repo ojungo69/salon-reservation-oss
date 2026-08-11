@@ -563,3 +563,29 @@ test("hiding the resource choice auto-assigns and shows the assignment on every 
     await setResourceChoice(page, null);
   }
 });
+
+test("the default configuration renders no location, identity or notification surfaces", async ({ page }) => {
+  await stubTurnstile(page);
+  await forwardCreateWithoutTurnstile(page);
+
+  // FR-010: single-location model, so nothing may present a location choice,
+  // and no customer page may surface an external login.
+  for (const path of ["/", "/bookings"]) {
+    await page.goto(path);
+    await expect(page.locator("[data-location-select], select[name='locationId']")).toHaveCount(0);
+    await expect(page.getByText(/ログイン|サインイン|友だち追加/)).toHaveCount(0);
+  }
+
+  // The success surface explains the management key in plain language and, in
+  // this provider-free default, promises no notification channel.
+  await page.goto("/");
+  await fillJourney(page, {
+    startTime: "11:00",
+    customerName: "不在 検証",
+    contact: "absence-check@example.invalid",
+  });
+  await page.click("#booking-submit");
+  await expect(page.locator("#booking-result")).toBeVisible();
+  await expect(page.locator("[data-key-explainer]")).toBeVisible();
+  expect(await page.locator("#booking-result").innerText()).not.toMatch(/メール|LINE|SMS|通知/);
+});

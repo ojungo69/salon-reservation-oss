@@ -40,6 +40,7 @@ const REQUIRED = new Set([
   "docs/RELEASING.md",
   "docs/PRIVACY.md",
   "docs/THIRD_PARTY_LICENSES.md",
+  "docs/UX-PARITY.md",
   "package-lock.json",
   "package.json",
   "public/404.html",

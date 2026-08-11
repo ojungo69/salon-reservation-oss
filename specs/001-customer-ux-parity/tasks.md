@@ -71,9 +71,9 @@
 
 ## Phase 5: US4 + US5 (P3) — key comfort and adapter-slot absence
 
-- [ ] T018 [P] [US4] One-sentence management-key explanation on the success surface in `public/index.html` and entry copy check in `public/bookings.html`
-- [ ] T019 [P] [US5] Document the three adapter insertion points (location, identity, notification) in `docs/UX-PARITY.md`
-- [ ] T020 [US5] Absence tests in `tests-browser/customer.spec.ts`: no location selector, no identity UI, no notification-channel promises in default config
+- [X] T018 [P] [US4] One-sentence management-key explanation on the success surface in `public/index.html` and entry copy check in `public/bookings.html`
+- [X] T019 [P] [US5] Document the three adapter insertion points (location, identity, notification) in `docs/UX-PARITY.md`
+- [X] T020 [US5] Absence tests in `tests-browser/customer.spec.ts`: no location selector, no identity UI, no notification-channel promises in default config
 
 ---
 
