@@ -1,0 +1,44 @@
+public/app.js
+  s_7c8b13bff90366::t_10e194cac21f03 331
+  s_7c8b13bff90366::t_070e73431d11b8 757
+  s_7c8b13bff90366::t_b0f8d605c1e27b 1041-1046
+  s_7c8b13bff90366::t_be73ae6615efea 992
+  s_7c8b13bff90366::t_ee5131692bdc39 831-833,835-836
+  s_7c8b13bff90366::t_a4c2a954dcb556 8-9
+  s_7c8b13bff90366::t_7091aec116c213 428
+  s_7c8b13bff90366::t_90070a9807b40c 891-930
+  s_7c8b13bff90366::t_3c2c09af6e436c 319-321
+  s_7c8b13bff90366::t_191a77c9dbc741 605-610
+  s_7c8b13bff90366::t_d8f2ed5b8850b5 1013
+public/journey.js
+  s_7c8b13bff90366::t_7e54cb840e30cc 242-257
+public/index.html
+  s_7c8b13bff90366::t_f77999e647a793 308-321
+  s_7c8b13bff90366::t_84d2315f6c33cb 111-112,121-123
+public/styles.css
+  s_7c8b13bff90366::t_6cb4ed0a5dd344 835-842
+  s_7c8b13bff90366::t_6c59d4617a5c2a 1537
+tests-browser/customer.spec.ts
+  s_7c8b13bff90366::t_b8b1ce36144e85 206-323,325
+  s_7c8b13bff90366::t_77370a4f737a98 324,443-444,547
+specs/001-customer-ux-parity/tasks.md
+  s_7c8b13bff90366::t_b8fa5f3c08dd5b 63-66
+test/journey.test.ts
+  s_7c8b13bff90366::t_6835af1b552dee 7-8,501-537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "a6880a48cfe9f7e70e7fdd4ae65fcb64a2d762d6",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
