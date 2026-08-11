@@ -2425,7 +2425,7 @@ describe("T035 guided setup API", () => {
     });
     expect(await current.json()).toMatchObject({
       settingsVersion: 3,
-      settings: { availabilityNotice: "本日は短縮営業です" },
+      settings: { availabilityNotice: "本日は短縮営業です", exposeResourceChoice: false },
     });
   });
 

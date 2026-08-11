@@ -540,8 +540,8 @@ test("past eight services a keyboard-only filter, chips and totals drive the sel
 test("hiding the resource choice auto-assigns and shows the assignment on every surface", async ({ page }) => {
   await stubTurnstile(page);
   await page.goto("/");
-  await setResourceChoice(page, false);
   try {
+    await setResourceChoice(page, false);
     await page.reload();
     await page.locator("#service-list input").first().check();
     await chooseSlot(page, "11:00");

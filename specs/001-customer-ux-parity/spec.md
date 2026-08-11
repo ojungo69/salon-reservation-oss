@@ -31,7 +31,7 @@ A customer opens the booking page and moves through a compact, clearly signposte
 
 A customer at an installation with many services picks them from a compact, searchable/selectable surface instead of an always-expanded list. Selected services appear as removable chips with a running total of duration and displayed price, updating immediately on every change.
 
-**Why this priority**: The always-expanded list stops scaling past ~16 services; totals-at-a-glance is a production behavior customers rely on. Depends on the P1 shell for placement.
+**Why this priority**: The always-expanded list stops scaling past 8 services; totals-at-a-glance is a production behavior customers rely on. Depends on the P1 shell for placement.
 
 **Independent Test**: With a catalog large enough to overflow the simple list, select and deselect services by pointer, keyboard and screen reader; verify chips, totals and the compatibility rules match the server's authoritative computation.
 
@@ -114,7 +114,7 @@ An operator running the default single-location, no-provider installation sees e
 - **FR-001**: The customer booking flow MUST present three labeled steps — booking, identity, confirmation — with visible progress indication, exactly one primary action per step, and back-navigation that preserves entered data.
 - **FR-002**: The identity step MUST show an editable booking-summary card (selected services, server-derived total duration and displayed price, date, time, resource when exposed) before contact fields.
 - **FR-003**: A dedicated confirmation surface MUST present the complete booking for final review before submission; submission MUST NOT be reachable without passing it.
-- **FR-004**: The service-selection surface MUST scale beyond 16 services via search/filter with removable selected-service chips and immediately updated server-derived totals, while remaining fully operable by keyboard and screen reader; below the scaling threshold it MUST stay as simple as the current list.
+- **FR-004**: The service-selection surface MUST scale beyond 8 services via search/filter with removable selected-service chips and immediately updated server-derived totals, while remaining fully operable by keyboard and screen reader; at 8 services or fewer it MUST stay as simple as the current list.
 - **FR-005**: The booking step MUST offer an explicit slot refresh/retry action and display operator-configured availability notices near the affected availability.
 - **FR-006**: The system MUST warn about a duplicate booking — defined as an existing active booking for the same day reported by the backend for the customer's presented proof/contact — and require explicit acknowledgement before submission; the backend signal MUST be provider-neutral.
 - **FR-007**: The success surface MUST state the booking state, the next expected action, and the management path; it MUST mention a notification channel only when one is configured.

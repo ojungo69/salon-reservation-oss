@@ -16,7 +16,7 @@
 
 - [X] T001 Add `availabilityNotice` (optional string, trimmed, 1–200 chars, plain text) and `exposeResourceChoice` (boolean, default true) to the settings shape, validation, defaults and OPTIONAL_SETTINGS_KEYS in `src/installation-config.ts`
 - [X] T002 Expose both fields in the public `/api/config` projection and the owner setup projection in `src/worker.ts`
-- [X] T003 Add the notice textarea and the resource-choice checkbox to the setup screen: markup in `public/setup.html`, load/save wiring in `startSetup` in `public/app.js`
+- [X] T003 Add the single-line notice input and the resource-choice checkbox to the setup screen: markup in `public/setup.html`, load/save wiring in `startSetup` in `public/app.js` (the notice stays single-line by design: stored values reject control characters and the customer screen renders one text line)
 - [X] T004 Worker tests in `test/worker.test.ts`: notice bounds (empty/1/200/201 chars, whitespace trim), flag default and round-trip, both fields visible in public config, settings-version bump on change
 
 **Checkpoint**: `npm run check` green; setup screen edits and persists both fields.

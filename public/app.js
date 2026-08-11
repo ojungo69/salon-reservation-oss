@@ -61,7 +61,11 @@ const setStatus = (element, message, tone = "") => {
 
 const focusWithoutScroll = (element) => {
   if (!element) return;
-  if (!element.hasAttribute("tabindex")) element.setAttribute("tabindex", "-1");
+  // Only teach non-focusable targets (headings, fieldsets) to accept focus; a
+  // tabindex="-1" on a native control would drop it from the Tab order.
+  if (element.tabIndex < 0 && !element.hasAttribute("tabindex")) {
+    element.setAttribute("tabindex", "-1");
+  }
   element.focus({ preventScroll: true });
 };
 
@@ -857,11 +861,14 @@ const startCustomer = async () => {
       queueMicrotask(() => {
         const target = document.getElementById(button.dataset.summaryEdit);
         if (!target) return;
-        // In the service fieldset the first input can be the hidden filter
-        // field; a service checkbox is always focusable.
+        // Prefer a service checkbox the active filter still shows; when the
+        // query hides them all, fall back to any visible input (the filter
+        // box itself), because focus() inside a hidden option is a no-op.
+        const visibleInput = (selector) =>
+          [...target.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
         focusWithoutScroll(
           target.matches("fieldset")
-            ? ($("input[name='serviceIds']", target) ?? $("input", target) ?? target)
+            ? (visibleInput("input[name='serviceIds']") ?? visibleInput("input") ?? target)
             : target,
         );
       });
@@ -932,6 +939,10 @@ const startCustomer = async () => {
         busy = false;
         updateActions();
       }
+      // The lookup can outlast the review screen: if the visitor went back to
+      // edit while it ran, drop this gesture instead of submitting or warning
+      // about values they are no longer confirming.
+      if (journeyStep !== "review") return;
       if (needsAcknowledgement) {
         // Esc closes without setting a value; clear the previous verdict so a
         // stale "confirm" cannot replay as an acknowledgement.

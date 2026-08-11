@@ -507,7 +507,8 @@ test("selects at most three same-day remembered bookings for the duplicate check
     managementKey,
     savedAt: now - index,
   });
-  const sameDay = [1, 2, 3, 4].map((index) => record(index, "2026-08-20"));
+  // Stored records append oldest first, so the same-day list runs 4 → 1.
+  const sameDay = [4, 3, 2, 1].map((index) => record(index, "2026-08-20"));
   const records = [record(5, "2026-08-21"), ...sameDay];
 
   // Only the same day counts, newest three of them, and never expired records.
