@@ -621,11 +621,12 @@ describe("ReservationDay storage boundary", () => {
     // a bookable grid it would refuse.
     const exhausted = await stub.availability(maxDay);
     expect(exhausted).toMatchObject({ ok: true, capacityReached: true });
-    if ("resources" in exhausted) {
-      expect(
-        exhausted.resources.every(({ startTimes: offered }) => offered.length === 0),
-      ).toBe(true);
+    if (!("resources" in exhausted)) {
+      throw new Error("availability response does not contain resources");
     }
+    expect(
+      exhausted.resources.every(({ startTimes: offered }) => offered.length === 0),
+    ).toBe(true);
   });
 });
 
