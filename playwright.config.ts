@@ -52,7 +52,14 @@ export default defineConfig({
     // is removed underneath it.
     command: [
       `node -e "require('node:fs').rmSync('${STATE_DIR}',{recursive:true,force:true})"`,
-      "&& npx wrangler dev",
+      // The production owner limiter (10/minute/route) is far below what an
+      // ordered full run sends inside one minute, so the suite would spend
+      // its time waiting out windows instead of asserting behaviour. Derive
+      // a test config from the canonical one with roomy limits — deriving,
+      // rather than keeping a second config file, cannot drift. Paths are
+      // absolutized because wrangler resolves them against the config file.
+      `&& node -e "const f=require('node:fs');const p=require('node:path');const c=JSON.parse(f.readFileSync('wrangler.jsonc','utf8'));for(const r of c.ratelimits)r.simple.limit=1000;c.main=p.resolve(c.main);c.assets.directory=p.resolve(c.assets.directory);f.mkdirSync('.wrangler',{recursive:true});f.writeFileSync('.wrangler/browser-test.json',JSON.stringify(c))"`,
+      "&& npx wrangler dev --config .wrangler/browser-test.json",
       `--ip 127.0.0.1 --port ${PORT} --local-protocol https`,
       `--persist-to ${STATE_DIR}`,
       `--var OWNER_TOKEN:${OWNER_TOKEN}`,
