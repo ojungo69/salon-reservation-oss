@@ -135,7 +135,7 @@ mechanism, aimed at global installs and `npx`, and npm ignores it while `package
 is harmless: a value from a config file is ignored. But npm exports every resolved config to child
 processes as `npm_config_*`, and a value arriving from the *environment* is refused outright:
 
-```
+```text
 $ npm run check                  # with the project line removed
 npm error code EALLOWSCRIPTS
 npm error --allow-scripts is not allowed in project-scoped installs.
