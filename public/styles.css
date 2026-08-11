@@ -21,6 +21,37 @@
   font-family: "Hiragino Sans", "Yu Gothic UI", "BIZ UDPGothic", Meiryo, system-ui, sans-serif;
 }
 
+/* The palette above is the ink theme, so `[data-theme="ink"]` needs no block.
+   A theme block and `:root` have the same specificity, so the dark `:root`
+   block near the end of this file wins over anything set here. Every token a
+   theme wants to keep in dark mode has to be restated in its dark block;
+   anything it omits falls back to the shared dark palette on purpose. */
+[data-theme="forest"] {
+  --canvas: #eef4ea;
+  --surface: #fbfdf9;
+  --surface-muted: #f3f8ef;
+  --ink: #162c17;
+  --muted: #556d54;
+  --line: #c1d4bd;
+  --accent: #2f6a33;
+  --accent-strong: #1d4a20;
+  --accent-soft: #dcecd7;
+}
+
+[data-theme="clay"] {
+  --canvas: #f4eee8;
+  --surface: #fdfaf7;
+  --surface-muted: #f8f2ec;
+  --ink: #2e1f16;
+  --muted: #6d5648;
+  --line: #dac6b5;
+  --accent: #8c4826;
+  --accent-strong: #6a3319;
+  --accent-soft: #f2e0d3;
+  --danger: #a52f36;
+  --danger-soft: #fae3e2;
+}
+
 *,
 *::before,
 *::after {
@@ -1318,6 +1349,30 @@ textarea::placeholder {
     --warning: #ffca79;
     --focus: #8cc6ff;
     --shadow: none;
+  }
+
+  [data-theme="forest"] {
+    --canvas: #101f12;
+    --surface: #162b19;
+    --surface-muted: #1d3520;
+    --ink: #eff8ee;
+    --muted: #b6c9b4;
+    --line: #4e6a4f;
+    --accent: #7ec981;
+    --accent-strong: #a9e3aa;
+    --accent-soft: #1f4622;
+  }
+
+  [data-theme="clay"] {
+    --canvas: #1f1611;
+    --surface: #2b201a;
+    --surface-muted: #352a22;
+    --ink: #f8efe7;
+    --muted: #cbb4a3;
+    --line: #755c4c;
+    --accent: #e79f74;
+    --accent-strong: #f5c9a9;
+    --accent-soft: #4a2c1a;
   }
 
   .primary-button,
