@@ -60,10 +60,10 @@
 
 **Independent Test**: Browser test creates + remembers a booking, starts a second same-day journey, sees the warning, acknowledges, and completes.
 
-- [ ] T014 [P] [US3] Duplicate-check candidate selection (same-day remembered records, cap 3) and acknowledgement state as pure functions in `public/journey.js` with unit tests in `test/journey.test.ts`
-- [ ] T015 [US3] Slot-refresh button reusing the sequenced availability loader + `availabilityNotice` rendering near availability in `public/index.html` / `startCustomer` in `public/app.js` / `public/styles.css`
-- [ ] T016 [US3] Pre-submit duplicate check wiring in `startCustomer`: status lookups, warning dialog with acknowledgement gate, uniform failure handling (lookup errors never block booking)
-- [ ] T017 [US3] Browser tests in `tests-browser/customer.spec.ts`: refresh re-renders slots, notice visible when configured and absent otherwise, duplicate warn→ack→complete path, CAPACITY_REACHED and stale-slot copy assertions
+- [X] T014 [P] [US3] Duplicate-check candidate selection (same-day remembered records, cap 3) and acknowledgement state as pure functions in `public/journey.js` with unit tests in `test/journey.test.ts`
+- [X] T015 [US3] Slot-refresh button reusing the sequenced availability loader + `availabilityNotice` rendering near availability in `public/index.html` / `startCustomer` in `public/app.js` / `public/styles.css`
+- [X] T016 [US3] Pre-submit duplicate check wiring in `startCustomer`: status lookups, warning dialog with acknowledgement gate, uniform failure handling (lookup errors never block booking)
+- [X] T017 [US3] Browser tests in `tests-browser/customer.spec.ts`: refresh re-renders slots, notice visible when configured and absent otherwise, duplicate warn→ack→complete path, CAPACITY_REACHED and stale-slot copy assertions
 
 **Checkpoint**: Duplicate path proves privacy posture (no lookups without stored proofs).
 

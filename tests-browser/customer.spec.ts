@@ -203,6 +203,126 @@ test("a remembered booking can be cancelled and stays cancelled after reload", a
   await expect(cardAfterReload.locator("[data-booking-cancel]")).toBeHidden();
 });
 
+test("the slot list refreshes in place and shows the operator notice when configured", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+  await expect(page.locator("[data-availability-notice]")).toBeHidden();
+
+  const original = await updateInstallationSettings(page, (settings) => ({
+    ...settings,
+    availabilityNotice: "本日は短縮営業です",
+  }));
+  try {
+    await page.reload();
+    await expect(page.locator("[data-availability-notice]")).toHaveText("本日は短縮営業です");
+
+    await page.locator("#service-list input").first().check();
+    await chooseSlot(page, "12:00");
+    await page.click("[data-availability-refresh]");
+    await expect(page.locator("#booking-status")).toHaveText("空き時間を更新しました。");
+    // The refresh keeps the already chosen time while re-rendering the list.
+    await expect(page.locator("#slot-list input[value='12:00']")).toBeChecked();
+  } finally {
+    await updateInstallationSettings(page, () => original);
+  }
+
+  await page.reload();
+  await expect(page.locator("[data-availability-notice]")).toBeHidden();
+});
+
+test("a remembered same-day booking asks for acknowledgement before a second request", async ({ page }) => {
+  await stubTurnstile(page);
+  const created = await forwardCreateWithoutTurnstile(page);
+  await page.goto("/");
+  await fillJourney(page, {
+    startTime: "13:00",
+    customerName: "重複 一郎",
+    contact: "duplicate-first@example.invalid",
+  });
+  await page.click("#booking-submit");
+  await expect(page.locator("#result-reservation-id")).toHaveText(UUID);
+  await page.check("#remember-booking");
+  expect(created.requests).toHaveLength(1);
+
+  // A second journey on the same day in the same browser.
+  await page.goto("/");
+  // 16:00 was freed by the cancellation spec; 14:00 stays for the owner spec.
+  await fillJourney(page, {
+    startTime: "16:00",
+    customerName: "重複 二郎",
+    contact: "duplicate-second@example.invalid",
+  });
+  await page.click("#booking-submit");
+  await expect(page.locator("[data-duplicate-dialog]")).toBeVisible();
+
+  // Reviewing instead closes the dialog and sends nothing.
+  await page.click("[data-duplicate-review]");
+  await expect(page.locator("[data-duplicate-dialog]")).toBeHidden();
+  expect(created.requests).toHaveLength(1);
+
+  // Acknowledging resubmits the same journey and completes it.
+  await page.click("#booking-submit");
+  await expect(page.locator("[data-duplicate-dialog]")).toBeVisible();
+  await page.click("[data-duplicate-continue]");
+  await expect(page.locator("#booking-result")).toBeVisible();
+  await expect(page.locator("#result-reservation-id")).toHaveText(UUID);
+  expect(created.requests).toHaveLength(2);
+});
+
+test("capacity and stale-slot answers read correctly inside the shell", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+
+  // A full day: the server said times exist but the day cap is reached.
+  await page.route(
+    "**/api/availability*",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          settingsVersion: 1,
+          services: [],
+          resources: [{ id: "resource-demo", label: "デモ担当", startTimes: [] }],
+          serviceMinutes: 60,
+          cleanupMinutes: 0,
+          occupiedMinutes: 60,
+          priceYen: null,
+          capacityReached: true,
+        }),
+      }),
+    { times: 1 },
+  );
+  await page.locator("#service-list input").first().check();
+  await expect(page.locator("#slot-list")).toContainText(
+    "受付できる予約数の上限に達した",
+  );
+
+  // Back on live data, a slot that disappears between review and submit is
+  // explained and the journey returns to the selection step.
+  await chooseSlot(page, "12:00");
+  await page.click("#selection-next");
+  await page.fill("#customer-name", "枠切れ 検証");
+  await page.fill("#customer-contact", "stale-slot@example.invalid");
+  await page.check("#booking-consent");
+  await page.click("#details-next");
+  await expect(page.locator("#journey-review")).toBeVisible();
+  await page.route("**/api/reservations", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: false, error: { code: "UNAVAILABLE" } }),
+        })
+      : route.fallback(),
+  );
+  await page.click("#booking-submit");
+  await expect(page.locator("#booking-status")).toContainText(
+    "選んだ内容を現在受け付けられません",
+  );
+  await expect(page.locator("#journey-selection")).toBeVisible();
+});
+
 test("the public pages carry no automated accessibility violations", async ({ page }) => {
   await stubTurnstile(page);
   for (const path of PUBLIC_PAGES) {
@@ -320,8 +440,8 @@ test("the details step summarizes the choices and edit links jump back to the ow
 test("the summary card and confirmation panel fit every supported viewport", async ({ page }) => {
   await stubTurnstile(page);
   await page.goto("/");
-  // 13:00 stays free: the booking specs take the first morning slot, 15:00 and 16:00.
-  await fillJourney(page, { startTime: "13:00" });
+  // 12:00 stays free: the booking specs take the morning slots, 13:00-16:00.
+  await fillJourney(page, { startTime: "12:00" });
   await expectNoAxeViolations(page);
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -424,7 +544,7 @@ test("hiding the resource choice auto-assigns and shows the assignment on every 
   try {
     await page.reload();
     await page.locator("#service-list input").first().check();
-    await chooseSlot(page, "14:00");
+    await chooseSlot(page, "11:00");
     await expect(page.locator("[data-resource-row]")).toBeHidden();
     await expect(page.locator("[data-assigned-resource]")).toBeVisible();
     await expect(page.locator("[data-assigned-resource]")).toContainText("自動で割り当てました");

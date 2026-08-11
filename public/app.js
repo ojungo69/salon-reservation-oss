@@ -5,6 +5,8 @@ import {
   encodePendingMutationRecord,
   COMPACT_SERVICE_THRESHOLD,
   filterServiceCatalog,
+  duplicateAcknowledgementNeeded,
+  duplicateCheckCandidates,
   getJourneyStep,
   pickAutoResource,
   readOwnedBookingRecords,
@@ -314,6 +316,9 @@ const startCustomer = async () => {
   const serviceFilterCount = $("[data-service-filter-count]");
   const serviceChips = $("[data-service-chips]");
   const serviceTotals = $("[data-service-totals]");
+  const availabilityNotice = $("[data-availability-notice]");
+  const availabilityRefresh = $("[data-availability-refresh]");
+  const duplicateDialog = $("[data-duplicate-dialog]");
   let config;
   let availability = null;
   let journeyStep = "selection";
@@ -323,6 +328,7 @@ const startCustomer = async () => {
   let widgetId;
   let resultRecord = null;
   let busy = false;
+  let duplicateAcknowledged = false;
 
   const selectedServiceIds = () =>
     $$("input[name='serviceIds']:checked", serviceList).map(({ value }) => value);
@@ -419,6 +425,7 @@ const startCustomer = async () => {
     $$("button", serviceChips).forEach((button) => {
       button.disabled = active;
     });
+    availabilityRefresh.disabled = active;
     dateInput.disabled = active;
     resourceSelect.disabled = active || !availability;
     slotField.disabled = active || !availability;
@@ -595,6 +602,12 @@ const startCustomer = async () => {
     assignedResource.textContent = "";
   };
 
+  const applyAvailabilityNotice = () => {
+    const notice = config?.availabilityNotice ?? null;
+    availabilityNotice.textContent = notice ?? "";
+    availabilityNotice.hidden = notice === null;
+  };
+
   const resetAvailability = () => {
     availability = null;
     resourceSelect.replaceChildren(new Option("サービスと日付を選ぶと表示されます", ""));
@@ -741,6 +754,7 @@ const startCustomer = async () => {
     config = await api("/api/config");
     applyPublicConfig(config);
     applyResourceMode();
+    applyAvailabilityNotice();
     modeNotice.hidden = config.mode === "live";
     const today = jstToday();
     dateInput.min = today;
@@ -814,7 +828,12 @@ const startCustomer = async () => {
   serviceFilterInput.addEventListener("input", () => {
     if (compactServices()) applyServiceFilter();
   });
+  availabilityRefresh.addEventListener("click", () => {
+    void loadAvailability();
+  });
   dateInput.addEventListener("change", () => {
+    // A different day means different remembered bookings to check against.
+    duplicateAcknowledged = false;
     void loadAvailability();
     saveDraft();
   });
@@ -868,6 +887,46 @@ const startCustomer = async () => {
     if (!retrying && !turnstileToken) {
       setStatus(status, "自動送信防止の確認を完了してください。", "error");
       return;
+    }
+    if (!retrying && !duplicateAcknowledged) {
+      busy = true;
+      updateActions();
+      let needsAcknowledgement = false;
+      try {
+        const candidates = duplicateCheckCandidates(
+          readOwnedRecords(),
+          dateInput.value,
+          Date.now(),
+        );
+        const statuses = await Promise.all(
+          candidates.map(async (record) => {
+            try {
+              const booking = await api(
+                `/api/reservations/${encodeURIComponent(record.reservationId)}/status`,
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    date: record.date,
+                    managementKey: record.managementKey,
+                  }),
+                },
+              );
+              return booking.status;
+            } catch {
+              // A failed lookup never blocks the booking.
+              return null;
+            }
+          }),
+        );
+        needsAcknowledgement = duplicateAcknowledgementNeeded(statuses, duplicateAcknowledged);
+      } finally {
+        busy = false;
+        updateActions();
+      }
+      if (needsAcknowledgement) {
+        duplicateDialog.showModal();
+        return;
+      }
     }
     busy = true;
     form.setAttribute("aria-busy", "true");
@@ -930,6 +989,7 @@ const startCustomer = async () => {
       clearPendingMutation();
       clearDraft();
       pending = null;
+      duplicateAcknowledged = false;
       remember.checked = false;
       form.hidden = true;
       result.hidden = false;
@@ -950,6 +1010,7 @@ const startCustomer = async () => {
             config = await api("/api/config");
             applyPublicConfig(config);
             applyResourceMode();
+            applyAvailabilityNotice();
             modeNotice.hidden = config.mode === "live";
             dateInput.max = addDays(jstToday(), config.schedule.horizonDays - 1);
             renderServices(selected.filter((id) => config.services.some((service) => service.id === id)));
@@ -975,6 +1036,12 @@ const startCustomer = async () => {
       if (window.turnstile && widgetId !== undefined) window.turnstile.reset(widgetId);
       setPendingMode();
     }
+  });
+
+  duplicateDialog.addEventListener("close", () => {
+    if (duplicateDialog.returnValue !== "confirm") return;
+    duplicateAcknowledged = true;
+    form.requestSubmit();
   });
 
   remember.addEventListener("change", () => {

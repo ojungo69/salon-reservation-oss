@@ -108,6 +108,8 @@
           </div>
           <p class="helper" data-assigned-resource hidden></p>
 
+          <p class="availability-notice" data-availability-notice hidden></p>
+
           <fieldset id="slot-field" class="slot-field" disabled aria-describedby="slot-help">
             <legend>開始時間</legend>
             <div id="slot-list" class="slot-list" data-slot-list aria-live="polite">
@@ -116,6 +118,9 @@
             <p id="slot-help" class="helper" data-availability-help>
               表示時点の空き状況です。送信時にもう一度確認します。
             </p>
+            <button id="availability-refresh" class="text-button" type="button" data-availability-refresh>
+              空き時間を更新する
+            </button>
           </fieldset>
 
           <div class="action-bar">
@@ -299,6 +304,20 @@
       </section>
 
     </main>
+
+    <dialog id="duplicate-dialog" class="confirmation-dialog" data-duplicate-dialog aria-labelledby="duplicate-dialog-title">
+      <form method="dialog">
+        <p class="section-label">送信前の確認</p>
+        <h2 id="duplicate-dialog-title">同じ日の予約がこのブラウザに残っています</h2>
+        <p>
+          選んだ日に、受付中または確定済みの予約がすでに保存されています。二重の予約になっていないか確認のうえ、続けるか選んでください。
+        </p>
+        <div class="button-row">
+          <button class="secondary-button" value="cancel" data-duplicate-review>内容を見直す</button>
+          <button class="primary-button" value="confirm" data-duplicate-continue>このまま申請する</button>
+        </div>
+      </form>
+    </dialog>
 
     <footer class="site-footer">
       <p>Salon Reservation OSS / AGPL-3.0-only / 無保証</p>

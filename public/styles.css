@@ -832,6 +832,14 @@ textarea::placeholder {
   font-size: 0.88rem;
 }
 
+.availability-notice {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-inline-start: 0.24rem solid var(--accent);
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+  background: var(--surface-muted);
+}
+
 .result-box {
   margin-top: 1rem;
   padding: clamp(1.15rem, 3vw, 2rem);
@@ -1526,6 +1534,7 @@ textarea::placeholder {
 
   .brand-mark,
   .mode-notice,
+  .availability-notice,
   .panel,
   .journey-stage,
   .summary-card,

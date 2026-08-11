@@ -239,6 +239,22 @@ export const removeOwnedBookingRecord = (records, reservationId) =>
       ).slice(-MAX_OWNED_BOOKINGS)
     : [];
 
+// Same-day duplicate candidates from this browser's remembered bookings only:
+// no stored proof, no lookup. Capped so a full record list stays three
+// status requests at most.
+export const duplicateCheckCandidates = (records, date, now) =>
+  readOwnedBookingRecords(records, now)
+    .filter((record) => record.date === date)
+    .slice(-3);
+
+// A warn-worthy duplicate is a remembered same-day booking the server still
+// reports as waiting or confirmed. Unknown or failed lookups never block.
+export const duplicateAcknowledgementNeeded = (statuses, acknowledged) =>
+  acknowledged !== true &&
+  (Array.isArray(statuses) ? statuses : []).some(
+    (status) => status === "pending" || status === "approved",
+  );
+
 export const encodePendingMutationRecord = (record) => {
   if (!isPendingMutationRecord(record)) throw new TypeError("Invalid pending mutation record");
   return JSON.stringify(record);

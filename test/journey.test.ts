@@ -4,6 +4,8 @@ import test from "node:test";
 type JourneyModule = {
   decodeJourneyDraft: (encoded: unknown, now: number) => unknown;
   decodePendingMutationRecord: (encoded: unknown, now: number) => unknown;
+  duplicateAcknowledgementNeeded: (statuses: unknown, acknowledged: unknown) => unknown;
+  duplicateCheckCandidates: (records: unknown, date: unknown, now: number) => unknown;
   encodeJourneyDraft: (draft: unknown) => unknown;
   encodePendingMutationRecord: (record: unknown) => unknown;
   filterServiceCatalog: (services: unknown, query: unknown) => unknown;
@@ -495,4 +497,41 @@ test("totals the compact selection and withholds a partial price sum", () => {
     priceYen: null,
   });
   assert.deepEqual(summarizeServiceSelection(undefined, ["cut"]).count, 0);
+});
+
+test("selects at most three same-day remembered bookings for the duplicate check", () => {
+  const duplicateCheckCandidates = journey("duplicateCheckCandidates");
+  const record = (index: number, date: string) => ({
+    reservationId: `${index}1111111-1111-4111-8111-111111111111`.slice(0, 36),
+    date,
+    managementKey,
+    savedAt: now - index,
+  });
+  const sameDay = [1, 2, 3, 4].map((index) => record(index, "2026-08-20"));
+  const records = [record(5, "2026-08-21"), ...sameDay];
+
+  // Only the same day counts, newest three of them, and never expired records.
+  assert.deepEqual(
+    duplicateCheckCandidates(records, "2026-08-20", now),
+    sameDay.slice(1),
+  );
+  assert.deepEqual(duplicateCheckCandidates(records, "2026-08-22", now), []);
+  assert.deepEqual(
+    duplicateCheckCandidates([{ ...sameDay[0], savedAt: now - year }], "2026-08-20", now),
+    [],
+  );
+  assert.deepEqual(duplicateCheckCandidates(undefined, "2026-08-20", now), []);
+});
+
+test("requires acknowledgement only for live duplicate statuses", () => {
+  const duplicateAcknowledgementNeeded = journey("duplicateAcknowledgementNeeded");
+
+  assert.equal(duplicateAcknowledgementNeeded(["pending"], false), true);
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "approved"], false), true);
+  // Finished or failed lookups never block the journey.
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "expired", null], false), false);
+  assert.equal(duplicateAcknowledgementNeeded([], false), false);
+  assert.equal(duplicateAcknowledgementNeeded(undefined, false), false);
+  // One acknowledgement clears the gate.
+  assert.equal(duplicateAcknowledgementNeeded(["pending"], true), false);
 });
