@@ -1,5 +1,6 @@
 import { parseDateJstToUtcIso } from "./date-parse.ts";
 import {
+  DEFAULT_PENDING_EXPIRY_MINUTES,
   evaluateInstallationReadiness,
   InstallationConfig,
   projectPublicConfig,
@@ -370,7 +371,10 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     closesAt: settings.closesAt,
     startIntervalMinutes: settings.startIntervalMinutes,
     consentVersion: settings.consentVersion,
-    pendingExpiryMinutes: settings.pendingExpiryMinutes,
+    // Installations created before the setting existed do not store it, so the
+    // default is applied here rather than in the parser, which has to leave the
+    // stored JSON byte-identical.
+    pendingExpiryMinutes: settings.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
   };
 };
 
@@ -855,6 +859,9 @@ const ownedReservation = (
     ...("rejectionReason" in value && value.rejectionReason !== undefined
       ? { rejectionReason: value.rejectionReason }
       : {}),
+    ...("expiresAt" in value && value.expiresAt !== undefined
+      ? { expiresAt: value.expiresAt }
+      : {}),
     allowedActions: allowedActions(value.status),
   };
 };
@@ -931,7 +938,14 @@ const setupResultResponse = (
 const setupProjection = (context: InstallationContext) => ({
   mode: context.state.mode,
   settingsVersion: context.state.activeSettingsVersion,
-  settings: context.settings,
+  // The effective settings, so the setup form shows the lifetime that is
+  // actually in force on an installation that predates the setting. Saving the
+  // form is what writes it down.
+  settings: {
+    ...context.settings,
+    pendingExpiryMinutes:
+      context.settings.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
+  },
   readiness: evaluateInstallationReadiness(context.settings, context.runtime),
   replayed: false,
 });
@@ -1246,6 +1260,7 @@ const ownerListReservation = (
     contact: string;
     snapshot?: BookingSnapshot;
     rejectionReason?: string | null;
+    expiresAt?: string;
     rescheduleHistory?: Array<{
       from: { resourceId: string; startTime: string };
       to: { resourceId: string; startTime: string };
@@ -1267,6 +1282,9 @@ const ownerListReservation = (
       ...(reservation.rejectionReason === undefined
         ? {}
         : { rejectionReason: reservation.rejectionReason }),
+      ...(reservation.expiresAt === undefined
+        ? {}
+        : { expiresAt: reservation.expiresAt }),
     },
   );
   return {

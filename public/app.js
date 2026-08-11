@@ -2133,7 +2133,9 @@ const startSetup = async () => {
     $("[data-setup-interval]").value = state.settings.startIntervalMinutes;
     $("[data-setup-horizon]").value = state.settings.horizonDays;
     $("[data-setup-retention]").value = state.settings.retentionDays;
-    $("[data-setup-pending-expiry]").value = state.settings.pendingExpiryMinutes;
+    // The setup projection resolves the effective value, so this is only a
+    // guard against an older server that does not send it at all.
+    $("[data-setup-pending-expiry]").value = state.settings.pendingExpiryMinutes ?? 1440;
     for (const input of weekdayInputs) {
       input.checked = state.settings.openWeekdays.includes(Number(input.value));
     }

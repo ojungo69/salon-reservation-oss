@@ -586,3 +586,25 @@ test("creates an exact secret-free installation receipt", async () => {
   }
   assert.doesNotMatch(JSON.stringify(receipt), /customer|ownerToken|secret|turnstileSecret/i);
 });
+
+test("settings stored before the pending lifetime existed still round-trip byte for byte", () => {
+  const legacy = validSettings();
+  delete (legacy as Partial<Settings>).pendingExpiryMinutes;
+  const stored = JSON.stringify(legacy);
+
+  // This is what the Durable Object asserts on every read: re-serialising the
+  // stored settings has to reproduce the stored string exactly. A parser that
+  // filled the missing key in would turn every installation created before the
+  // key existed into corrupt storage.
+  const parsed = parseInstallationSettings(JSON.parse(stored));
+  assert.equal(JSON.stringify(parsed), stored);
+  assert.equal(Object.hasOwn(parsed, "pendingExpiryMinutes"), false);
+
+  const configured = parseInstallationSettings({ ...legacy, pendingExpiryMinutes: 15 });
+  assert.equal(configured.pendingExpiryMinutes, 15);
+  for (const invalid of [14, 10_081, 0, -15, 1.5, "60", null]) {
+    assert.throws(() =>
+      parseInstallationSettings({ ...legacy, pendingExpiryMinutes: invalid }),
+    );
+  }
+});

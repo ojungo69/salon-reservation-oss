@@ -43,7 +43,12 @@ export interface InstallationSettings {
   openWeekdays: number[];
   horizonDays: number;
   retentionDays: number;
-  pendingExpiryMinutes: number;
+  // Optional on purpose. Stored settings are validated by re-serialising them
+  // and comparing the string to what is in storage, so a key this parser adds
+  // to an installation that predates it turns that installation into corrupt
+  // storage on the next read. Absence is preserved here and resolved to
+  // DEFAULT_PENDING_EXPIRY_MINUTES where the value is used.
+  pendingExpiryMinutes?: number;
   consentVersion: string;
   operatorDisplayName: string;
   operatorContact: string;
@@ -180,7 +185,7 @@ const TEST_SITE_KEYS = new Set([
   "3x00000000000000000000FF",
 ]);
 const STORED_STATE_BYTE_BUDGET = 1_800_000;
-const DEFAULT_PENDING_EXPIRY_MINUTES = 1440;
+export const DEFAULT_PENDING_EXPIRY_MINUTES = 1440;
 
 const DEFAULT_SETTINGS = {
   locationName: "架空予約サロン",
@@ -240,8 +245,9 @@ const hasExactKeys = (
 // Settings written before a key existed are still valid settings. The same
 // parser reads a stored version record and an incoming update, so refusing a
 // missing key would turn every installation that predates the key into corrupt
-// storage. Only keys listed here may be absent, and each one has a default; an
-// unknown key is still refused.
+// storage. Only keys listed here may be absent, and absence is carried through
+// rather than filled in, because the stored JSON has to round-trip byte for
+// byte. An unknown key is still refused.
 const OPTIONAL_SETTINGS_KEYS = ["pendingExpiryMinutes"] as const;
 
 const hasKnownKeys = (
@@ -468,12 +474,16 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
     openWeekdays,
     horizonDays: boundedInteger(value.horizonDays, "horizonDays", 1, 90),
     retentionDays: boundedInteger(value.retentionDays, "retentionDays", 1, 365),
-    pendingExpiryMinutes: boundedInteger(
-      value.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
-      "pendingExpiryMinutes",
-      15,
-      10080,
-    ),
+    ...(value.pendingExpiryMinutes === undefined
+      ? {}
+      : {
+          pendingExpiryMinutes: boundedInteger(
+            value.pendingExpiryMinutes,
+            "pendingExpiryMinutes",
+            15,
+            10080,
+          ),
+        }),
     consentVersion: identifier(value.consentVersion, "consentVersion"),
     operatorDisplayName: boundedString(
       value.operatorDisplayName,
