@@ -287,6 +287,48 @@ export const summarizeJourney = (selection, config, availability) => {
   };
 };
 
+// Above this many services the selection surface switches to the compact
+// filter-and-chips form; at or below it the flat list renders unchanged.
+export const COMPACT_SERVICE_THRESHOLD = 8;
+
+const foldForSearch = (value) => value.normalize("NFKC").toLowerCase();
+
+// Label/category filtering for catalogs past the compact threshold. NFKC
+// folding keeps half-width and full-width spellings of the same name matching.
+export const filterServiceCatalog = (services, query) => {
+  const catalog = (Array.isArray(services) ? services : []).filter(isObject);
+  const needle = typeof query === "string" ? foldForSearch(query).trim() : "";
+  if (needle === "") return catalog;
+  return catalog.filter((service) =>
+    [service.label, service.category]
+      .filter((field) => typeof field === "string")
+      .some((field) => foldForSearch(field).includes(needle)),
+  );
+};
+
+// Running client-side totals and chip list for the compact surface. The server
+// stays the authority at review time; these are the same catalog numbers the
+// customer already sees per service. priceYen is null when any selected price
+// is unlisted, because a partial sum would read as the full price.
+export const summarizeServiceSelection = (services, selectedIds) => {
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  const selected = (Array.isArray(services) ? services : []).filter(
+    (service) => isObject(service) && ids.includes(service.id),
+  );
+  return {
+    selected: selected.map(({ id, label }) => ({ id, label })),
+    count: selected.length,
+    durationMinutes: selected.reduce(
+      (sum, { durationMinutes }) => sum + (isInteger(durationMinutes) ? durationMinutes : 0),
+      0,
+    ),
+    priceYen:
+      selected.length > 0 && selected.every(({ priceYen }) => isInteger(priceYen))
+        ? selected.reduce((sum, { priceYen }) => sum + priceYen, 0)
+        : null,
+  };
+};
+
 // Auto-assignment when the operator hides resource choice: keep the previous
 // pick while it still has open times, otherwise take the resource with the
 // most start times (ties keep server order).

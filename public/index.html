@@ -72,9 +72,22 @@
 
           <fieldset id="service-field" class="selection-field" aria-describedby="service-help">
             <legend>サービス</legend>
+            <div class="service-filter" data-service-filter hidden>
+              <label class="visually-hidden" for="service-filter-input">サービスを名前で絞り込む</label>
+              <input
+                id="service-filter-input"
+                type="search"
+                data-service-filter-input
+                autocomplete="off"
+                placeholder="サービス名で絞り込み"
+              >
+              <p class="visually-hidden" role="status" data-service-filter-count></p>
+            </div>
             <div id="service-list" class="service-list" data-service-list aria-live="polite">
               <p class="empty-note" data-services-loading>サービスを読み込んでいます。</p>
             </div>
+            <ul class="service-chips" data-service-chips aria-label="選択中のサービス" hidden></ul>
+            <p class="service-totals" data-service-totals aria-live="polite" hidden></p>
             <p id="service-help" class="helper" data-service-help>
               1〜4件まで選べます。組み合わせにより選べる担当・設備と時間が変わります。
             </p>

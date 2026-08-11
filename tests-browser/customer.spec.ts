@@ -240,36 +240,47 @@ for (const viewport of VIEWPORTS) {
   });
 }
 
+const SETUP_HEADERS = {
+  host: new URL(BROWSER_ORIGIN).host,
+  origin: BROWSER_ORIGIN,
+  authorization: `Bearer ${OWNER_TOKEN}`,
+};
+
 /**
- * Rewrites the stored settings with the resource-choice flag set, cleared, or
- * restored. Talks to the dev server from Node the same way the create forward
- * does, so a wedged page cannot strand the shared installation in the hidden
- * state for the specs that follow.
+ * Rewrites the stored settings through a read-modify-write. Talks to the dev
+ * server from Node the same way the create forward does, so a wedged page
+ * cannot strand the shared installation in a mutated state for the specs that
+ * follow: every mutating test restores inside a finally around this helper.
  */
-const setResourceChoice = async (page: Page, expose: boolean | null): Promise<void> => {
-  const headers = {
-    host: new URL(BROWSER_ORIGIN).host,
-    origin: BROWSER_ORIGIN,
-    authorization: `Bearer ${OWNER_TOKEN}`,
-  };
-  const currentResponse = await page.request.fetch(`${SERVER_ORIGIN}/api/admin/setup`, { headers });
+const updateInstallationSettings = async (
+  page: Page,
+  mutate: (settings: Record<string, unknown>) => Record<string, unknown>,
+): Promise<Record<string, unknown>> => {
+  const currentResponse = await page.request.fetch(`${SERVER_ORIGIN}/api/admin/setup`, {
+    headers: SETUP_HEADERS,
+  });
   expect(currentResponse.status()).toBe(200);
   const current = (await currentResponse.json()) as {
     settingsVersion: number;
     settings: Record<string, unknown>;
   };
-  const { exposeResourceChoice: _previous, ...settings } = current.settings;
   const response = await page.request.fetch(`${SERVER_ORIGIN}/api/admin/setup`, {
     method: "PUT",
-    headers: { ...headers, "content-type": "application/json" },
+    headers: { ...SETUP_HEADERS, "content-type": "application/json" },
     data: {
       commandId: crypto.randomUUID(),
       expectedSettingsVersion: current.settingsVersion,
-      settings: expose === null ? settings : { ...settings, exposeResourceChoice: expose },
+      settings: mutate(structuredClone(current.settings)),
     },
   });
-  expect(response.status(), "resource-choice settings update").toBe(200);
+  expect(response.status(), "installation settings update").toBe(200);
+  return current.settings;
 };
+
+const setResourceChoice = (page: Page, expose: boolean | null): Promise<Record<string, unknown>> =>
+  updateInstallationSettings(page, ({ exposeResourceChoice: _previous, ...settings }) =>
+    expose === null ? settings : { ...settings, exposeResourceChoice: expose },
+  );
 
 test("the details step summarizes the choices and edit links jump back to the owning field", async ({ page }) => {
   await stubTurnstile(page);
@@ -324,6 +335,86 @@ test("the summary card and confirmation panel fit every supported viewport", asy
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await expectNoHorizontalOverflow(page);
   }
+});
+
+test("past eight services a keyboard-only filter, chips and totals drive the selection", async ({ page }) => {
+  await stubTurnstile(page);
+  await page.goto("/");
+
+  // The shipped one-service catalog stays on the flat list with no compact chrome.
+  await page.locator("#service-list [data-service-option]").first().waitFor();
+  await expect(page.locator("[data-service-filter]")).toBeHidden();
+  await expect(page.locator("[data-service-chips]")).toBeHidden();
+  await expect(page.locator("[data-service-totals]")).toBeHidden();
+  const flatListHtml = await page.locator("#service-list").innerHTML();
+
+  const original = await updateInstallationSettings(page, (settings) => {
+    const resourceId = (settings.resources as Array<{ id: string }>)[0]!.id;
+    return {
+      ...settings,
+      services: Array.from({ length: 9 }, (_, index) => ({
+        id: `svc-${index + 1}`,
+        label: `検証サービス${index + 1}`,
+        category: index === 0 ? "ヘア" : null,
+        durationMinutes: 60,
+        cleanupMinutes: 0,
+        priceYen: index < 2 ? 1_000 * (index + 1) : null,
+        eligibleResourceIds: [resourceId],
+        active: true,
+      })),
+    };
+  });
+  try {
+    await page.reload();
+    const options = page.locator("#service-list [data-service-option]");
+    await expect(options).toHaveCount(9);
+    await expect(page.locator("[data-service-filter]")).toBeVisible();
+
+    // Keyboard only: type a query, tab into the narrowed list, select by Space.
+    await page.locator("#service-filter-input").focus();
+    await page.keyboard.type("検証サービス2");
+    await expect(page.locator("#service-list [data-service-option]:visible")).toHaveCount(1);
+    await expect(page.locator("[data-service-filter-count]")).toHaveText(
+      "9件中1件を表示しています。",
+    );
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Space");
+    await expect(page.locator("input[name='serviceIds'][value='svc-2']")).toBeChecked();
+
+    // Clearing the filter keeps the selection and both totals lines honest:
+    // one selection with a listed price shows the sum.
+    await page.locator("#service-filter-input").fill("");
+    await expect(page.locator("#service-list [data-service-option]:visible")).toHaveCount(9);
+    await expect(page.locator("[data-service-chips] button")).toHaveCount(1);
+    await expect(page.locator("[data-service-totals]")).toHaveText(
+      "選択中 1件 / 目安 60分 / 2,000円",
+    );
+
+    // A second service with no listed price withholds the partial sum.
+    await page.locator("input[name='serviceIds'][value='svc-3']").focus();
+    await page.keyboard.press("Space");
+    await expect(page.locator("[data-service-totals]")).toHaveText(
+      "選択中 2件 / 目安 120分 / 料金は当日ご案内します",
+    );
+
+    // Chip removal by keyboard unchecks the hidden source checkbox.
+    await page.locator("[data-service-chips] button", { hasText: "検証サービス3" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("input[name='serviceIds'][value='svc-3']")).not.toBeChecked();
+    await expect(page.locator("[data-service-totals]")).toHaveText(
+      "選択中 1件 / 目安 60分 / 2,000円",
+    );
+
+    await expectNoAxeViolations(page);
+  } finally {
+    await updateInstallationSettings(page, () => original);
+  }
+
+  // Back under the threshold the flat list renders exactly as before.
+  await page.reload();
+  await page.locator("#service-list [data-service-option]").first().waitFor();
+  await expect(page.locator("[data-service-filter]")).toBeHidden();
+  expect(await page.locator("#service-list").innerHTML()).toBe(flatListHtml);
 });
 
 test("hiding the resource choice auto-assigns and shows the assignment on every surface", async ({ page }) => {

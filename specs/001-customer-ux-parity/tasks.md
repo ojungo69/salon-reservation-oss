@@ -45,10 +45,10 @@
 
 **Independent Test**: Unit tests for the filter state; browser test against a >8-service fixture catalog drives filter + chips by keyboard.
 
-- [ ] T010 [P] [US2] Filter/selection state as pure functions in `public/journey.js` (query filtering, chip add/remove, running totals, 4-selection cap unchanged) with unit tests in `test/journey.test.ts`
-- [ ] T011 [US2] Compact-surface markup (filter input, chip list, totals line) in `public/index.html` and threshold switch (>8) + wiring in `startCustomer` in `public/app.js`
-- [ ] T012 [US2] Chips, filter and totals styles in `public/styles.css`
-- [ ] T013 [US2] Browser test with a >8 fixture catalog in `tests-browser/` (new spec or `customer.spec.ts`): keyboard-only filter→select→chip-remove path, totals update, ≤8 path byte-identical assertion, axe
+- [X] T010 [P] [US2] Filter/selection state as pure functions in `public/journey.js` (query filtering, chip add/remove, running totals, 4-selection cap unchanged) with unit tests in `test/journey.test.ts`
+- [X] T011 [US2] Compact-surface markup (filter input, chip list, totals line) in `public/index.html` and threshold switch (>8) + wiring in `startCustomer` in `public/app.js`
+- [X] T012 [US2] Chips, filter and totals styles in `public/styles.css`
+- [X] T013 [US2] Browser test with a >8 fixture catalog in `tests-browser/` (new spec or `customer.spec.ts`): keyboard-only filter→select→chip-remove path, totals update, ≤8 path byte-identical assertion, axe
 
 **Checkpoint**: Both branches (≤8 / >8) exercised under the current cap of 16.
 

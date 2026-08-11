@@ -6,6 +6,7 @@ type JourneyModule = {
   decodePendingMutationRecord: (encoded: unknown, now: number) => unknown;
   encodeJourneyDraft: (draft: unknown) => unknown;
   encodePendingMutationRecord: (record: unknown) => unknown;
+  filterServiceCatalog: (services: unknown, query: unknown) => unknown;
   getJourneyStep: (state: unknown) => unknown;
   pickAutoResource: (resources: unknown, previousId: unknown) => unknown;
   readOwnedBookingRecords: (records: unknown, now: number) => unknown;
@@ -21,6 +22,7 @@ type JourneyModule = {
     config: unknown,
     availability: unknown,
   ) => unknown;
+  summarizeServiceSelection: (services: unknown, selectedIds: unknown) => unknown;
 };
 
 const journeyModule = (await import("../public/journey.js").catch(
@@ -445,4 +447,52 @@ test("auto-assigns the steadiest resource when choice is hidden", () => {
   );
   assert.equal(pickAutoResource([], "chair-a"), null);
   assert.equal(pickAutoResource(undefined, null), null);
+});
+
+test("filters the service catalog by folded label and category text", () => {
+  const filterServiceCatalog = journey("filterServiceCatalog");
+  const services = [
+    { id: "cut", label: "カット", category: "ヘア" },
+    { id: "color", label: "カラー", category: "ヘア" },
+    { id: "nail", label: "ネイルケア", category: null },
+  ];
+
+  assert.deepEqual(filterServiceCatalog(services, ""), services);
+  assert.deepEqual(filterServiceCatalog(services, "  "), services);
+  assert.deepEqual(filterServiceCatalog(services, "ネイル"), [services[2]]);
+  // NFKC folding: half-width katakana finds the full-width label.
+  assert.deepEqual(filterServiceCatalog(services, "ｶｯﾄ"), [services[0]]);
+  // Category text is searchable too.
+  assert.deepEqual(filterServiceCatalog(services, "ヘア"), [services[0], services[1]]);
+  assert.deepEqual(filterServiceCatalog(services, "存在しない"), []);
+  assert.deepEqual(filterServiceCatalog(undefined, "x"), []);
+});
+
+test("totals the compact selection and withholds a partial price sum", () => {
+  const summarizeServiceSelection = journey("summarizeServiceSelection");
+  const services = [
+    { id: "cut", label: "カット", durationMinutes: 60, priceYen: 5_000 },
+    { id: "color", label: "カラー", durationMinutes: 90, priceYen: 8_000 },
+    { id: "spa", label: "スパ", durationMinutes: 30, priceYen: null },
+  ];
+
+  assert.deepEqual(summarizeServiceSelection(services, ["cut", "color"]), {
+    selected: [
+      { id: "cut", label: "カット" },
+      { id: "color", label: "カラー" },
+    ],
+    count: 2,
+    durationMinutes: 150,
+    priceYen: 13_000,
+  });
+  // One unlisted price poisons the sum: showing 13,000円 for a set that also
+  // includes the spa would read as the full price.
+  assert.equal(summarizeServiceSelection(services, ["cut", "color", "spa"]).priceYen, null);
+  assert.deepEqual(summarizeServiceSelection(services, []), {
+    selected: [],
+    count: 0,
+    durationMinutes: 0,
+    priceYen: null,
+  });
+  assert.deepEqual(summarizeServiceSelection(undefined, ["cut"]).count, 0);
 });

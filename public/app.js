@@ -3,6 +3,8 @@ import {
   decodePendingMutationRecord,
   encodeJourneyDraft,
   encodePendingMutationRecord,
+  COMPACT_SERVICE_THRESHOLD,
+  filterServiceCatalog,
   getJourneyStep,
   pickAutoResource,
   readOwnedBookingRecords,
@@ -10,6 +12,7 @@ import {
   restoreJourneyDraft,
   saveOwnedBookingRecord,
   summarizeJourney,
+  summarizeServiceSelection,
 } from "./journey.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -306,6 +309,11 @@ const startCustomer = async () => {
   const modeNotice = $("[data-installation-mode-notice]");
   const resourceRow = $("[data-resource-row]");
   const assignedResource = $("[data-assigned-resource]");
+  const serviceFilter = $("[data-service-filter]");
+  const serviceFilterInput = $("[data-service-filter-input]");
+  const serviceFilterCount = $("[data-service-filter-count]");
+  const serviceChips = $("[data-service-chips]");
+  const serviceTotals = $("[data-service-totals]");
   let config;
   let availability = null;
   let journeyStep = "selection";
@@ -405,6 +413,10 @@ const startCustomer = async () => {
       input.disabled = active;
     });
     $$("[data-summary-edit]").forEach((button) => {
+      button.disabled = active;
+    });
+    serviceFilterInput.disabled = active;
+    $$("button", serviceChips).forEach((button) => {
       button.disabled = active;
     });
     dateInput.disabled = active;
@@ -647,6 +659,60 @@ const startCustomer = async () => {
     }
   };
 
+  const compactServices = () => config.services.length > COMPACT_SERVICE_THRESHOLD;
+
+  const applyServiceFilter = () => {
+    const visible = new Set(
+      filterServiceCatalog(config.services, serviceFilterInput.value).map(({ id }) => id),
+    );
+    $$("[data-service-option]", serviceList).forEach((option) => {
+      option.hidden = !visible.has($("input", option).value);
+    });
+    serviceFilterCount.textContent =
+      `${config.services.length}件中${visible.size}件を表示しています。`;
+  };
+
+  const renderServiceExtras = () => {
+    const totals = summarizeServiceSelection(config.services, selectedServiceIds());
+    serviceChips.replaceChildren(
+      ...totals.selected.map(({ id, label }) => {
+        const item = createElement("li");
+        const button = createElement("button", "service-chip", label);
+        button.type = "button";
+        button.setAttribute("aria-label", `${label}を選択から外す`);
+        button.append(createElement("span", "service-chip-remove", "×"));
+        button.addEventListener("click", () => {
+          const input = $(`input[name='serviceIds'][value='${id}']`, serviceList);
+          if (!input) return;
+          input.checked = false;
+          input.dispatchEvent(new Event("change"));
+        });
+        item.append(button);
+        return item;
+      }),
+    );
+    serviceChips.hidden = totals.count === 0;
+    serviceTotals.hidden = totals.count === 0;
+    serviceTotals.textContent =
+      totals.count === 0
+        ? ""
+        : `選択中 ${totals.count}件 / 目安 ${totals.durationMinutes}分 / ${formatPrice(totals.priceYen)}`;
+  };
+
+  // Past the threshold the same flat checkbox list stays in the DOM; the
+  // compact surface only adds filtering (visibility) and chips on top of it.
+  const applyCompactServices = () => {
+    const active = compactServices();
+    serviceFilter.hidden = !active;
+    if (!active) {
+      serviceChips.hidden = true;
+      serviceTotals.hidden = true;
+      return;
+    }
+    applyServiceFilter();
+    renderServiceExtras();
+  };
+
   const renderServices = (selected = []) => {
     serviceList.replaceChildren();
     for (const service of config.services) {
@@ -662,11 +728,13 @@ const startCustomer = async () => {
           serviceHelp.textContent = checked.length
             ? `${checked.length}件を選択中です。対応できる担当・設備と時間を更新します。`
             : "1〜4件まで選べます。組み合わせにより選べる担当・設備と時間が変わります。";
+          if (compactServices()) renderServiceExtras();
           void loadAvailability();
           saveDraft();
         }),
       );
     }
+    applyCompactServices();
   };
 
   try {
@@ -743,6 +811,9 @@ const startCustomer = async () => {
     return;
   }
 
+  serviceFilterInput.addEventListener("input", () => {
+    if (compactServices()) applyServiceFilter();
+  });
   dateInput.addEventListener("change", () => {
     void loadAvailability();
     saveDraft();
