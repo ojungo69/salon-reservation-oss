@@ -1,0 +1,23 @@
+.github/workflows/ci.yml
+  s_9d6ddfd57aa340::t_a2a3e647388d68 56-62
+CONTRIBUTING.md
+  s_9d6ddfd57aa340::t_0e9ccd74c9efed 115-120,131-147,165-167
+scripts/release-audit.mjs
+  s_9d6ddfd57aa340::t_c0cef005b41454 302-303,341-345,348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "dc32d19d75762c2dcb9044f99741d1b620d092a4",
+  "prompts": {},
+  "sessions": {
+    "s_9d6ddfd57aa340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e43323-b642-4736-9db5-aff03785c71b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
