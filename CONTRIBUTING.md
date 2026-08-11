@@ -122,6 +122,11 @@ It also requires `node-version-file: .nvmrc` and compares `.nvmrc` exactly. Comm
 before matching, so commenting a step out fails the audit the same way deleting it does. Changing
 what CI runs therefore means editing those constants in the same pull request.
 
+The reader is line-based, so it insists every line be one it understands: `key: value`, optionally
+dashed. That rules out the YAML spellings it would otherwise miss — a folded scalar continuing a
+pinned command on the next line, a block scalar hiding a script under `run: |`, a flow mapping step,
+a second `---` document. Write the workflow in the plain style already there.
+
 All three lists are exhaustive rather than limited to the security-relevant lines, because a partial
 list says nothing about what someone *adds* — a second `npm ci`, a `yarn install`, an unfamiliar
 action, a second job. The key list is what makes the other two mean anything: a pinned `run:` is

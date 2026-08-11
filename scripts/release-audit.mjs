@@ -309,6 +309,9 @@ const WORKFLOW_KEYS = new Set([
   "uses",
   "with",
 ]);
+// The only sequence entry that is a bare value rather than a key.
+const WORKFLOW_SEQUENCE_VALUES = new Set(["- main"]);
+const KEY_LINE = /^(?:-\s+)?"?([A-Za-z_][\w-]*)"?\s*:(?:\s+(.*))?$/;
 
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
@@ -323,20 +326,25 @@ const auditWorkflow = () => {
   for (const line of REQUIRED_WORKFLOW_LINES) {
     if (!activeLines.includes(line)) fail(`install-script enforcement drift: ${line}`);
   }
+  // Every line has to be one this reader understands. Without that the lists
+  // below would only cover the spellings anticipated here, and YAML has many:
+  // a folded plain scalar continues a pinned command on the next line, a block
+  // scalar hides a script under it, `{run: …}` is a step, `"run"` is `run`, and
+  // `---` starts a second document. None of those is a key line.
   for (const line of activeLines) {
-    const key = /^(?:-\s*)?([A-Za-z_][\w-]*)\s*:(?:\s|$)/.exec(line);
-    if (key !== null && !WORKFLOW_KEYS.has(key[1])) {
-      fail(`unreviewed workflow key: ${key[1]}`);
-    }
+    if (WORKFLOW_SEQUENCE_VALUES.has(line)) continue;
+    const key = KEY_LINE.exec(line);
+    if (key === null) fail(`unreviewed workflow line: ${line}`);
+    if (!WORKFLOW_KEYS.has(key[1])) fail(`unreviewed workflow key: ${key[1]}`);
   }
-  // The leading dash is optional in both lists: `- run: npm ci` is a step just
-  // as much as a `run:` under a `- name:` is, and reading only the second form
-  // would let a whole extra step through.
+  // The leading dash is optional: `- run: npm ci` is a step just as much as a
+  // `run:` under a `- name:` is, and reading only the second form would let a
+  // whole extra step through.
   const values = (keyword) =>
     activeLines
-      .map((line) => new RegExp(`^(?:-\\s*)?${keyword}:\\s*(.*)$`).exec(line))
-      .filter((match) => match !== null)
-      .map((match) => match[1].trim());
+      .map((line) => KEY_LINE.exec(line))
+      .filter((match) => match !== null && match[1] === keyword)
+      .map((match) => match[2].trim());
   const commands = values("run");
   if (JSON.stringify(commands) !== JSON.stringify(WORKFLOW_COMMANDS)) {
     fail(`workflow command drift: ${JSON.stringify(commands)}`);
