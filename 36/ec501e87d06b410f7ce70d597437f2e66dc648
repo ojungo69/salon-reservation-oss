@@ -1,0 +1,38 @@
+src/installation-config.ts
+  s_7c8b13bff90366::t_95cdf5cbdd0a14 52-58
+  s_7c8b13bff90366::t_37fec2bb405bdd 501-518
+  s_7c8b13bff90366::t_193bd2ed70f847 161-162
+  s_7c8b13bff90366::t_fc5d460045ee71 261-265
+  s_7c8b13bff90366::t_3ade9398f354d7 558-561
+  s_7c8b13bff90366::t_6968eb9096d576 222
+test/worker.test.ts
+  s_7c8b13bff90366::t_592625aee130cf 2420-2421
+  s_7c8b13bff90366::t_01e0f394793fad 2389-2419,2422-2431
+public/setup.html
+  s_7c8b13bff90366::t_e97faa71cd3876 180-181,184-188
+public/app.js
+  s_7c8b13bff90366::t_79627539d7e716 2155-2156
+  s_7c8b13bff90366::t_a437478833496a 2201-2206
+test/installation-config.test.ts
+  s_7c8b13bff90366::t_d0a4cc4609f831 60-64
+  s_7c8b13bff90366::t_8556dbdc313390 269-293
+  s_7c8b13bff90366::t_b188b6ec52208a 152-154,236-240
+src/worker.ts
+  s_7c8b13bff90366::t_70d1e14ffba82e 949-952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "36ec501e87d06b410f7ce70d597437f2e66dc648",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
