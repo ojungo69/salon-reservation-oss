@@ -268,6 +268,7 @@ const REQUIRED_WORKFLOW_STEPS = [
   "run: npm ci --ignore-scripts",
   `run: test "$(npm install-scripts ls --json | jq '.allowScripts | length')" = "0"`,
 ];
+const REQUIRED_WORKFLOW_INSTALLS = 2;
 
 const auditWorkflow = () => {
   const workflow = readText(".github/workflows/ci.yml");
@@ -288,13 +289,14 @@ const auditWorkflow = () => {
     if (!active.has(step)) fail(`install-script enforcement drift: ${step}`);
   }
   // Requiring the two known installs is not enough on its own: a third one
-  // added later would run install scripts that the allowlist gate has already
-  // reported on, past the point where reporting them helps.
-  for (const line of activeLines) {
-    if (!/\bnpm (?:ci|install|rebuild)(?![\w-])/.test(line)) continue;
-    if (!line.includes("--ignore-scripts")) {
-      fail(`workflow installs packages with scripts enabled: ${line}`);
-    }
+  // added later would run install scripts past the point where the allowlist
+  // gate has already reported on them. Since both permitted installs are pinned
+  // above as whole lines, counting every install in the file is what closes
+  // that off — including a second command chained onto a permitted line, which
+  // would no longer match it.
+  const installs = activeLines.join("\n").match(/\bnpm (?:ci|install|rebuild)(?![\w-])/g) ?? [];
+  if (installs.length !== REQUIRED_WORKFLOW_INSTALLS) {
+    fail(`workflow installs packages ${installs.length} times, expected ${REQUIRED_WORKFLOW_INSTALLS}`);
   }
 };
 

@@ -115,10 +115,11 @@ The workflow steps that carry this policy — `node-version-file: .nvmrc`, the p
 `--ignore-scripts`, and the `npm install-scripts ls` gate — are themselves pinned by
 `REQUIRED_WORKFLOW_STEPS` in `scripts/release-audit.mjs`, and `.nvmrc` is compared exactly. Each has
 to appear as an active line: comments are stripped before matching, so commenting a step out fails
-the audit the same way deleting it does. Any other `npm ci`, `npm install`, or `npm rebuild` added
-to the workflow must also carry `--ignore-scripts`. Editing any of those lines fails the audit until
-the constant is updated in the same change. Without that, removing the enforcement would leave a
-build that still passes every other check.
+the audit the same way deleting it does. The workflow must also install packages exactly twice —
+adding another `npm ci`, `npm install`, or `npm rebuild`, or chaining one onto an existing step,
+fails the audit. Editing any of those lines fails it too, until the constant is updated in the same
+change. Without that, removing the enforcement would leave a build that still passes every other
+check.
 
 ## Pull requests
 
