@@ -1,10 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { ADAPTER } from "./adapter-constants.ts";
 import {
   createEmptyReservationState,
   executeReservationCommand,
   type ReservationState,
 } from "./reservation-core.ts";
+
+// Thrown inside a storage transaction when an event would commit under an
+// expired adapter lease; rolls the transaction back and surfaces RETRY_CONFIG.
+class AdapterLeaseExpiredError extends Error {}
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -72,6 +77,9 @@ export type DayConfig = {
   // changed must not start failing with CONFIGURATION_CONFLICT because an
   // operator shortened the lifetime.
   pendingExpiryMinutes?: number;
+  // Absent on every pre-adapter caller and while the LINE adapter is inactive;
+  // deliberately not part of scheduleJson.
+  adapter?: DayAdapterDescriptor;
 };
 
 type TargetDayConfig = DayConfig & {
@@ -135,6 +143,38 @@ export type DayClosureRemoveInput = {
   closureId: string;
 };
 
+// Forwarded by the Worker from the installation projection, never minted here.
+// The lease bounds how stale a projection a mutation may commit under: the day
+// validates `leaseNotAfter` inside the same transaction that writes an event,
+// so a request that outlived its lease cannot attribute events to a generation
+// that may have been disabled meanwhile. Expired lease → RETRY_CONFIG, and the
+// Worker retries once with a freshly minted projection.
+export type DayAdapterDescriptor = {
+  consumer: "line";
+  generation: number;
+  phase: "active" | "deactivating";
+  leaseIssuedAt: number;
+  leaseNotAfter: number;
+};
+
+export type AdapterEventType = "approve" | "reject" | "reschedule" | "cancel" | "expire";
+
+export type AdapterOutboxEvent = {
+  eventId: string;
+  seq: number;
+  generation: number;
+  type: AdapterEventType;
+  reservationId: string;
+  date: string;
+  startTime: string;
+  occurredAt: string;
+  resourceLabel?: string;
+};
+
+export type DayDrainInput = { consumer: "line"; limit?: number };
+export type DayDrainResult = { events: AdapterOutboxEvent[]; more: boolean };
+export type DayAckInput = { consumer: "line"; eventIds: string[] };
+
 export type DayFailureCode =
   | "BAD_REQUEST"
   | "CONFIGURATION_CONFLICT"
@@ -142,7 +182,10 @@ export type DayFailureCode =
   | "NOT_FOUND_OR_UNAUTHORIZED"
   | "UNAVAILABLE"
   | "CAPACITY_REACHED"
-  | "TEMPORARILY_UNAVAILABLE";
+  | "TEMPORARILY_UNAVAILABLE"
+  // Internal to the Worker: the adapter descriptor's lease expired mid-request.
+  // Mapped to one context refresh + retry, never surfaced to clients.
+  | "RETRY_CONFIG";
 
 export type DayFailure = { ok: false; code: DayFailureCode };
 
@@ -446,6 +489,19 @@ const isTargetDayConfig = (config: DayConfig): config is TargetDayConfig => {
   );
 };
 
+const isAdapterDescriptor = (value: DayAdapterDescriptor | undefined): boolean =>
+  value === undefined ||
+  (typeof value === "object" &&
+    value !== null &&
+    value.consumer === "line" &&
+    Number.isSafeInteger(value.generation) &&
+    value.generation >= 1 &&
+    (value.phase === "active" || value.phase === "deactivating") &&
+    Number.isSafeInteger(value.leaseIssuedAt) &&
+    value.leaseIssuedAt > 0 &&
+    Number.isSafeInteger(value.leaseNotAfter) &&
+    value.leaseNotAfter > value.leaseIssuedAt);
+
 const isDayConfig = (config: DayConfig): boolean => {
   const base =
     typeof config === "object" &&
@@ -467,7 +523,8 @@ const isDayConfig = (config: DayConfig): boolean => {
     (config.pendingExpiryMinutes === undefined ||
       (Number.isSafeInteger(config.pendingExpiryMinutes) &&
         config.pendingExpiryMinutes >= 15 &&
-        config.pendingExpiryMinutes <= 10080));
+        config.pendingExpiryMinutes <= 10080)) &&
+    isAdapterDescriptor(config.adapter);
   if (!base) return false;
   if (!hasTargetField(config)) return true;
   return isTargetDayConfig(config);
@@ -910,6 +967,230 @@ export class ReservationDay extends DurableObject<Env> {
     });
   }
 
+  // ---- LINE adapter outbox (decision records: specs/003-line-adapter/plan.md) ----
+  // Everything below lives in `__`-prefixed tables, which every legacy schema
+  // check excludes (`NOT GLOB '__*'` above), so a pre-adapter Worker reads this
+  // storage exactly as before. The day alarm stays a plain deleteAll: the
+  // outbox dies with its day, and the delivery object's terminal lead
+  // guarantees events are resolved long before purge.
+
+  #adapterOutboxExists(): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__adapter_outbox'",
+        )
+        .toArray().length > 0
+    );
+  }
+
+  // Called only inside an already-open storage transaction, from an
+  // active-generation event commit — never from reads, drains, or acks.
+  #ensureAdapterSchema(): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS __adapter_meta (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        event_seq INTEGER NOT NULL CHECK (event_seq >= 0)
+      )
+    `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS __adapter_outbox (
+        consumer TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        reservation_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        resource_label TEXT,
+        occurred_at TEXT NOT NULL,
+        PRIMARY KEY (consumer, generation, seq)
+      )
+    `);
+  }
+
+  // Records committed reservation changes for the adapter, atomically with the
+  // commit itself. No adapter configured → no-op. Deactivating → no new events
+  // (disable is an explicit stop; the sweep drains what already exists).
+  // Expired lease → the whole transaction rolls back via RETRY_CONFIG.
+  #emitAdapterEvents(
+    config: DayConfig,
+    events: Array<{
+      type: AdapterEventType;
+      reservationId: string;
+      startTime: string;
+      resourceLabel?: string;
+    }>,
+  ): void {
+    const adapter = config.adapter;
+    if (adapter === undefined || events.length === 0) return;
+    if (adapter.phase !== "active") return;
+    if (Date.now() > adapter.leaseNotAfter) throw new AdapterLeaseExpiredError();
+    this.#ensureAdapterSchema();
+    const sql = this.ctx.storage.sql;
+    const row = sql
+      .exec<{ event_seq: number }>(
+        "SELECT event_seq FROM __adapter_meta WHERE singleton = 1",
+      )
+      .toArray()[0];
+    let seq = row?.event_seq ?? 0;
+    const occurredAt = new Date().toISOString();
+    for (const event of events) {
+      seq += 1;
+      sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        adapter.consumer,
+        adapter.generation,
+        seq,
+        `${config.date}#${seq}`,
+        event.reservationId,
+        event.type,
+        event.startTime,
+        event.resourceLabel ?? null,
+        occurredAt,
+      );
+    }
+    sql.exec(
+      `INSERT INTO __adapter_meta (singleton, event_seq) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET event_seq = excluded.event_seq`,
+      seq,
+    );
+  }
+
+  // Post-commit handoff: wake the delivery object when this day holds outbox
+  // rows. Fire-and-forget — the delivery object's sweep is the durable path,
+  // this only shortens the common case. Also serves as the lazy re-poke on
+  // next use after a died handoff.
+  #adapterHandoff(config: DayConfig): void {
+    if (config.adapter === undefined) return;
+    try {
+      if (!this.#adapterOutboxExists()) return;
+      const pending = this.ctx.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox")
+        .toArray()[0];
+      if (pending === undefined || pending.n === 0) return;
+      const stub = this.env.ADAPTER_DELIVERY.getByName("installation");
+      this.ctx.waitUntil(
+        Promise.resolve(stub.pokeDay({ date: config.date })).then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+    } catch {
+      // The sweep recovers anything a failed poke leaves behind.
+    }
+  }
+
+  // Pull protocol for the delivery object. Reads and deletes touch only the
+  // `__`-prefixed adapter tables; on a day that never emitted an event these
+  // return immediately and create no schema, storage, or alarm.
+  async drainOutbox(input: DayDrainInput): Promise<DayDrainResult> {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      input.consumer !== "line" ||
+      (input.limit !== undefined &&
+        (!Number.isSafeInteger(input.limit) || input.limit < 1))
+    ) {
+      throw new Error("bad drain input");
+    }
+    const limit = Math.min(input.limit ?? ADAPTER.OUTBOX_DRAIN_BATCH, ADAPTER.OUTBOX_DRAIN_BATCH);
+    if (!this.#adapterOutboxExists()) return { events: [], more: false };
+    const rows = this.ctx.storage.sql
+      .exec<{
+        generation: number;
+        seq: number;
+        event_id: string;
+        reservation_id: string;
+        type: string;
+        start_time: string;
+        resource_label: string | null;
+        occurred_at: string;
+      }>(
+        `SELECT generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at
+         FROM __adapter_outbox WHERE consumer = ?
+         ORDER BY generation, seq LIMIT ?`,
+        input.consumer,
+        limit + 1,
+      )
+      .toArray();
+    const more = rows.length > limit;
+    const meta = this.ctx.storage.sql
+      .exec<{ date: string }>("SELECT date FROM partition_meta WHERE singleton = 1")
+      .toArray()[0];
+    if (meta === undefined) return { events: [], more: false };
+    const events: AdapterOutboxEvent[] = [];
+    for (const row of rows.slice(0, limit)) {
+      if (
+        !Number.isSafeInteger(row.generation) ||
+        !Number.isSafeInteger(row.seq) ||
+        typeof row.event_id !== "string" ||
+        !UUID.test(row.reservation_id) ||
+        !["approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
+        !TIME.test(row.start_time) ||
+        !TIMESTAMP.test(row.occurred_at)
+      ) {
+        throw new Error("corrupt outbox row");
+      }
+      events.push({
+        eventId: row.event_id,
+        seq: row.seq,
+        generation: row.generation,
+        type: row.type as AdapterEventType,
+        reservationId: row.reservation_id,
+        date: meta.date,
+        startTime: row.start_time,
+        occurredAt: row.occurred_at,
+        ...(row.resource_label === null ? {} : { resourceLabel: row.resource_label }),
+      });
+    }
+    return { events, more };
+  }
+
+  async ackOutbox(input: DayAckInput): Promise<{ ok: true }> {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      input.consumer !== "line" ||
+      !Array.isArray(input.eventIds) ||
+      input.eventIds.length > ADAPTER.OUTBOX_DRAIN_BATCH ||
+      !input.eventIds.every(
+        (id) => typeof id === "string" && /^\d{4}-\d{2}-\d{2}#\d{1,9}$/.test(id),
+      )
+    ) {
+      throw new Error("bad ack input");
+    }
+    if (!this.#adapterOutboxExists() || input.eventIds.length === 0) return { ok: true };
+    this.ctx.storage.transactionSync(() => {
+      for (const eventId of input.eventIds) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM __adapter_outbox WHERE consumer = ? AND event_id = ?",
+          input.consumer,
+          eventId,
+        );
+      }
+    });
+    return { ok: true };
+  }
+
+  // The enable saga's watermark read: events at or below this sequence predate
+  // the link and are never delivered retroactively.
+  async readEventSequence(): Promise<{ eventSeq: number }> {
+    if (!this.#adapterOutboxExists()) return { eventSeq: 0 };
+    const row = this.ctx.storage.sql
+      .exec<{ event_seq: number }>(
+        "SELECT event_seq FROM __adapter_meta WHERE singleton = 1",
+      )
+      .toArray()[0];
+    if (row !== undefined && !Number.isSafeInteger(row.event_seq)) {
+      throw new Error("corrupt adapter meta");
+    }
+    return { eventSeq: row?.event_seq ?? 0 };
+  }
+
   async #prepareStorage(config: DayConfig): Promise<void> {
     const hadSchema = this.#hasSchema();
     if (!hadSchema) await this.ctx.storage.setAlarm(config.purgeAt);
@@ -1264,11 +1545,18 @@ export class ReservationDay extends DurableObject<Env> {
     if (due.length === 0) return;
     let { state } = this.#readState();
     const outcomeAt = new Date().toISOString();
+    const expired: Array<{
+      type: AdapterEventType;
+      reservationId: string;
+      startTime: string;
+      resourceLabel?: string;
+    }> = [];
     for (const { reservationId } of due) {
       const detail = this.#readDetail(reservationId);
       if (detail === null || detail.status !== "pending") {
         throw new Error("missing expiring booking");
       }
+      const reservation = state.reservations.find(({ id }) => id === reservationId);
       const cancelled = executeReservationCommand(state, {
         version: 1,
         commandId: crypto.randomUUID(),
@@ -1285,7 +1573,9 @@ export class ReservationDay extends DurableObject<Env> {
       // pending booking whose kernel reservation is not active is corruption
       // rather than a race, because nothing can cancel one without writing
       // its detail row in the same transaction.
-      if (!cancelled.ok) throw new Error("expiring booking could not be released");
+      if (!cancelled.ok || reservation === undefined) {
+        throw new Error("expiring booking could not be released");
+      }
       state = cancelled.state;
       this.#writeDetail({
         ...detail,
@@ -1294,8 +1584,18 @@ export class ReservationDay extends DurableObject<Env> {
         outcomeAt,
         updatedAt: outcomeAt,
       });
+      const label = config.resources?.find(
+        ({ id }) => id === reservation.resourceId,
+      )?.label;
+      expired.push({
+        type: "expire",
+        reservationId,
+        startTime: jstTime(reservation.startAt),
+        ...(label === undefined ? {} : { resourceLabel: label }),
+      });
     }
     this.#writeState(state);
+    this.#emitAdapterEvents(config, expired);
   }
 
   #writeState(state: ReservationState): void {
@@ -1544,8 +1844,11 @@ export class ReservationDay extends DurableObject<Env> {
               }),
         })),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -1705,8 +2008,11 @@ export class ReservationDay extends DurableObject<Env> {
         );
         return response;
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -1945,10 +2251,23 @@ export class ReservationDay extends DurableObject<Env> {
           meta.acceptedCreates,
           meta.acceptedMutations + 1,
         );
+        if (input.action !== "complete" && input.action !== "no_show") {
+          this.#emitAdapterEvents(config, [
+            {
+              type: input.action,
+              reservationId: input.reservationId,
+              startTime: response.startTime,
+              resourceLabel: response.resourceLabel ?? currentResource.label,
+            },
+          ]);
+        }
         return response;
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -2018,8 +2337,11 @@ export class ReservationDay extends DurableObject<Env> {
             ? ["cancel"]
             : [],
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -2139,10 +2461,23 @@ export class ReservationDay extends DurableObject<Env> {
           meta.acceptedCreates,
           meta.acceptedMutations + 1,
         );
+        this.#emitAdapterEvents(config, [
+          {
+            type: "cancel",
+            reservationId: reservation.id,
+            startTime: response.startTime,
+            ...(currentResource === undefined
+              ? {}
+              : { resourceLabel: currentResource.label }),
+          },
+        ]);
         return response;
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -2288,8 +2623,11 @@ export class ReservationDay extends DurableObject<Env> {
         );
         return response;
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -2370,8 +2708,11 @@ export class ReservationDay extends DurableObject<Env> {
         );
         return response;
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 
@@ -2466,8 +2807,11 @@ export class ReservationDay extends DurableObject<Env> {
           active: closure.active,
         })),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
     }
   }
 

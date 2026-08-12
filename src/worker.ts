@@ -22,7 +22,9 @@ import {
   type DayPublicStatusSuccess,
 } from "./reservation-day.ts";
 
-export { InstallationConfig, ReservationDay };
+import { AdapterDelivery } from "./adapter-delivery.ts";
+
+export { AdapterDelivery, InstallationConfig, ReservationDay };
 
 type AppEnv = Env & {
   INSTALLATION_CONFIG: DurableObjectNamespace<InstallationConfig>;
@@ -916,6 +918,11 @@ const failureResponse = (result: DayFailure): Response => {
     case "CAPACITY_REACHED":
       return errorResponse(409, "CAPACITY_REACHED");
     case "TEMPORARILY_UNAVAILABLE":
+      return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+    // Internal retry marker: the caller refreshes the installation context and
+    // retries once before mapping; reaching here means the retry also raced a
+    // lifecycle change, which is a plain transient failure to the client.
+    case "RETRY_CONFIG":
       return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
   }
 };
