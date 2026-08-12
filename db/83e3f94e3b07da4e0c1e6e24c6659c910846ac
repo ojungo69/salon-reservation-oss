@@ -1,0 +1,25 @@
+src/adapter-delivery.ts
+  s_7c8b13bff90366::t_10026ff680470b 56-58,200,298-301,303,306,529-530,536,1293-1294,1297-1300,1309-1315,1335
+src/line-adapter.ts
+  s_7c8b13bff90366::t_ca5bab332837ad 398,429,431-432,435-436,439-440
+test/adapter-delivery.test.ts
+  s_7c8b13bff90366::t_68ccd1b5f18789 750-751,770-775,827-835,870-905
+test/line-adapter.test.ts
+  s_7c8b13bff90366::t_7e4439c65666e9 417-419
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "db83e3f94e3b07da4e0c1e6e24c6659c910846ac",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
