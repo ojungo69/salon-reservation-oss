@@ -1,0 +1,42 @@
+docs/LINE-SETUP.md
+  s_7c8b13bff90366::t_1577a24a61c9eb 1-141
+tests-browser/line.spec.ts
+  s_7c8b13bff90366::t_d4b70ee46c1375 1-286
+  s_7c8b13bff90366::t_716b8e6362c0e5 287-294
+docs/PARITY.md
+  s_7c8b13bff90366::t_6806acbf0acc51 82,89
+docs/RELEASING.md
+  s_7c8b13bff90366::t_86348a9bc92d6a 65-82
+docs/ROADMAP.md
+  s_7c8b13bff90366::t_c22f0021efd392 40
+public/line-link.mjs
+  s_7c8b13bff90366::t_4ded647a8f89cb 27-28
+public/privacy.html
+  s_7c8b13bff90366::t_5d30216224b2d2 54-56,68
+release/public-files.txt
+  s_7c8b13bff90366::t_0d41ae65c4ffbb 20,39-41,49-50,53,57,61-62,69
+specs/003-line-adapter/tasks.md
+  s_7c8b13bff90366::t_59d5b13d4540ad 69-71,75-80,86-92,98-105,111-118,124-127
+src/worker.ts
+  s_7c8b13bff90366::t_97c64590b58894 1933-1938,1943,1949-1989,2076-2078
+test/line-adapter.test.ts
+  s_7c8b13bff90366::t_641bc4c9f3f4d2 1,22,27,258-312
+wrangler.jsonc
+  s_7c8b13bff90366::t_3b5320a9defb1e 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "7c187e40b749d52691ddc272ff9d9504a8178c3c",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
