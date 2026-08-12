@@ -718,6 +718,11 @@ export class AdapterDelivery extends DurableObject<Env> {
       }
       watermark = sequence.eventSeq;
     } catch {
+      // Kept apart from an invalid nonce: a brief day outage and a replay of
+      // dead nonces demand opposite responses from whoever reads diagnostics.
+      if (this.#readMeta().state === "active") {
+        this.#bumpCounter("link_failed:day-unavailable", 1);
+      }
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     await this.#armAlarm(Date.now());
@@ -743,8 +748,8 @@ export class AdapterDelivery extends DurableObject<Env> {
       }
       sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
       const existing = sql
-        .exec<{ subject: string; status: string; link_version: number }>(
-          "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
+        .exec<{ subject: string; status: string; link_version: number; purge_at: number | null }>(
+          "SELECT subject, status, link_version, purge_at FROM links WHERE reservation_id = ?",
           intent.reservation_id,
         )
         .toArray()[0];
@@ -759,24 +764,19 @@ export class AdapterDelivery extends DurableObject<Env> {
         this.#bumpCounter("link_failed:conflict", 1);
         return { ok: false as const, code: "LINK_CONFLICT" as const };
       }
-      const now = new Date().toISOString();
-      const linkVersion = (existing?.link_version ?? 0) + 1;
-      // The link row was created in the same transaction as the intent, so its
-      // absence here means the retention prune has already taken it — the
-      // parent crossed its boundary while the customer was logging in. Nothing
-      // derived from that reservation may be created, and finalizing anyway
-      // would write a link with no retention deadline at all.
-      const holder = sql
-        .exec<{ purge_at: number | null }>(
-          "SELECT purge_at FROM links WHERE reservation_id = ?",
-          intent.reservation_id,
-        )
-        .toArray()[0];
-      if (holder === undefined || holder.purge_at === null) {
+      // Every path that reaches this point minted the provisional link in the
+      // same transaction as the intent, so a missing or unstamped row means the
+      // retention prune has already taken it — the parent crossed its boundary
+      // while the customer was logging in. Nothing derived from that
+      // reservation may be created, and finalizing anyway would write a link
+      // with no retention deadline at all.
+      if (existing === undefined || existing.purge_at === null) {
         this.#bumpCounter("link_failed:past-retention", 1);
         return { ok: false as const, code: "INVALID_INTENT" as const };
       }
-      const provisionalPurgeAt = holder.purge_at;
+      const now = new Date().toISOString();
+      const linkVersion = existing.link_version + 1;
+      const provisionalPurgeAt = existing.purge_at;
       sql.exec(
         `INSERT INTO links
            (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at, purge_at)

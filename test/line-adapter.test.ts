@@ -927,6 +927,15 @@ describe("link flow over HTTP", () => {
     expect(await status.json()).toEqual({ linked: "provisional" });
     const intentAlive = await deliveryStub().checkIntent({ nonce });
     expect(intentAlive).toEqual({ ok: true });
+    // Counted apart from an invalid nonce so diagnostics stay unambiguous.
+    const counted = await runInDurableObject(deliveryStub(), (_i, state) =>
+      state.storage.sql
+        .exec<{ name: string; value: number }>(
+          "SELECT name, value FROM counters WHERE name LIKE 'link_failed:%'",
+        )
+        .toArray(),
+    );
+    expect(counted).toEqual([{ name: "link_failed:day-unavailable", value: 1 }]);
   });
 
   it("fails finalize and leaves no link when disable races an in-flight ID-token verify", async () => {
