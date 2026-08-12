@@ -3,11 +3,18 @@ import {
   decodePendingMutationRecord,
   encodeJourneyDraft,
   encodePendingMutationRecord,
+  COMPACT_SERVICE_THRESHOLD,
+  filterServiceCatalog,
+  duplicateAcknowledgementNeeded,
+  duplicateCheckCandidates,
   getJourneyStep,
+  pickAutoResource,
   readOwnedBookingRecords,
   removeOwnedBookingRecord,
   restoreJourneyDraft,
   saveOwnedBookingRecord,
+  summarizeJourney,
+  summarizeServiceSelection,
 } from "./journey.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -54,7 +61,11 @@ const setStatus = (element, message, tone = "") => {
 
 const focusWithoutScroll = (element) => {
   if (!element) return;
-  if (!element.hasAttribute("tabindex")) element.setAttribute("tabindex", "-1");
+  // Only teach non-focusable targets (headings, fieldsets) to accept focus; a
+  // tabindex="-1" on a native control would drop it from the Tab order.
+  if (element.tabIndex < 0 && !element.hasAttribute("tabindex")) {
+    element.setAttribute("tabindex", "-1");
+  }
   element.focus({ preventScroll: true });
 };
 
@@ -302,6 +313,16 @@ const startCustomer = async () => {
   const remember = $("[data-remember-booking]");
   const keyStatus = $("#key-status");
   const modeNotice = $("[data-installation-mode-notice]");
+  const resourceRow = $("[data-resource-row]");
+  const assignedResource = $("[data-assigned-resource]");
+  const serviceFilter = $("[data-service-filter]");
+  const serviceFilterInput = $("[data-service-filter-input]");
+  const serviceFilterCount = $("[data-service-filter-count]");
+  const serviceChips = $("[data-service-chips]");
+  const serviceTotals = $("[data-service-totals]");
+  const availabilityNotice = $("[data-availability-notice]");
+  const availabilityRefresh = $("[data-availability-refresh]");
+  const duplicateDialog = $("[data-duplicate-dialog]");
   let config;
   let availability = null;
   let journeyStep = "selection";
@@ -311,6 +332,7 @@ const startCustomer = async () => {
   let widgetId;
   let resultRecord = null;
   let busy = false;
+  let duplicateAcknowledged = false;
 
   const selectedServiceIds = () =>
     $$("input[name='serviceIds']:checked", serviceList).map(({ value }) => value);
@@ -400,6 +422,14 @@ const startCustomer = async () => {
     $$("input[name='serviceIds']", serviceList).forEach((input) => {
       input.disabled = active;
     });
+    $$("[data-summary-edit]").forEach((button) => {
+      button.disabled = active;
+    });
+    serviceFilterInput.disabled = active;
+    $$("button", serviceChips).forEach((button) => {
+      button.disabled = active;
+    });
+    availabilityRefresh.disabled = active;
     dateInput.disabled = active;
     resourceSelect.disabled = active || !availability;
     slotField.disabled = active || !availability;
@@ -412,27 +442,44 @@ const startCustomer = async () => {
     updateActions();
   };
 
+  const resourceChoiceExposed = () => config?.exposeResourceChoice !== false;
+
+  const summaryText = () => {
+    const summary = summarizeJourney(selection(), config, availability);
+    return {
+      services: summary.serviceLabels.join("、") || "未選択",
+      resource: summary.resourceLabel ?? "未選択",
+      time:
+        summary.date && summary.startTime
+          ? formatDateTime(summary.date, summary.startTime)
+          : "未選択",
+      duration:
+        summary.occupiedMinutes === null
+          ? "送信時に再確認します"
+          : `${summary.serviceMinutes}分 + 準備 ${summary.cleanupMinutes}分（計 ${summary.occupiedMinutes}分）`,
+      // occupiedMinutes doubles as the loaded-availability signal: a null price
+      // on loaded availability legitimately means the price is announced on site.
+      price:
+        summary.occupiedMinutes === null ? "送信時に再確認します" : formatPrice(summary.priceYen),
+    };
+  };
+
+  const renderSummaryCard = () => {
+    const text = summaryText();
+    $("[data-summary-services]").textContent = text.services;
+    $("[data-summary-resource]").textContent = text.resource;
+    $("[data-summary-time]").textContent = text.time;
+    $("[data-summary-duration]").textContent = text.duration;
+    $("[data-summary-price]").textContent = text.price;
+  };
+
   const renderReview = () => {
-    const current = selection();
-    const selectedServices = availability?.services ?? current.serviceIds
-      .map((id) => config.services.find((service) => service.id === id))
-      .filter(Boolean);
-    const resource =
-      availability?.resources?.find(({ id }) => id === current.resourceId) ??
-      config.resources.find(({ id }) => id === current.resourceId);
-    $("[data-review-services]").textContent =
-      selectedServices.map(({ label }) => label).join("、") || "未選択";
-    $("[data-review-resource]").textContent = resource?.label ?? "未選択";
-    $("[data-review-time]").textContent =
-      current.date && current.startTime
-        ? formatDateTime(current.date, current.startTime)
-        : "未選択";
-    $("[data-review-duration]").textContent = availability
-      ? `${availability.serviceMinutes}分 + 準備 ${availability.cleanupMinutes}分（計 ${availability.occupiedMinutes}分）`
-      : "送信時に再確認します";
-    $("[data-review-price]").textContent = availability
-      ? formatPrice(availability.priceYen)
-      : "送信時に再確認します";
+    const text = summaryText();
+    $("[data-review-services]").textContent = text.services;
+    $("[data-review-resource]").textContent = text.resource;
+    $("[data-review-time]").textContent = text.time;
+    $("[data-review-duration]").textContent = text.duration;
+    $("[data-review-price]").textContent = text.price;
     $("[data-review-name]").textContent = details().customerName || "未入力";
     $("[data-review-contact]").textContent = details().contact || "未入力";
   };
@@ -488,6 +535,7 @@ const startCustomer = async () => {
     } else if (history === "replace") {
       window.history.replaceState({ journeyStep: nextStep }, "");
     }
+    if (nextStep === "details") renderSummaryCard();
     if (nextStep === "review") {
       renderReview();
       void ensureTurnstile();
@@ -541,6 +589,26 @@ const startCustomer = async () => {
     updateActions();
   };
 
+  // Hides the resource select when the operator keeps assignment automatic.
+  // The select stays in the DOM as the single source of the chosen resource.
+  const applyResourceMode = () => {
+    const exposed = resourceChoiceExposed();
+    resourceRow.hidden = !exposed;
+    $("[data-summary-edit='booking-resource']").hidden = !exposed;
+    if (exposed) clearAssignedResource();
+  };
+
+  const clearAssignedResource = () => {
+    assignedResource.hidden = true;
+    assignedResource.textContent = "";
+  };
+
+  const applyAvailabilityNotice = () => {
+    const notice = config?.availabilityNotice ?? null;
+    availabilityNotice.textContent = notice ?? "";
+    availabilityNotice.hidden = notice === null;
+  };
+
   const resetAvailability = () => {
     availability = null;
     resourceSelect.replaceChildren(new Option("サービスと日付を選ぶと表示されます", ""));
@@ -549,6 +617,7 @@ const startCustomer = async () => {
       createElement("p", "empty-note", "サービス、日付、担当・設備を選んでください。"),
     );
     slotField.disabled = true;
+    clearAssignedResource();
     updateActions();
   };
 
@@ -575,7 +644,16 @@ const startCustomer = async () => {
         resourceSelect.append(new Option(resource.label, resource.id));
       }
       const requestedResource = pending?.request.resourceId ?? previousResource;
-      if (loaded.resources.some(({ id }) => id === requestedResource)) {
+      if (!resourceChoiceExposed()) {
+        const assigned = pending
+          ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
+          : pickAutoResource(loaded.resources, requestedResource);
+        resourceSelect.value = assigned?.id ?? "";
+        assignedResource.textContent = assigned
+          ? `担当・設備は「${assigned.label}」を自動で割り当てました。`
+          : "";
+        assignedResource.hidden = assigned === null;
+      } else if (loaded.resources.some(({ id }) => id === requestedResource)) {
         resourceSelect.value = requestedResource;
       } else if (loaded.resources.length === 1 && !pending) {
         resourceSelect.value = loaded.resources[0].id;
@@ -590,9 +668,72 @@ const startCustomer = async () => {
       resetAvailability();
       if (!quiet) setStatus(status, error.message, "error");
     } finally {
-      if (sequence === availabilitySequence) root.removeAttribute("aria-busy");
+      if (sequence === availabilitySequence) {
+        root.removeAttribute("aria-busy");
+        // A response landing while the details step is open must not leave the
+        // card showing the previous selection's services or totals.
+        if (journeyStep === "details") renderSummaryCard();
+        else if (journeyStep === "review") renderReview();
+      }
       setPendingMode();
     }
+  };
+
+  const compactServices = () => config.services.length > COMPACT_SERVICE_THRESHOLD;
+
+  const applyServiceFilter = () => {
+    const visible = new Set(
+      filterServiceCatalog(config.services, serviceFilterInput.value).map(({ id }) => id),
+    );
+    $$("[data-service-option]", serviceList).forEach((option) => {
+      option.hidden = !visible.has($("input", option).value);
+    });
+    serviceFilterCount.textContent =
+      `${config.services.length}件中${visible.size}件を表示しています。`;
+  };
+
+  const renderServiceExtras = () => {
+    const totals = summarizeServiceSelection(config.services, selectedServiceIds());
+    serviceChips.replaceChildren(
+      ...totals.selected.map(({ id, label }) => {
+        const item = createElement("li");
+        const button = createElement("button", "service-chip", label);
+        button.type = "button";
+        button.setAttribute("aria-label", `${label}を選択から外す`);
+        button.append(createElement("span", "service-chip-remove", "×"));
+        button.addEventListener("click", () => {
+          const input = $(`input[name='serviceIds'][value='${id}']`, serviceList);
+          if (!input) return;
+          input.checked = false;
+          input.dispatchEvent(new Event("change"));
+          // The rebuild just destroyed the focused chip; keep keyboard users
+          // on the surface instead of dropping them to the page top.
+          focusWithoutScroll($("button", serviceChips) ?? serviceFilterInput);
+        });
+        item.append(button);
+        return item;
+      }),
+    );
+    serviceChips.hidden = totals.count === 0;
+    serviceTotals.hidden = totals.count === 0;
+    serviceTotals.textContent =
+      totals.count === 0
+        ? ""
+        : `選択中 ${totals.count}件 / 目安 ${totals.durationMinutes}分 / ${formatPrice(totals.priceYen)}`;
+  };
+
+  // Past the threshold the same flat checkbox list stays in the DOM; the
+  // compact surface only adds filtering (visibility) and chips on top of it.
+  const applyCompactServices = () => {
+    const active = compactServices();
+    serviceFilter.hidden = !active;
+    if (!active) {
+      serviceChips.hidden = true;
+      serviceTotals.hidden = true;
+      return;
+    }
+    applyServiceFilter();
+    renderServiceExtras();
   };
 
   const renderServices = (selected = []) => {
@@ -610,16 +751,20 @@ const startCustomer = async () => {
           serviceHelp.textContent = checked.length
             ? `${checked.length}件を選択中です。対応できる担当・設備と時間を更新します。`
             : "1〜4件まで選べます。組み合わせにより選べる担当・設備と時間が変わります。";
+          if (compactServices()) renderServiceExtras();
           void loadAvailability();
           saveDraft();
         }),
       );
     }
+    applyCompactServices();
   };
 
   try {
     config = await api("/api/config");
     applyPublicConfig(config);
+    applyResourceMode();
+    applyAvailabilityNotice();
     modeNotice.hidden = config.mode === "live";
     const today = jstToday();
     dateInput.min = today;
@@ -667,7 +812,8 @@ const startCustomer = async () => {
         if (restored.serviceIds.join() !== selected.join()) renderServices(restored.serviceIds);
         dateInput.value = restored.date ?? today;
         if (availability) {
-          resourceSelect.value = restored.resourceId ?? "";
+          // Under automatic assignment loadAvailability already picked the value.
+          if (resourceChoiceExposed()) resourceSelect.value = restored.resourceId ?? "";
           renderSlots(restored.startTime);
         }
         setStep(restored.step, { history: "replace", focus: false });
@@ -689,7 +835,15 @@ const startCustomer = async () => {
     return;
   }
 
+  serviceFilterInput.addEventListener("input", () => {
+    if (compactServices()) applyServiceFilter();
+  });
+  availabilityRefresh.addEventListener("click", () => {
+    void loadAvailability();
+  });
   dateInput.addEventListener("change", () => {
+    // A different day means different remembered bookings to check against.
+    duplicateAcknowledged = false;
     void loadAvailability();
     saveDraft();
   });
@@ -702,6 +856,25 @@ const startCustomer = async () => {
   consentInput.addEventListener("change", updateActions);
   selectionNext.addEventListener("click", () => setStep("details"));
   detailsNext.addEventListener("click", () => setStep("review"));
+  $$("[data-summary-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setStep("selection", { focus: false });
+      queueMicrotask(() => {
+        const target = document.getElementById(button.dataset.summaryEdit);
+        if (!target) return;
+        // Prefer a service checkbox the active filter still shows; when the
+        // query hides them all, fall back to any visible input (the filter
+        // box itself), because focus() inside a hidden option is a no-op.
+        const visibleInput = (selector) =>
+          [...target.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
+        focusWithoutScroll(
+          target.matches("fieldset")
+            ? (visibleInput("input[name='serviceIds']") ?? visibleInput("input") ?? target)
+            : target,
+        );
+      });
+    });
+  });
   $$("[data-journey-back]").forEach((button) => {
     button.addEventListener("click", () => setStep(button.dataset.journeyBack));
   });
@@ -731,6 +904,60 @@ const startCustomer = async () => {
     if (!retrying && !turnstileToken) {
       setStatus(status, "自動送信防止の確認を完了してください。", "error");
       return;
+    }
+    if (!retrying && !duplicateAcknowledged) {
+      busy = true;
+      updateActions();
+      let needsAcknowledgement = false;
+      const lookupDate = dateInput.value;
+      try {
+        const candidates = duplicateCheckCandidates(
+          readOwnedRecords(),
+          lookupDate,
+          Date.now(),
+        );
+        const statuses = await Promise.all(
+          candidates.map(async (record) => {
+            try {
+              const booking = await api(
+                `/api/reservations/${encodeURIComponent(record.reservationId)}/status`,
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    date: record.date,
+                    managementKey: record.managementKey,
+                  }),
+                },
+              );
+              return booking.status;
+            } catch {
+              // A failed lookup never blocks the booking.
+              return null;
+            }
+          }),
+        );
+        needsAcknowledgement = duplicateAcknowledgementNeeded(statuses);
+      } finally {
+        busy = false;
+        updateActions();
+      }
+      // The lookup can outlast the review screen: if the visitor left it, or
+      // came back through history with a different date, drop this gesture
+      // instead of submitting or warning about values it never checked.
+      if (journeyStep !== "review" || dateInput.value !== lookupDate) return;
+      // The anti-bot token can expire while the lookup runs; a submission
+      // without it is doomed server-side, so ask for the check again instead.
+      if (!turnstileToken) {
+        setStatus(status, "自動送信防止の確認を完了してください。", "error");
+        return;
+      }
+      if (needsAcknowledgement) {
+        // Esc closes without setting a value; clear the previous verdict so a
+        // stale "confirm" cannot replay as an acknowledgement.
+        duplicateDialog.returnValue = "";
+        duplicateDialog.showModal();
+        return;
+      }
     }
     busy = true;
     form.setAttribute("aria-busy", "true");
@@ -793,6 +1020,7 @@ const startCustomer = async () => {
       clearPendingMutation();
       clearDraft();
       pending = null;
+      duplicateAcknowledged = false;
       remember.checked = false;
       form.hidden = true;
       result.hidden = false;
@@ -812,6 +1040,8 @@ const startCustomer = async () => {
             const selected = selectedServiceIds();
             config = await api("/api/config");
             applyPublicConfig(config);
+            applyResourceMode();
+            applyAvailabilityNotice();
             modeNotice.hidden = config.mode === "live";
             dateInput.max = addDays(jstToday(), config.schedule.horizonDays - 1);
             renderServices(selected.filter((id) => config.services.some((service) => service.id === id)));
@@ -837,6 +1067,12 @@ const startCustomer = async () => {
       if (window.turnstile && widgetId !== undefined) window.turnstile.reset(widgetId);
       setPendingMode();
     }
+  });
+
+  duplicateDialog.addEventListener("close", () => {
+    if (duplicateDialog.returnValue !== "confirm") return;
+    duplicateAcknowledged = true;
+    form.requestSubmit();
   });
 
   remember.addEventListener("change", () => {
@@ -2152,6 +2388,8 @@ const startSetup = async () => {
     // The setup projection resolves the effective value, so this is only a
     // guard against an older server that does not send it at all.
     $("[data-setup-pending-expiry]").value = state.settings.pendingExpiryMinutes ?? 1440;
+    $("[data-setup-availability-notice]").value = state.settings.availabilityNotice ?? "";
+    $("[data-setup-expose-resource-choice]").checked = state.settings.exposeResourceChoice ?? true;
     for (const input of weekdayInputs) {
       input.checked = state.settings.openWeekdays.includes(Number(input.value));
     }
@@ -2196,6 +2434,12 @@ const startSetup = async () => {
     horizonDays: Number($("[data-setup-horizon]").value),
     retentionDays: Number($("[data-setup-retention]").value),
     pendingExpiryMinutes: Number($("[data-setup-pending-expiry]").value),
+    // An empty notice omits the key entirely: absence is the stored form of
+    // "no notice", and the server refuses an empty string.
+    ...($("[data-setup-availability-notice]").value.trim() === ""
+      ? {}
+      : { availabilityNotice: $("[data-setup-availability-notice]").value.trim() }),
+    exposeResourceChoice: $("[data-setup-expose-resource-choice]").checked,
     consentVersion: $("[data-setup-consent-version]").value.trim(),
     operatorDisplayName: $("[data-setup-operator-name]").value.trim(),
     operatorContact: $("[data-setup-operator-contact]").value.trim(),

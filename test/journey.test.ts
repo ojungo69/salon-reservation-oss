@@ -4,9 +4,13 @@ import test from "node:test";
 type JourneyModule = {
   decodeJourneyDraft: (encoded: unknown, now: number) => unknown;
   decodePendingMutationRecord: (encoded: unknown, now: number) => unknown;
+  duplicateAcknowledgementNeeded: (statuses: unknown) => unknown;
+  duplicateCheckCandidates: (records: unknown, date: unknown, now: number) => unknown;
   encodeJourneyDraft: (draft: unknown) => unknown;
   encodePendingMutationRecord: (record: unknown) => unknown;
+  filterServiceCatalog: (services: unknown, query: unknown) => unknown;
   getJourneyStep: (state: unknown) => unknown;
+  pickAutoResource: (resources: unknown, previousId: unknown) => unknown;
   readOwnedBookingRecords: (records: unknown, now: number) => unknown;
   removeOwnedBookingRecord: (records: unknown, reservationId: string) => unknown;
   restoreJourneyDraft: (draft: unknown, current: unknown) => unknown;
@@ -15,6 +19,12 @@ type JourneyModule = {
     record: unknown,
     remember: boolean,
   ) => unknown;
+  summarizeJourney: (
+    selection: unknown,
+    config: unknown,
+    availability: unknown,
+  ) => unknown;
+  summarizeServiceSelection: (services: unknown, selectedIds: unknown) => unknown;
 };
 
 const journeyModule = (await import("../public/journey.js").catch(
@@ -361,4 +371,168 @@ test("accepts an 80-code-point astral customer name in a pending mutation", () =
     decodePendingMutationRecord(encodePendingMutationRecord(pending), now),
     pending,
   );
+});
+
+test("summarizes the journey from catalog labels and server-derived totals", () => {
+  const summarizeJourney = journey("summarizeJourney");
+  const config = {
+    services: [
+      { id: "trim", label: "カット" },
+      { id: "color", label: "カラー" },
+    ],
+    resources: [{ id: "chair-a", label: "担当 A" }],
+  };
+
+  assert.deepEqual(
+    summarizeJourney({ ...completeSelection, serviceIds: ["trim", "color"] }, config, null),
+    {
+      serviceLabels: ["カット", "カラー"],
+      resourceLabel: "担当 A",
+      date: "2026-08-20",
+      startTime: "10:00",
+      serviceMinutes: null,
+      cleanupMinutes: null,
+      occupiedMinutes: null,
+      priceYen: null,
+    },
+  );
+
+  const availability = {
+    services: [{ id: "trim", label: "カット（確定）" }],
+    resources: [{ id: "chair-a", label: "担当 A（確定）", startTimes: ["10:00"] }],
+    serviceMinutes: 60,
+    cleanupMinutes: 15,
+    occupiedMinutes: 75,
+    priceYen: 5_000,
+  };
+  assert.deepEqual(summarizeJourney(completeSelection, config, availability), {
+    serviceLabels: ["カット（確定）"],
+    resourceLabel: "担当 A（確定）",
+    date: "2026-08-20",
+    startTime: "10:00",
+    serviceMinutes: 60,
+    cleanupMinutes: 15,
+    occupiedMinutes: 75,
+    priceYen: 5_000,
+  });
+
+  assert.deepEqual(summarizeJourney(null, null, null), {
+    serviceLabels: [],
+    resourceLabel: null,
+    date: null,
+    startTime: null,
+    serviceMinutes: null,
+    cleanupMinutes: null,
+    occupiedMinutes: null,
+    priceYen: null,
+  });
+});
+
+test("auto-assigns the steadiest resource when choice is hidden", () => {
+  const pickAutoResource = journey("pickAutoResource");
+  const resources = [
+    { id: "chair-a", label: "担当 A", startTimes: ["10:00"] },
+    { id: "chair-b", label: "担当 B", startTimes: ["10:00", "11:00"] },
+    { id: "chair-c", label: "担当 C", startTimes: ["09:00", "13:00"] },
+  ];
+
+  assert.deepEqual(pickAutoResource(resources, "chair-a"), resources[0]);
+  assert.deepEqual(pickAutoResource(resources, null), resources[1]);
+  assert.deepEqual(pickAutoResource(resources, "unknown"), resources[1]);
+  assert.deepEqual(
+    pickAutoResource([{ ...resources[0], startTimes: [] }, resources[1]], "chair-a"),
+    resources[1],
+  );
+  assert.deepEqual(
+    pickAutoResource([{ ...resources[0], startTimes: [] }], "chair-a"),
+    { ...resources[0], startTimes: [] },
+  );
+  assert.equal(pickAutoResource([], "chair-a"), null);
+  assert.equal(pickAutoResource(undefined, null), null);
+});
+
+test("filters the service catalog by folded label and category text", () => {
+  const filterServiceCatalog = journey("filterServiceCatalog");
+  const services = [
+    { id: "cut", label: "カット", category: "ヘア" },
+    { id: "color", label: "カラー", category: "ヘア" },
+    { id: "nail", label: "ネイルケア", category: null },
+  ];
+
+  assert.deepEqual(filterServiceCatalog(services, ""), services);
+  assert.deepEqual(filterServiceCatalog(services, "  "), services);
+  assert.deepEqual(filterServiceCatalog(services, "ネイル"), [services[2]]);
+  // NFKC folding: half-width katakana finds the full-width label.
+  assert.deepEqual(filterServiceCatalog(services, "ｶｯﾄ"), [services[0]]);
+  // Category text is searchable too.
+  assert.deepEqual(filterServiceCatalog(services, "ヘア"), [services[0], services[1]]);
+  assert.deepEqual(filterServiceCatalog(services, "存在しない"), []);
+  assert.deepEqual(filterServiceCatalog(undefined, "x"), []);
+});
+
+test("totals the compact selection and withholds a partial price sum", () => {
+  const summarizeServiceSelection = journey("summarizeServiceSelection");
+  const services = [
+    { id: "cut", label: "カット", durationMinutes: 60, cleanupMinutes: 15, priceYen: 5_000 },
+    { id: "color", label: "カラー", durationMinutes: 90, priceYen: 8_000 },
+    { id: "spa", label: "スパ", durationMinutes: 30, priceYen: null },
+  ];
+
+  // Cleanup counts toward the estimate: the server reserves it, and the
+  // details card will report the same occupied total.
+  assert.deepEqual(summarizeServiceSelection(services, ["cut", "color"]), {
+    selected: [
+      { id: "cut", label: "カット" },
+      { id: "color", label: "カラー" },
+    ],
+    count: 2,
+    durationMinutes: 165,
+    priceYen: 13_000,
+  });
+  // One unlisted price poisons the sum: showing 13,000円 for a set that also
+  // includes the spa would read as the full price.
+  assert.equal(summarizeServiceSelection(services, ["cut", "color", "spa"]).priceYen, null);
+  assert.deepEqual(summarizeServiceSelection(services, []), {
+    selected: [],
+    count: 0,
+    durationMinutes: 0,
+    priceYen: null,
+  });
+  assert.deepEqual(summarizeServiceSelection(undefined, ["cut"]).count, 0);
+});
+
+test("selects at most three same-day remembered bookings for the duplicate check", () => {
+  const duplicateCheckCandidates = journey("duplicateCheckCandidates");
+  const record = (index: number, date: string) => ({
+    reservationId: `${index}1111111-1111-4111-8111-111111111111`.slice(0, 36),
+    date,
+    managementKey,
+    savedAt: now - index,
+  });
+  // Stored records append oldest first, so the same-day list runs 4 → 1.
+  const sameDay = [4, 3, 2, 1].map((index) => record(index, "2026-08-20"));
+  const records = [record(5, "2026-08-21"), ...sameDay];
+
+  // Only the same day counts, newest three of them, and never expired records.
+  assert.deepEqual(
+    duplicateCheckCandidates(records, "2026-08-20", now),
+    sameDay.slice(1),
+  );
+  assert.deepEqual(duplicateCheckCandidates(records, "2026-08-22", now), []);
+  assert.deepEqual(
+    duplicateCheckCandidates([{ ...sameDay[0], savedAt: now - year }], "2026-08-20", now),
+    [],
+  );
+  assert.deepEqual(duplicateCheckCandidates(undefined, "2026-08-20", now), []);
+});
+
+test("requires acknowledgement only for live duplicate statuses", () => {
+  const duplicateAcknowledgementNeeded = journey("duplicateAcknowledgementNeeded");
+
+  assert.equal(duplicateAcknowledgementNeeded(["pending"]), true);
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "approved"]), true);
+  // Finished or failed lookups never block the journey.
+  assert.equal(duplicateAcknowledgementNeeded(["cancelled", "expired", null]), false);
+  assert.equal(duplicateAcknowledgementNeeded([]), false);
+  assert.equal(duplicateAcknowledgementNeeded(undefined), false);
 });

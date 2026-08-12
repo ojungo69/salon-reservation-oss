@@ -20,6 +20,7 @@ docs/PARITY.md
 docs/PRIVACY.md
 docs/RELEASING.md
 docs/THIRD_PARTY_LICENSES.md
+docs/UX-PARITY.md
 package-lock.json
 package.json
 playwright.config.ts

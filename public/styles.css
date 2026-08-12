@@ -466,6 +466,11 @@ legend,
   background: var(--accent-soft);
 }
 
+/* The muted helper tone falls under 4.5:1 on the selected accent background. */
+[data-service-option][data-selected="true"] .helper {
+  color: var(--ink);
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -747,6 +752,99 @@ textarea::placeholder {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.summary-card {
+  margin-bottom: 1.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
+/* One column at every width: five rows read cleanly and the two-column
+   divider/border pattern of the base list never misaligns mid-row. */
+.summary-card .summary-list {
+  grid-template-columns: 1fr;
+  margin-bottom: 0;
+  border-top: 0;
+}
+
+.summary-card .summary-list > div {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.summary-card .summary-list > div:nth-child(odd) {
+  border-inline-end: 0;
+}
+
+.summary-card .summary-list > div:last-child {
+  border-bottom: 0;
+}
+
+.summary-card .summary-list dt,
+.summary-card .summary-list dd {
+  grid-column: 1;
+}
+
+.summary-card .summary-list .summary-edit {
+  grid-area: 1 / 2 / span 2 / auto;
+  align-self: center;
+}
+
+.confirmation-panel {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
+.service-filter {
+  margin-bottom: 0.75rem;
+}
+
+.service-filter input {
+  width: 100%;
+}
+
+.service-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.service-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 44px;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+
+.service-chip-remove {
+  color: var(--muted);
+}
+
+.service-totals {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.availability-notice {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-inline-start: 0.24rem solid var(--accent);
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+  background: var(--surface-muted);
 }
 
 .result-box {
@@ -1213,6 +1311,11 @@ textarea::placeholder {
     flex-direction: column;
   }
 
+  /* Stretched by the stacked heading, the round marker would become an oval. */
+  .stage-marker {
+    width: 2.5rem;
+  }
+
   .site-header,
   .site-footer {
     align-items: flex-start;
@@ -1443,8 +1546,11 @@ textarea::placeholder {
 
   .brand-mark,
   .mode-notice,
+  .availability-notice,
   .panel,
   .journey-stage,
+  .summary-card,
+  .confirmation-panel,
   .empty-state,
   .result-box,
   .reservation-item,
@@ -1463,6 +1569,7 @@ textarea::placeholder {
   .secondary-button,
   .danger-button,
   .tab-button,
+  .service-chip,
   .primary-link {
     forced-color-adjust: auto;
     border-color: CanvasText;

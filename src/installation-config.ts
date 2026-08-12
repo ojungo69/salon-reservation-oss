@@ -49,6 +49,13 @@ export interface InstallationSettings {
   // storage on the next read. Absence is preserved here and resolved to
   // DEFAULT_PENDING_EXPIRY_MINUTES where the value is used.
   pendingExpiryMinutes?: number;
+  // Optional for the same storage round-trip reason. An operator note shown
+  // next to availability on the booking screen; absent means no notice.
+  availabilityNotice?: string;
+  // Optional for the same storage round-trip reason. When false the customer
+  // screen hides the resource select and auto-assigns the best eligible
+  // resource; absence means true (today's behaviour).
+  exposeResourceChoice?: boolean;
   consentVersion: string;
   operatorDisplayName: string;
   operatorContact: string;
@@ -151,6 +158,8 @@ const SETTINGS_KEYS = [
   "horizonDays",
   "retentionDays",
   "pendingExpiryMinutes",
+  "availabilityNotice",
+  "exposeResourceChoice",
   "consentVersion",
   "operatorDisplayName",
   "operatorContact",
@@ -210,6 +219,7 @@ const DEFAULT_SETTINGS = {
   horizonDays: 30,
   retentionDays: 30,
   pendingExpiryMinutes: DEFAULT_PENDING_EXPIRY_MINUTES,
+  exposeResourceChoice: true,
   consentVersion: "demo-consent-v1",
   operatorDisplayName: "未設定",
   operatorContact: "未設定です",
@@ -248,7 +258,11 @@ const hasExactKeys = (
 // storage. Only keys listed here may be absent, and absence is carried through
 // rather than filled in, because the stored JSON has to round-trip byte for
 // byte. An unknown key is still refused.
-const OPTIONAL_SETTINGS_KEYS = ["pendingExpiryMinutes"] as const;
+const OPTIONAL_SETTINGS_KEYS = [
+  "pendingExpiryMinutes",
+  "availabilityNotice",
+  "exposeResourceChoice",
+] as const;
 
 const hasKnownKeys = (
   value: Record<string, unknown>,
@@ -484,6 +498,24 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
             10080,
           ),
         }),
+    ...(value.availabilityNotice === undefined
+      ? {}
+      : {
+          availabilityNotice: boundedString(
+            value.availabilityNotice,
+            "availabilityNotice",
+            1,
+            200,
+          ),
+        }),
+    ...(value.exposeResourceChoice === undefined
+      ? {}
+      : {
+          exposeResourceChoice:
+            typeof value.exposeResourceChoice === "boolean"
+              ? value.exposeResourceChoice
+              : invalid("exposeResourceChoice"),
+        }),
     consentVersion: identifier(value.consentVersion, "consentVersion"),
     operatorDisplayName: boundedString(
       value.operatorDisplayName,
@@ -523,6 +555,10 @@ const publicSettings = (settings: InstallationSettings) => ({
     openWeekdays: [...settings.openWeekdays],
     horizonDays: settings.horizonDays,
   },
+  // Default-resolved here: stored settings must stay byte-identical, so an
+  // installation that predates these keys resolves them at projection time.
+  availabilityNotice: settings.availabilityNotice ?? null,
+  exposeResourceChoice: settings.exposeResourceChoice ?? true,
   consentVersion: settings.consentVersion,
   operatorDisplayName: settings.operatorDisplayName,
   operatorContact: settings.operatorContact,

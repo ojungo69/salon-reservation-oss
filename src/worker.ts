@@ -946,6 +946,10 @@ const setupProjection = (context: InstallationContext) => ({
     ...context.settings,
     pendingExpiryMinutes:
       context.settings.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
+    // availabilityNotice stays absent when unset: the form renders it as an
+    // empty field and omits the key on save, which is what the 1–200 char
+    // validation expects.
+    exposeResourceChoice: context.settings.exposeResourceChoice ?? true,
   },
   readiness: evaluateInstallationReadiness(context.settings, context.runtime),
   replayed: false,

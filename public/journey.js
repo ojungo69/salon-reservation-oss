@@ -239,6 +239,21 @@ export const removeOwnedBookingRecord = (records, reservationId) =>
       ).slice(-MAX_OWNED_BOOKINGS)
     : [];
 
+// Same-day duplicate candidates from this browser's remembered bookings only:
+// no stored proof, no lookup. Capped so a full record list stays three
+// status requests at most.
+export const duplicateCheckCandidates = (records, date, now) =>
+  readOwnedBookingRecords(records, now)
+    .filter((record) => record.date === date)
+    .slice(-3);
+
+// A warn-worthy duplicate is a remembered same-day booking the server still
+// reports as waiting or confirmed. Unknown or failed lookups never block.
+export const duplicateAcknowledgementNeeded = (statuses) =>
+  (Array.isArray(statuses) ? statuses : []).some(
+    (status) => status === "pending" || status === "approved",
+  );
+
 export const encodePendingMutationRecord = (record) => {
   if (!isPendingMutationRecord(record)) throw new TypeError("Invalid pending mutation record");
   return JSON.stringify(record);
@@ -249,4 +264,103 @@ export const decodePendingMutationRecord = (encoded, now) => {
   return isPendingMutationRecord(record) && isFresh(record.retryAt, now, DAY_MS)
     ? record
     : null;
+};
+
+const findById = (entries, id) =>
+  Array.isArray(entries) && id !== null
+    ? entries.find((entry) => isObject(entry) && entry.id === id) ?? null
+    : null;
+
+// Summary shared by the details-step card and the review panel. Labels fall
+// back to the public catalog until an availability response is loaded;
+// server-derived totals stay null until the server confirms them.
+export const summarizeJourney = (selection, config, availability) => {
+  const serviceIds =
+    isObject(selection) && Array.isArray(selection.serviceIds)
+      ? selection.serviceIds.filter(isIdentifier)
+      : [];
+  const services =
+    Array.isArray(availability?.services) && availability.services.length > 0
+      ? availability.services
+      : serviceIds.map((id) => findById(config?.services, id)).filter(Boolean);
+  const resourceId =
+    isObject(selection) && isIdentifier(selection.resourceId) ? selection.resourceId : null;
+  const resource =
+    findById(availability?.resources, resourceId) ?? findById(config?.resources, resourceId);
+  const total = (value) => (isInteger(value) ? value : null);
+  return {
+    serviceLabels: services
+      .map((service) => (isObject(service) ? service.label : null))
+      .filter((label) => typeof label === "string"),
+    resourceLabel: typeof resource?.label === "string" ? resource.label : null,
+    date: isObject(selection) && isDate(selection.date) ? selection.date : null,
+    startTime: isObject(selection) && isTime(selection.startTime) ? selection.startTime : null,
+    serviceMinutes: total(availability?.serviceMinutes),
+    cleanupMinutes: total(availability?.cleanupMinutes),
+    occupiedMinutes: total(availability?.occupiedMinutes),
+    priceYen: total(availability?.priceYen),
+  };
+};
+
+// Above this many services the selection surface switches to the compact
+// filter-and-chips form; at or below it the flat list renders unchanged.
+export const COMPACT_SERVICE_THRESHOLD = 8;
+
+const foldForSearch = (value) => value.normalize("NFKC").toLowerCase();
+
+// Label/category filtering for catalogs past the compact threshold. NFKC
+// folding keeps half-width and full-width spellings of the same name matching.
+export const filterServiceCatalog = (services, query) => {
+  const catalog = (Array.isArray(services) ? services : []).filter(isObject);
+  const needle = typeof query === "string" ? foldForSearch(query).trim() : "";
+  if (needle === "") return catalog;
+  return catalog.filter((service) =>
+    [service.label, service.category]
+      .filter((field) => typeof field === "string")
+      .some((field) => foldForSearch(field).includes(needle)),
+  );
+};
+
+// Running client-side totals and chip list for the compact surface. The server
+// stays the authority at review time; these are the same catalog numbers the
+// customer already sees per service. priceYen is null when any selected price
+// is unlisted, because a partial sum would read as the full price.
+export const summarizeServiceSelection = (services, selectedIds) => {
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  const selected = (Array.isArray(services) ? services : []).filter(
+    (service) => isObject(service) && ids.includes(service.id),
+  );
+  return {
+    selected: selected.map(({ id, label }) => ({ id, label })),
+    count: selected.length,
+    // Mirror what the server reserves (service time plus cleanup) so the
+    // estimate agrees with the occupied total shown on the details card.
+    durationMinutes: selected.reduce(
+      (sum, { durationMinutes, cleanupMinutes }) =>
+        sum +
+        (isInteger(durationMinutes) ? durationMinutes : 0) +
+        (isInteger(cleanupMinutes) ? cleanupMinutes : 0),
+      0,
+    ),
+    priceYen:
+      selected.length > 0 && selected.every(({ priceYen }) => isInteger(priceYen))
+        ? selected.reduce((sum, { priceYen }) => sum + priceYen, 0)
+        : null,
+  };
+};
+
+// Auto-assignment when the operator hides resource choice: keep the previous
+// pick while it still has open times, otherwise take the resource with the
+// most start times (ties keep server order).
+export const pickAutoResource = (resources, previousId) => {
+  const eligible = (Array.isArray(resources) ? resources : []).filter(
+    (entry) => isObject(entry) && isIdentifier(entry.id) && Array.isArray(entry.startTimes),
+  );
+  const previous = eligible.find(({ id }) => id === previousId) ?? null;
+  if (previous && previous.startTimes.length > 0) return previous;
+  let best = previous;
+  for (const entry of eligible) {
+    if (best === null || entry.startTimes.length > best.startTimes.length) best = entry;
+  }
+  return best;
 };
