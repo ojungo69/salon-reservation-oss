@@ -1,0 +1,23 @@
+src/adapter-delivery.ts
+  s_7c8b13bff90366::t_65c694500359f6 767-773,777-779
+  s_7c8b13bff90366::t_30b78abc5bba7c 751-752
+  s_7c8b13bff90366::t_8336efb0af44fb 721-725
+test/line-adapter.test.ts
+  s_7c8b13bff90366::t_edf45c52e4ba8a 930-938
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6de5afc4860a5ccfd68286b537d2782ef2cb9f38",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
