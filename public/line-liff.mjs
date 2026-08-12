@@ -77,6 +77,11 @@ const run = async () => {
     return;
   }
   const config = await configResponse.json();
+  if (typeof config?.locationName === "string" && config.locationName.length > 0) {
+    for (const element of document.querySelectorAll("[data-location-name]")) {
+      element.textContent = config.locationName;
+    }
+  }
   const liffId = config?.lineAdapter?.liffId;
   if (typeof liffId !== "string") {
     show("現在 LINE 連携はご利用いただけません。", true);
