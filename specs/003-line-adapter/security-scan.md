@@ -3,7 +3,7 @@
 Rule-based static analysis gate (tasks.md T038), reproducible invocation.
 
 - Tool: semgrep **1.172.0** (pinned; recorded by `semgrep --version` at scan time)
-- Date: 2026-08-12
+- Date: 2026-08-13
 - Invocation (exact):
 
   ```sh
@@ -21,6 +21,18 @@ Rule-based static analysis gate (tasks.md T038), reproducible invocation.
 
 No findings were introduced by the feature-003 diff: the only finding is on a
 baseline line outside the feature's changed files.
+
+## Follow-up security review
+
+The 2026-08-13 working-tree review traced the changed authorization and
+retention boundaries end to end. The push path now acquires its token before a
+fresh synchronous claim and starts no fetch after unlink, disable, unfollow, or
+parent-retention commits. Intent checks and finalization enforce the same
+frozen parent boundary; activation receipts are deleted on disable; enablement
+requires the installation's existing public protection predicate. The safe
+backout is documented as a forward deploy that retains the Durable Object.
+Targeted race, retention, lifecycle, HTTP, and browser regressions cover these
+paths. No reportable attack path remains in the changed code.
 
 ## Manual LIFF SDK verification
 

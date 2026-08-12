@@ -103,7 +103,30 @@ export const testRuntime = (
   ...overrides,
 });
 
+export const configureTestProtection = async (): Promise<void> => {
+  const state = await installationStub().getState();
+  const current = state.settingsVersions.find(
+    (version) => version.version === state.activeSettingsVersion,
+  );
+  if (current === undefined) throw new Error("missing active settings");
+  const updated = await installationStub().executeCommand(
+    {
+      type: "settings.update",
+      commandId: crypto.randomUUID(),
+      expectedSettingsVersion: state.activeSettingsVersion,
+      settings: {
+        ...current.settings,
+        allowedHostname: testRuntime().hostname,
+        turnstileSiteKey: "browser-test-site-key-0000000000000000",
+      },
+    },
+    testRuntime(),
+  );
+  if (!updated.ok) throw new Error("test protection setup failed");
+};
+
 export const enableLineAdapter = async (): Promise<void> => {
+  await configureTestProtection();
   const settings = await installationStub().executeLineCommand(
     {
       operation: "line.settings",

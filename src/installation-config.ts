@@ -1024,11 +1024,6 @@ type LineSagaOperation = {
   step: "activate" | "begin-disable" | "final-wait";
   startedAt: string;
   identifiers: LineIdentifiers | null;
-  // Public origin resolved from the installation's declared hostname at enable
-  // time; becomes the authority's snapshot origin for the management link in
-  // messages. Never request-derived, so it cannot be poisoned by a Host header
-  // and cannot be left pointing at a preview deployment. Null for disable.
-  origin: string | null;
   finalPassAt: number | null;
 };
 
@@ -1112,7 +1107,6 @@ const LINE_OPERATION_KEYS = [
   "step",
   "startedAt",
   "identifiers",
-  "origin",
   "finalPassAt",
 ] as const;
 const LINE_RECEIPT_KEYS = [
@@ -1200,7 +1194,6 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
         candidate.step as string,
       ) ||
       typeof candidate.startedAt !== "string" ||
-      (candidate.origin !== null && typeof candidate.origin !== "string") ||
       (candidate.finalPassAt !== null &&
         !Number.isSafeInteger(candidate.finalPassAt))
     ) {
@@ -1215,7 +1208,6 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
         candidate.identifiers === null
           ? null
           : parseLineIdentifiers(candidate.identifiers),
-      origin: candidate.origin as string | null,
       finalPassAt: candidate.finalPassAt as number | null,
     };
   }
@@ -1721,13 +1713,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           return { ok: false, code: "PHASE_CONFLICT" };
         }
         if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
-        // The management link customers receive is built from this: refuse to
-        // enable rather than bake in a wrong or empty origin.
-        const hostname = activeVersion(this.#readStoredState().state)
-          .settings.allowedHostname.trim()
-          .toLowerCase();
-        if (hostname.length === 0) return { ok: false, code: "ORIGIN_UNCONFIGURED" };
-        const publicOrigin = `https://${hostname}`;
+        const settings = activeVersion(this.#readStoredState().state).settings;
+        if (!protectionReady(settings, safeRuntime)) {
+          return { ok: false, code: "ORIGIN_UNCONFIGURED" };
+        }
         next = {
           ...lifecycle,
           phase: "activating",
@@ -1739,7 +1728,6 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             // Enable's identifiers are authoritative; the draft is a setup
             // convenience they supersede.
             identifiers: command.identifiers,
-            origin: publicOrigin,
             finalPassAt: null,
           },
           lifecycleVersion: lifecycle.lifecycleVersion + 1,
@@ -1761,7 +1749,6 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             step: "begin-disable",
             startedAt: now,
             identifiers: null,
-            origin: null,
             finalPassAt: null,
           },
           lifecycleVersion: lifecycle.lifecycleVersion + 1,
@@ -1818,7 +1805,6 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             snapshot: {
               messagingChannelId: (operation.identifiers as LineIdentifiers)
                 .messagingChannelId,
-              origin: operation.origin ?? "",
             },
           });
           if (!activated.ok) continue; // raced a concurrent mint; re-read and retry

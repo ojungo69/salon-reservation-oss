@@ -167,11 +167,11 @@ export type AdapterOutboxEvent = {
   reservationId: string;
   date: string;
   startTime: string;
+  serviceLabel: string;
   occurredAt: string;
   // The parent partition's retention deadline, carried so a consumer can hold
   // derived rows to exactly the same boundary without reading configuration.
   purgeAt: number;
-  resourceLabel?: string;
 };
 
 export type DayDrainInput = { consumer: "line"; limit?: number };
@@ -694,6 +694,9 @@ const bookingSnapshot = (
   };
 };
 
+const bookingServiceLabel = (snapshot: BookingSnapshot | null): string =>
+  snapshot?.services.map(({ label }) => label).join("、") ?? "サービス情報なし";
+
 const SNAPSHOT_SERVICE_KEYS = [
   "id",
   "label",
@@ -1006,7 +1009,7 @@ export class ReservationDay extends DurableObject<Env> {
         reservation_id TEXT NOT NULL,
         type TEXT NOT NULL,
         start_time TEXT NOT NULL,
-        resource_label TEXT,
+        service_label TEXT NOT NULL,
         occurred_at TEXT NOT NULL,
         purge_at INTEGER NOT NULL,
         PRIMARY KEY (consumer, generation, seq)
@@ -1024,7 +1027,7 @@ export class ReservationDay extends DurableObject<Env> {
       type: AdapterEventType;
       reservationId: string;
       startTime: string;
-      resourceLabel?: string;
+      serviceLabel: string;
     }>,
   ): void {
     const adapter = config.adapter;
@@ -1033,6 +1036,10 @@ export class ReservationDay extends DurableObject<Env> {
     if (Date.now() > adapter.leaseNotAfter) throw new AdapterLeaseExpiredError();
     this.#ensureAdapterSchema();
     const sql = this.ctx.storage.sql;
+    // A partition's retention boundary is frozen on first write. A later
+    // config snapshot may have a different retentionDays value, but events
+    // from this partition must keep the boundary already stored with it.
+    const purgeAt = this.#readMeta()?.purgeAt ?? config.purgeAt;
     const row = sql
       .exec<{ event_seq: number }>(
         "SELECT event_seq FROM __adapter_meta WHERE singleton = 1",
@@ -1044,7 +1051,7 @@ export class ReservationDay extends DurableObject<Env> {
       seq += 1;
       sql.exec(
         `INSERT INTO __adapter_outbox
-           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at)
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         adapter.consumer,
         adapter.generation,
@@ -1053,9 +1060,9 @@ export class ReservationDay extends DurableObject<Env> {
         event.reservationId,
         event.type,
         event.startTime,
-        event.resourceLabel ?? null,
+        event.serviceLabel,
         occurredAt,
-        config.purgeAt,
+        purgeAt,
       );
     }
     sql.exec(
@@ -1112,11 +1119,11 @@ export class ReservationDay extends DurableObject<Env> {
         reservation_id: string;
         type: string;
         start_time: string;
-        resource_label: string | null;
+        service_label: string;
         occurred_at: string;
         purge_at: number;
       }>(
-        `SELECT generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at
+        `SELECT generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at
          FROM __adapter_outbox WHERE consumer = ?
          ORDER BY generation, seq LIMIT ?`,
         input.consumer,
@@ -1137,6 +1144,7 @@ export class ReservationDay extends DurableObject<Env> {
         !UUID.test(row.reservation_id) ||
         !["approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
         !TIME.test(row.start_time) ||
+        !boundedText(row.service_label, 1, 323) ||
         !TIMESTAMP.test(row.occurred_at) ||
         !Number.isSafeInteger(row.purge_at)
       ) {
@@ -1150,9 +1158,9 @@ export class ReservationDay extends DurableObject<Env> {
         reservationId: row.reservation_id,
         date: meta.date,
         startTime: row.start_time,
+        serviceLabel: row.service_label,
         occurredAt: row.occurred_at,
         purgeAt: row.purge_at,
-        ...(row.resource_label === null ? {} : { resourceLabel: row.resource_label }),
       });
     }
     return { events, more };
@@ -1588,7 +1596,7 @@ export class ReservationDay extends DurableObject<Env> {
       type: AdapterEventType;
       reservationId: string;
       startTime: string;
-      resourceLabel?: string;
+      serviceLabel: string;
     }> = [];
     for (const { reservationId } of due) {
       const detail = this.#readDetail(reservationId);
@@ -1623,14 +1631,11 @@ export class ReservationDay extends DurableObject<Env> {
         outcomeAt,
         updatedAt: outcomeAt,
       });
-      const label = config.resources?.find(
-        ({ id }) => id === reservation.resourceId,
-      )?.label;
       expired.push({
         type: "expire",
         reservationId,
         startTime: jstTime(reservation.startAt),
-        ...(label === undefined ? {} : { resourceLabel: label }),
+        serviceLabel: bookingServiceLabel(detail.snapshot),
       });
     }
     this.#writeState(state);
@@ -2296,7 +2301,7 @@ export class ReservationDay extends DurableObject<Env> {
               type: input.action,
               reservationId: input.reservationId,
               startTime: response.startTime,
-              resourceLabel: response.resourceLabel ?? currentResource.label,
+              serviceLabel: bookingServiceLabel(detail.snapshot),
             },
           ]);
         }
@@ -2505,9 +2510,7 @@ export class ReservationDay extends DurableObject<Env> {
             type: "cancel",
             reservationId: reservation.id,
             startTime: response.startTime,
-            ...(currentResource === undefined
-              ? {}
-              : { resourceLabel: currentResource.label }),
+            serviceLabel: bookingServiceLabel(detail.snapshot),
           },
         ]);
         return response;

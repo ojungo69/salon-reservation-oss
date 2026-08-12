@@ -18,14 +18,14 @@ const NONCE_FREE_ID = /^[0-9A-Za-z-]{1,64}$/;
 
 export type AdapterState = "never" | "active" | "deactivating" | "disabled";
 
-export type AdapterSnapshot = { messagingChannelId: string; origin: string };
+export type AdapterSnapshot = { messagingChannelId: string };
 
 export type AdapterDeliveryMeta = {
   state: AdapterState;
   generation: number;
   // Authoritative high-water of every generation ever activated. Survives
-  // disable and rollback (storage persists — specs/003-line-adapter/research.md
-  // R5); re-enable always mints strictly above it.
+  // disable and a compatible forward backout (storage persists —
+  // specs/003-line-adapter/research.md R5); re-enable stays above it.
   highWater: number;
   // Day event sequence recorded at activation: events at or below it predate
   // the installation's links and are never delivered retroactively.
@@ -112,8 +112,8 @@ const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise<T> => 
  * untouched by the whole feature).
  *
  * Invariant (tested): once `state` is `disabled` and the TTL stores are empty,
- * no alarm remains scheduled — a rollback that removes this class from the
- * Worker then leaves no pending alarm behind (research R5).
+ * no alarm remains scheduled. Until those stores drain, a compatible forward
+ * backout retains this class so their alarms can still run (research R5).
  */
 export class AdapterDelivery extends DurableObject<Env> {
   #hasSchema(): boolean {
@@ -126,10 +126,11 @@ export class AdapterDelivery extends DurableObject<Env> {
     );
   }
 
-  // Idempotent on every call: CREATE IF NOT EXISTS per table, so a later
-  // release adding a table needs no migration machinery. Status/disposition
-  // vocabularies are validated in code, not CHECK constraints — SQLite CHECKs
-  // cannot be widened after release.
+  // This class is new and has never been deployed, so its first public release
+  // creates the complete schema below. A later released column change will
+  // require an additive migration; CREATE IF NOT EXISTS covers new tables only.
+  // Status/disposition vocabularies are validated in code, not CHECK
+  // constraints — SQLite CHECKs cannot be widened after release.
   #ensureSchema(): void {
     const hadMeta = this.#hasSchema();
     const sql = this.ctx.storage.sql;
@@ -275,8 +276,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       if (
         typeof parsed !== "object" ||
         parsed === null ||
-        typeof (parsed as AdapterSnapshot).messagingChannelId !== "string" ||
-        typeof (parsed as AdapterSnapshot).origin !== "string"
+        typeof (parsed as AdapterSnapshot).messagingChannelId !== "string"
       ) {
         throw new Error("corrupt adapter snapshot");
       }
@@ -395,6 +395,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           type: event.type,
           date: event.date,
           startTime: event.startTime,
+          serviceLabel: event.serviceLabel,
         };
         const linkVersion = link?.link_version ?? 0;
         sql.exec(
@@ -599,7 +600,10 @@ export class AdapterDelivery extends DurableObject<Env> {
     crypto.getRandomValues(bytes);
     const nonce = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
     const nonceDigest = await digestHex(nonce);
-    const expiresAt = Date.now() + ADAPTER.INTENT_NONCE_TTL_S * 1000;
+    const expiresAt = Math.min(
+      Date.now() + ADAPTER.INTENT_NONCE_TTL_S * 1000,
+      input.purgeAt,
+    );
     await this.#armAlarm(Date.now() + ADAPTER.PROVISIONAL_LINK_TTL_S * 1000);
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
@@ -648,19 +652,33 @@ export class AdapterDelivery extends DurableObject<Env> {
       return { ok: false };
     }
     if (!this.#hasSchema()) return { ok: false };
+    const nonceDigest = await digestHex(input.nonce);
     const meta = this.#readMeta();
     if (meta.state !== "active") return { ok: false };
     const row = this.ctx.storage.sql
-      .exec<{ generation: number; expires_at: number }>(
-        "SELECT generation, expires_at FROM intents WHERE nonce = ?",
-        await digestHex(input.nonce),
+      .exec<{ generation: number; expires_at: number; reservation_id: string }>(
+        "SELECT generation, expires_at, reservation_id FROM intents WHERE nonce = ?",
+        nonceDigest,
+      )
+      .toArray()[0];
+    if (
+      row === undefined ||
+      row.expires_at < Date.now() ||
+      row.generation !== meta.generation
+    ) {
+      return { ok: false };
+    }
+    const holder = this.ctx.storage.sql
+      .exec<{ purge_at: number | null }>(
+        "SELECT purge_at FROM links WHERE reservation_id = ?",
+        row.reservation_id,
       )
       .toArray()[0];
     return {
       ok:
-        row !== undefined &&
-        row.expires_at >= Date.now() &&
-        row.generation === meta.generation,
+        holder !== undefined &&
+        holder.purge_at !== null &&
+        holder.purge_at > Date.now(),
     };
   }
 
@@ -737,7 +755,6 @@ export class AdapterDelivery extends DurableObject<Env> {
         .toArray()[0];
       if (
         intent === undefined ||
-        intent.expires_at < Date.now() ||
         meta.state !== "active" ||
         intent.generation !== meta.generation
       ) {
@@ -746,14 +763,30 @@ export class AdapterDelivery extends DurableObject<Env> {
         }
         return { ok: false as const, code: "INVALID_INTENT" as const };
       }
-      sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
       const existing = sql
         .exec<{ subject: string; status: string; link_version: number; purge_at: number | null }>(
           "SELECT subject, status, link_version, purge_at FROM links WHERE reservation_id = ?",
           intent.reservation_id,
         )
         .toArray()[0];
-      if (existing !== undefined && existing.status === "final") {
+      // Missing or unstamped: prune already took the holder. A stamp that has
+      // already passed: prune has not run yet, but the boundary still governs.
+      if (
+        existing === undefined ||
+        existing.purge_at === null ||
+        existing.purge_at <= Date.now()
+      ) {
+        sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
+        this.#bumpCounter("link_failed:past-retention", 1);
+        return { ok: false as const, code: "INVALID_INTENT" as const };
+      }
+      if (intent.expires_at < Date.now()) {
+        sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
+        this.#bumpCounter("link_failed:invalid-intent", 1);
+        return { ok: false as const, code: "INVALID_INTENT" as const };
+      }
+      sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
+      if (existing.status === "final") {
         if (existing.subject === input.subject) {
           return {
             ok: true as const,
@@ -763,16 +796,6 @@ export class AdapterDelivery extends DurableObject<Env> {
         }
         this.#bumpCounter("link_failed:conflict", 1);
         return { ok: false as const, code: "LINK_CONFLICT" as const };
-      }
-      // Every path that reaches this point minted the provisional link in the
-      // same transaction as the intent, so a missing or unstamped row means the
-      // retention prune has already taken it — the parent crossed its boundary
-      // while the customer was logging in. Nothing derived from that
-      // reservation may be created, and finalizing anyway would write a link
-      // with no retention deadline at all.
-      if (existing === undefined || existing.purge_at === null) {
-        this.#bumpCounter("link_failed:past-retention", 1);
-        return { ok: false as const, code: "INVALID_INTENT" as const };
       }
       const now = new Date().toISOString();
       const linkVersion = existing.link_version + 1;
@@ -1069,8 +1092,8 @@ export class AdapterDelivery extends DurableObject<Env> {
    * Activate a generation. Strictly-above-high-water is enforced here, at the
    * authority, so no saga replay or delayed RPC can ever re-activate or reuse
    * a generation — the property the persistent high-water exists for. The
-   * snapshot (messaging channel + origin, no secret) lets alarms send without
-   * any config read.
+   * snapshot (messaging channel, no secret) lets alarms send without any
+   * config read.
    */
   async activate(input: {
     generation: number;
@@ -1092,8 +1115,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       (input.snapshot !== undefined &&
         (typeof input.snapshot !== "object" ||
           input.snapshot === null ||
-          typeof input.snapshot.messagingChannelId !== "string" ||
-          typeof input.snapshot.origin !== "string"))
+          typeof input.snapshot.messagingChannelId !== "string"))
     ) {
       throw new Error("bad activate input");
     }
@@ -1192,6 +1214,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       sql.exec("DELETE FROM accepted_events");
       sql.exec("DELETE FROM intents");
       sql.exec("DELETE FROM subjects");
+      sql.exec("DELETE FROM counters WHERE name GLOB 'activation:*'");
       sql.exec(
         `UPDATE meta SET state = 'disabled', updated_at = ?, snapshot_json = NULL,
                 sweep_cursor = NULL, cycle_started_at = NULL
@@ -1332,12 +1355,13 @@ export class AdapterDelivery extends DurableObject<Env> {
     );
   }
 
-  /** One bounded send pass: claim, mint, push, settle. Active state only. */
+  /** One bounded send pass: mint, claim, push, settle. Active state only. */
   async #sendDue(now: number): Promise<void> {
     const meta = this.#readMeta();
     if (meta.state !== "active" || meta.snapshot === null || !this.#secretPresent()) {
       return;
     }
+    const snapshot = meta.snapshot;
     const secret = this.env.LINE_MESSAGING_CHANNEL_SECRET as string;
     const due = this.ctx.storage.sql
       .exec<DeliveryRow>(
@@ -1348,14 +1372,26 @@ export class AdapterDelivery extends DurableObject<Env> {
       )
       .toArray();
     for (const row of due) {
-      // Claim transaction: linearizes push-start against unlink, disable and
-      // unfollow — after any of those commit, no new push can start.
+      const token = await mintChannelToken({
+        generation: meta.generation,
+        channelId: snapshot.messagingChannelId,
+        channelSecret: secret,
+      });
+      // Claim commits with no await before pushMessage: the input gate stays
+      // closed from this validation through the start of the outbound fetch.
       const claim = this.ctx.storage.transactionSync(():
         | { subject: string; fragment: MessageFragment; firstAttemptAt: number }
         | null => {
         const sql = this.ctx.storage.sql;
         const current = this.#readMeta();
-        if (current.state !== "active") return null;
+        if (
+          current.state !== "active" ||
+          current.generation !== meta.generation ||
+          current.snapshot === null ||
+          current.snapshot.messagingChannelId !== snapshot.messagingChannelId
+        ) {
+          return null;
+        }
         const fresh = sql
           .exec<DeliveryRow>(
             "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'queued'",
@@ -1363,9 +1399,10 @@ export class AdapterDelivery extends DurableObject<Env> {
           )
           .toArray()[0];
         if (fresh === undefined) return null;
+        const claimNow = Date.now();
         // Last check before the message leaves: the parent reservation's
         // retention deadline is a send boundary, not just a prune boundary.
-        if (fresh.purge_at !== null && fresh.purge_at <= now) {
+        if (fresh.purge_at !== null && fresh.purge_at <= claimNow) {
           this.#recordTerminal("past-retention", fresh.type);
           sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
           return null;
@@ -1394,10 +1431,10 @@ export class AdapterDelivery extends DurableObject<Env> {
           );
           return null;
         }
-        const firstAttemptAt = fresh.first_attempt_at ?? now;
+        const firstAttemptAt = fresh.first_attempt_at ?? claimNow;
         sql.exec(
           "UPDATE deliveries SET status = 'sending', claimed_at = ?, first_attempt_at = ? WHERE delivery_id = ?",
-          now,
+          claimNow,
           firstAttemptAt,
           fresh.delivery_id,
         );
@@ -1406,11 +1443,6 @@ export class AdapterDelivery extends DurableObject<Env> {
       });
       if (claim === null) continue;
 
-      const token = await mintChannelToken({
-        generation: meta.generation,
-        channelId: meta.snapshot.messagingChannelId,
-        channelSecret: secret,
-      });
       let outcome:
         | { kind: "sent" }
         | { kind: "retryable"; status: number | null }
@@ -1425,7 +1457,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         const push = await pushMessage({
           accessToken: token.accessToken,
           to: claim.subject,
-          messages: serializeMessageV1(claim.fragment, meta.snapshot.origin),
+          messages: serializeMessageV1(claim.fragment),
           retryKey: row.retry_key,
         });
         if (push.ok) outcome = { kind: "sent" };
@@ -1648,7 +1680,7 @@ export class AdapterDelivery extends DurableObject<Env> {
    * configuration reconciliation, provisional expiry, retention pruning, due
    * sends, and one sweep batch — then re-arm at the earliest remaining work.
    * `disabled` with drained TTL stores schedules nothing (the disarm
-   * invariant a rollback relies on).
+   * invariant used by a compatible forward backout).
    */
   override async alarm(): Promise<void> {
     if (!this.#hasSchema()) return;

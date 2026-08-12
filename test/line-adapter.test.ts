@@ -430,9 +430,10 @@ describe("message templates and the v1 serializer (FR-009)", () => {
     type,
     date: suiteDate(1),
     startTime: "09:00",
+    serviceLabel: "カット、カラー",
   });
 
-  it("renders all five events with only time, state, next step, and the management link", () => {
+  it("renders all five events with only time, service label, and state", () => {
     const wording = {
       approve: "ご予約が確定しました。",
       reject: "ご予約をお受けできませんでした。",
@@ -441,29 +442,30 @@ describe("message templates and the v1 serializer (FR-009)", () => {
       expire: "ご予約の申し込みが期限切れになりました。",
     } as const;
     for (const type of ["approve", "reject", "reschedule", "cancel", "expire"] as const) {
-      const messages = serializeMessageV1(fragment(type), "https://example.test");
+      const messages = serializeMessageV1(fragment(type));
       expect(messages).toHaveLength(1);
       const message = messages[0]!;
       expect(Object.keys(message).sort()).toEqual(["text", "type"]);
       expect(message.type).toBe("text");
       expect(message.text).toContain(`${suiteDate(1)} 09:00`);
-      expect(message.text).toContain("https://example.test/bookings.html");
+      expect(message.text).toContain("サービス: カット、カラー");
+      expect(message.text).not.toContain("https://");
       // Each type carries its own wording — a shared approve template would fail.
       expect(message.text).toContain(wording[type]);
       for (const other of Object.keys(wording) as Array<keyof typeof wording>) {
         if (other === type) continue;
         expect(message.text).not.toContain(wording[other]);
       }
-      // FR-009 minimal payload: no customer name, notes, contact, or history
-      // can appear — the fragment cannot even carry them.
+      // FR-009 minimal payload: no customer name, notes, contact, history, or
+      // management URL can appear — the fragment cannot carry any of them.
       expect(message.text).not.toContain("花子");
       expect(message.text).not.toContain("@");
     }
   });
 
   it("serializes byte-identically across calls (retry-safe by construction)", () => {
-    const first = JSON.stringify(serializeMessageV1(fragment("cancel"), "https://example.test"));
-    const second = JSON.stringify(serializeMessageV1(fragment("cancel"), "https://example.test"));
+    const first = JSON.stringify(serializeMessageV1(fragment("cancel")));
+    const second = JSON.stringify(serializeMessageV1(fragment("cancel")));
     expect(first).toBe(second);
   });
 });
@@ -582,8 +584,13 @@ describe("token mint and push client", () => {
           accessToken: "tok",
           to: SUBJECT,
           messages: serializeMessageV1(
-            { v: 1, type: "approve", date: suiteDate(1), startTime: "09:00" },
-            "https://example.test",
+            {
+              v: 1,
+              type: "approve",
+              date: suiteDate(1),
+              startTime: "09:00",
+              serviceLabel: "カット",
+            },
           ),
           retryKey: crypto.randomUUID(),
         },
@@ -611,8 +618,13 @@ describe("token mint and push client", () => {
       accessToken: "tok",
       to: SUBJECT,
       messages: serializeMessageV1(
-        { v: 1, type: "cancel", date: suiteDate(1), startTime: "09:00" },
-        "https://example.test",
+        {
+          v: 1,
+          type: "cancel",
+          date: suiteDate(1),
+          startTime: "09:00",
+          serviceLabel: "カット",
+        },
       ),
       retryKey: "11111111-2222-4333-8444-555555555555",
     };
@@ -1029,4 +1041,3 @@ describe("link flow over HTTP", () => {
     expect(counts.intents).toBe(0);
   });
 });
-

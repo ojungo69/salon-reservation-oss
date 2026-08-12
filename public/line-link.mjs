@@ -47,8 +47,11 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
     element.textContent = label;
     element.addEventListener("click", () => {
       const row = element.closest("[data-line-link-row]");
+      const card = element.closest("[data-booking-card]");
       const actions = row?.querySelector("[data-line-link-actions]") ?? null;
       const siblings = actions === null ? [element] : [...actions.querySelectorAll("button")];
+      // 無効化した瞬間にフォーカスは <body> へ移るので、先に現在位置を覚える。
+      const hadFocus = row !== null && row.contains(document.activeElement);
       for (const target of siblings) target.disabled = true;
       if (actions !== null) actions.setAttribute("aria-busy", "true");
       onClick().finally(() => {
@@ -56,6 +59,10 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
           if (target.isConnected) target.disabled = false;
         }
         if (actions !== null && actions.isConnected) actions.removeAttribute("aria-busy");
+        if (hadFocus && row !== null && card !== null) {
+          if (element.isConnected && !element.disabled) element.focus();
+          else keepFocus(row, card, true);
+        }
       });
     });
     return element;
@@ -176,4 +183,5 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
     const record = recordById.get(card.dataset.reservationId);
     if (record !== undefined) void renderCard(record, card);
   }
+  return renderCard;
 };

@@ -193,20 +193,25 @@ code, because the deployment mechanics and the rollback story depend on them.
   same entry make no namespace changes. Free-plan namespaces must be SQLite-backed, which this
   is. Source: <https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/>,
   <https://developers.cloudflare.com/changelog/post/2026-06-30-declarative-do-class-exports/>
-- **Rollback preserves storage.** Namespace deletion happens only through an explicit `deleted`
-  tombstone (guarded at deploy time: the class must be absent from code and no other Worker may
-  bind it). Deploying an older configuration that simply omits the `AdapterDelivery` entry —
-  the actual rollback scenario — performs no lifecycle action: the namespace and all stored
-  data (including the generation high-water) persist, and re-introducing the entry later
-  reconnects to the same storage. The release note therefore says: never deploy a `deleted`
-  tombstone for `AdapterDelivery` as part of a rollback. Caveat: `wrangler versions upload`
-  cannot apply lifecycle changes (fails fast when `exports` entries change); the first deploy
-  that introduces the class must be `wrangler deploy`. Same sources.
+- **The first deployment creates the complete authority schema.** `AdapterDelivery` is new in
+  this feature and no namespace for it has ever been deployed, so there is no released older
+  schema to upgrade. `CREATE TABLE IF NOT EXISTS` does not add columns to an existing table;
+  any column change after this first release must ship an explicit additive migration.
+- **Backout is a forward deployment.** Namespace deletion happens only through an explicit
+  `deleted` tombstone (guarded at deploy time: the class must be absent from code and no other
+  Worker may bind it), but a pre-adapter deployment also lacks the required class export.
+  Therefore `wrangler rollback` must not select it. A compatible backout uses `wrangler deploy`
+  with the desired earlier application behavior while retaining the `AdapterDelivery` class,
+  binding, export, and live `exports` entry. Never deploy a `deleted` tombstone for
+  `AdapterDelivery` as part of a backout. `wrangler versions upload` cannot apply lifecycle
+  changes (it fails fast when `exports` entries change); the first deploy and any lifecycle
+  change use `wrangler deploy`. Same sources.
 - **Alarm retry semantics**: the `alarm()` handler has guaranteed at-least-once execution and is
   retried on uncaught exception with exponential backoff starting at 2-second delays for up to
   6 retries (worst ≈ 126 s, within `ALARM_RETRY_BACKOFF_ALLOWANCE_S` = 300 s). The handler
   receives `{retryCount, isRetry}`. Behavior of a pending alarm whose class is no longer
-  exported is **not explicitly documented**; the design does not depend on it — `AdapterDelivery`
-  disarms its alarm once `disabled` with drained TTL stores (tasks.md T009 invariant), so the
-  gated rollback point has no pending alarm by construction.
+  exported is **not explicitly documented**; the design does not depend on it. `disabled`
+  purges personal/event rows, but bounded ledger or webhook-dedup TTL alarms may remain. The
+  compatible forward backout retains `AdapterDelivery` until those stores drain; only then does
+  the tested T009 invariant guarantee no pending alarm.
   Source: <https://developers.cloudflare.com/durable-objects/api/base/>

@@ -1159,6 +1159,10 @@ const startBookings = async () => {
     dialog.showModal();
   };
 
+  // Set once the optional LINE module has loaded. Every card goes through it,
+  // including the ones the cancel flow rebuilds, so the row survives a re-render.
+  let enhanceLineCard = null;
+
   const renderCard = (record, booking) => {
     const fragment = template.content.cloneNode(true);
     const card = $("[data-booking-card]", fragment);
@@ -1192,6 +1196,7 @@ const startBookings = async () => {
       }
     });
     list.append(fragment);
+    void enhanceLineCard?.(record, card);
   };
 
   let publicConfig = null;
@@ -1237,27 +1242,6 @@ const startBookings = async () => {
     records.length ? `${records.length}件の保存情報を確認しました。` : "このブラウザに保存した予約はありません。",
     records.length ? "success" : "",
   );
-
-  // Inert unless the served configuration names the LINE adapter: without the
-  // property this never fetches, imports, or renders anything LINE-shaped.
-  const lineAdapter = publicConfig?.lineAdapter;
-  if (
-    records.length > 0 &&
-    lineAdapter &&
-    (typeof lineAdapter.liffId === "string" || lineAdapter.cleanup === true)
-  ) {
-    try {
-      const module = await import("/line-link.mjs");
-      module.enhanceBookingCards({
-        mode: typeof lineAdapter.liffId === "string" ? "capability" : "cleanup",
-        list,
-        records,
-        api,
-      });
-    } catch {
-      // 連携表示は任意機能: 読み込めなくても予約管理はそのまま使えます。
-    }
-  }
 
   dialogForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1309,6 +1293,30 @@ const startBookings = async () => {
     cancelTarget = null;
     setStatus(dialogStatus, "");
   });
+
+  // Inert unless the served configuration names the LINE adapter: without the
+  // property this never fetches, imports, or renders anything LINE-shaped.
+  // Loaded without awaiting, and last: an optional module that never resolves
+  // must not keep the page's own controls from working.
+  const lineAdapter = publicConfig?.lineAdapter;
+  if (
+    records.length > 0 &&
+    lineAdapter &&
+    (typeof lineAdapter.liffId === "string" || lineAdapter.cleanup === true)
+  ) {
+    import("/line-link.mjs")
+      .then((module) => {
+        enhanceLineCard = module.enhanceBookingCards({
+          mode: typeof lineAdapter.liffId === "string" ? "capability" : "cleanup",
+          list,
+          records,
+          api,
+        });
+      })
+      .catch(() => {
+        // 連携表示は任意機能: 読み込めなくても予約管理はそのまま使えます。
+      });
+  }
 };
 
 const startAdmin = async () => {

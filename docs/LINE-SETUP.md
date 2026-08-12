@@ -89,10 +89,9 @@ curl -sS https://<your-host>/api/admin/line/enable \
 the status response. Repeating a command with the same `commandId` replays
 the recorded outcome; changing identifiers requires disable → enable.
 
-The management link inside each notification is built from the installation's
-configured public hostname (`allowedHostname`). Enabling fails with
-`ORIGIN_UNCONFIGURED` until that setting has been saved; the URL that carries
-the enable command is not captured or used as the message origin.
+Enabling reuses the installation's live-readiness protection and fails with
+`ORIGIN_UNCONFIGURED` until `allowedHostname` and its matching Turnstile setup
+are ready. Notification messages contain no management URL.
 
 ## ⚠️ The free-plan message quota
 
@@ -117,7 +116,7 @@ CI proves the protocol against fixtures; a real channel is verified by hand:
    choose "LINE で通知を受け取る" on the booking-management page.
 2. Complete the LINE login. The page confirms the link.
 3. Approve the reservation from the owner page. A LINE message with the
-   date, state, and management link should arrive.
+   date, service label, and state should arrive.
 4. Check `/api/admin/line/status`: the delivery counters should show one
    delivered message and no terminal failures.
 5. Send a nonsense request to the webhook URL and confirm it is rejected

@@ -8,6 +8,7 @@ import type { InstallationConfig, ReadinessRuntime } from "../src/installation-c
 import type { DayAdapterDescriptor, DayConfig, ReservationDay } from "../src/reservation-day.ts";
 import worker from "../src/worker.ts";
 import {
+  configureTestProtection,
   identifiers,
   lineDay,
   sha256Hex,
@@ -114,8 +115,16 @@ const createPending = async (date = day.date): Promise<string> => {
 const outboxRows = (stub = dayStub()) =>
   runInDurableObject(stub, (_instance, state) =>
     state.storage.sql
-      .exec<{ event_id: string; generation: number; seq: number; type: string }>(
-        "SELECT event_id, generation, seq, type FROM __adapter_outbox ORDER BY seq",
+      .exec<{
+        event_id: string;
+        generation: number;
+        seq: number;
+        type: string;
+        service_label: string;
+        purge_at: number;
+      }>(
+        `SELECT event_id, generation, seq, type, service_label, purge_at
+         FROM __adapter_outbox ORDER BY seq`,
       )
       .toArray(),
   );
@@ -204,7 +213,13 @@ describe("adapter event foundation", () => {
 
     expect(await adapterTableCount()).toBe(2);
     expect(await outboxRows()).toMatchObject([
-      { event_id: `${day.date}#1`, generation: 1, seq: 1, type: "approve" },
+      {
+        event_id: `${day.date}#1`,
+        generation: 1,
+        seq: 1,
+        type: "approve",
+        service_label: "架空カット",
+      },
     ]);
 
     // A pre-adapter caller (no adapter field) sees a fully working day.
@@ -243,6 +258,16 @@ describe("adapter event foundation", () => {
       { event_id: `${day.date}#2`, seq: 2, type: "cancel" },
     ]);
     expect(await dayStub().readEventSequence()).toEqual({ eventSeq: 2 });
+  });
+
+  it("keeps the partition's frozen retention boundary on later adapter events", async () => {
+    const reservationId = await createPending();
+    await dayStub().transitionOwner(
+      { ...adapterDay(), purgeAt: Date.now() + 86_400_000 },
+      approveInput(reservationId),
+    );
+
+    expect(await outboxRows()).toMatchObject([{ purge_at: day.purgeAt }]);
   });
 
   it("rolls the whole transaction back on an expired lease and reports RETRY_CONFIG", async () => {
@@ -351,7 +376,7 @@ describe("adapter event foundation", () => {
       generation: 1,
       watermark: 0,
       operationId,
-      snapshot: { messagingChannelId: "9876543210", origin: "https://example.test" },
+      snapshot: { messagingChannelId: "9876543210" },
     });
     expect(first).toMatchObject({ ok: true, meta: { generation: 1, state: "active" } });
     // Same operationId reports the first activation — even if a different
@@ -360,7 +385,7 @@ describe("adapter event foundation", () => {
       generation: 2,
       watermark: 0,
       operationId,
-      snapshot: { messagingChannelId: "9876543210", origin: "https://example.test" },
+      snapshot: { messagingChannelId: "9876543210" },
     });
     expect(replay).toMatchObject({ ok: true, meta: { generation: 1, highWater: 1 } });
     expect(await deliveryStub().readMeta()).toMatchObject({ generation: 1, highWater: 1 });
@@ -512,6 +537,10 @@ const fetchConfig = async (customEnv: Env = env): Promise<string> => {
 };
 
 describe("LINE lifecycle authority", () => {
+  beforeEach(async () => {
+    await configureTestProtection();
+  });
+
   it("runs the shared command pipeline: receipts, CAS, phase gates", async () => {
     const commandId = crypto.randomUUID();
     const first = await lineCommand("line.settings", 0, { commandId });
@@ -559,29 +588,39 @@ describe("LINE lifecycle authority", () => {
     });
   });
 
-  it("refuses enable when allowedHostname is empty (ORIGIN_UNCONFIGURED)", async () => {
+  it("refuses enable without the current public hostname (ORIGIN_UNCONFIGURED)", async () => {
     await lineCommand("line.settings", 0);
-    const state = await installationStub().getState();
-    const current = state.settingsVersions.find(
-      (version) => version.version === state.activeSettingsVersion,
-    );
-    if (current === undefined) throw new Error("missing active settings");
-    // Empty hostname is valid in the settings schema but must not produce a
-    // management-link origin — enable refuses rather than mint a blank one.
-    const updated = await installationStub().executeCommand(
-      {
-        type: "settings.update",
-        commandId: crypto.randomUUID(),
-        expectedSettingsVersion: state.activeSettingsVersion,
-        settings: { ...current.settings, allowedHostname: "" },
-      },
-      runtime(),
-    );
-    expect(updated).toMatchObject({ ok: true });
-    expect(await lineCommand("line.enable", 1)).toEqual({
-      ok: false,
-      code: "ORIGIN_UNCONFIGURED",
-    });
+    for (const [allowedHostname, hostname] of [
+      ["", "example.test"],
+      ["localhost", "localhost"],
+      ["booking.example", "example.test"],
+    ]) {
+      const state = await installationStub().getState();
+      const current = state.settingsVersions.find(
+        (version) => version.version === state.activeSettingsVersion,
+      );
+      if (current === undefined) throw new Error("missing active settings");
+      const updated = await installationStub().executeCommand(
+        {
+          type: "settings.update",
+          commandId: crypto.randomUUID(),
+          expectedSettingsVersion: state.activeSettingsVersion,
+          settings: { ...current.settings, allowedHostname },
+        },
+        runtime({ hostname }),
+      );
+      expect(updated).toMatchObject({ ok: true });
+      const enabled = await installationStub().executeLineCommand(
+        {
+          operation: "line.enable",
+          commandId: crypto.randomUUID(),
+          expectedLifecycleVersion: 1,
+          identifiers,
+        },
+        runtime({ hostname }),
+      );
+      expect(enabled).toEqual({ ok: false, code: "ORIGIN_UNCONFIGURED" });
+    }
   });
 
   it("accepts line.disable only from active, not from activating", async () => {
@@ -689,6 +728,12 @@ describe("LINE lifecycle authority", () => {
       state: "disabled",
       highWater: 1,
     });
+    const activationReceipts = await runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ name: string }>("SELECT name FROM counters WHERE name GLOB 'activation:*'")
+        .toArray(),
+    );
+    expect(activationReceipts).toEqual([]);
     expect((await deliveryCounts()).links).toBe(0);
     expect((await deliveryCounts()).deliveries).toBe(0);
     expect(await fetchConfig()).toBe(baseline);
@@ -800,7 +845,7 @@ describe("delivery pipeline", () => {
     reservationId,
     action: "approve" as const,
   });
-  const snapshot = { messagingChannelId: "9876543210", origin: "https://example.test" };
+  const snapshot = { messagingChannelId: "9876543210" };
   const futurePurgeAt = () => Date.now() + 30 * 86_400_000;
 
   const lineApi = (
@@ -809,32 +854,33 @@ describe("delivery pipeline", () => {
       push?: (init: RequestInit) => number | "throw";
       pushBody?: string;
       pushHeaders?: Record<string, string>;
+      duringToken?: () => Promise<void> | void;
+      duringPush?: () => Promise<void> | void;
     } = {},
   ) => {
     const calls = { token: [] as RequestInit[], push: [] as RequestInit[] };
-    vi.stubGlobal("fetch", (input: string | URL | Request, init: RequestInit = {}) => {
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
       const url = String(input);
       if (url === "https://api.line.me/oauth2/v3/token") {
         calls.token.push(init);
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ access_token: "tok", token_type: "Bearer", expires_in: 900 }),
-            { status: options.token?.() ?? 200 },
-          ),
+        // Hold the fixture response until the requested race action commits.
+        await options.duringToken?.();
+        return new Response(
+          JSON.stringify({ access_token: "tok", token_type: "Bearer", expires_in: 900 }),
+          { status: options.token?.() ?? 200 },
         );
       }
       if (url === "https://api.line.me/v2/bot/message/push") {
         calls.push.push(init);
+        await options.duringPush?.();
         const outcome = options.push?.(init) ?? 200;
-        if (outcome === "throw") return Promise.reject(new Error("network down"));
-        return Promise.resolve(
-          new Response(options.pushBody ?? "{}", {
-            status: outcome,
-            headers: options.pushHeaders,
-          }),
-        );
+        if (outcome === "throw") throw new Error("network down");
+        return new Response(options.pushBody ?? "{}", {
+          status: outcome,
+          headers: options.pushHeaders,
+        });
       }
-      return Promise.reject(new Error(`unexpected fetch ${url}`));
+      throw new Error(`unexpected fetch ${url}`);
     });
     return calls;
   };
@@ -878,8 +924,9 @@ describe("delivery pipeline", () => {
           first_attempt_at: number | null;
           retry_key: string;
           type: string;
+          park_reason: string | null;
         }>(
-          "SELECT delivery_id, status, attempt, next_attempt_at, first_attempt_at, retry_key, type FROM deliveries ORDER BY delivery_id",
+          "SELECT delivery_id, status, attempt, next_attempt_at, first_attempt_at, retry_key, type, park_reason FROM deliveries ORDER BY delivery_id",
         )
         .toArray(),
     );
@@ -913,6 +960,16 @@ describe("delivery pipeline", () => {
         .toArray(),
     );
 
+  const queueDelivery = async (): Promise<string> => {
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
+    return reservationId;
+  };
+
   it("pushes a queued delivery end to end with the persisted retry key", async () => {
     const calls = lineApi();
     const reservationId = await createPending(pDate);
@@ -935,7 +992,8 @@ describe("delivery pipeline", () => {
     const body = JSON.parse(String(init.body)) as { to: string; messages: [{ text: string }] };
     expect(body.to).toBe(SUBJECT);
     expect(body.messages[0].text).toContain(`${pDate} 09:00`);
-    expect(body.messages[0].text).toContain("https://example.test/bookings.html");
+    expect(body.messages[0].text).toContain("サービス: 架空カット");
+    expect(body.messages[0].text).not.toContain("https://");
   });
 
   it("stores nothing a malicious provider sends — only the status class survives", async () => {
@@ -1331,8 +1389,8 @@ describe("delivery pipeline", () => {
     await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO __adapter_outbox
-           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at)
-         VALUES ('calendar', 1, 1, 'cal-1', ?, 'approve', '09:00', NULL, ?, ?)`,
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at)
+         VALUES ('calendar', 1, 1, 'cal-1', ?, 'approve', '09:00', 'カット', ?, ?)`,
         reservationId,
         new Date().toISOString(),
         SUITE_PURGE_AT,
@@ -1390,6 +1448,9 @@ describe("delivery pipeline", () => {
     if (!minted.ok) throw new Error("mint failed");
 
     // A real prune pass removes the provisional link — no SQL shortcut.
+    // The intent is capped to the same stamp, so prune takes it too; the
+    // nonce is then gone and finalize reports a dead intent, not a missing
+    // holder.
     advanceNow(3_000);
     await runDurableObjectAlarm(deliveryStub());
     expect((await deliveryCounts()).links).toBe(0);
@@ -1402,6 +1463,54 @@ describe("delivery pipeline", () => {
     });
     expect(linked).toEqual({ ok: false, code: "INVALID_INTENT" });
     expect((await deliveryCounts()).links).toBe(0);
+    expect((await deliveryCounts()).subjects).toBe(0);
+    expect((await counterMap())["link_failed:invalid-intent"]).toBe(1);
+  });
+
+  it("caps an intent minted near the parent boundary so it cannot outlive purgeAt", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    const purgeAt = Date.now() + 100_000;
+    const minted = await deliveryStub().mintIntent({
+      reservationId,
+      date: pDate,
+      generation: 1,
+      purgeAt,
+    });
+    if (!minted.ok) throw new Error("mint failed");
+    expect(minted.expiresAt).toBe(purgeAt);
+    expect(minted.expiresAt).toBeLessThan(Date.now() + ADAPTER.INTENT_NONCE_TTL_S * 1000);
+    expect(await deliveryStub().checkIntent({ nonce: minted.nonce })).toEqual({ ok: true });
+  });
+
+  it("refuses to finalize after the boundary even when prune has not run", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    const minted = await deliveryStub().mintIntent({
+      reservationId,
+      date: pDate,
+      generation: 1,
+      purgeAt: Date.now() + 2_000,
+    });
+    if (!minted.ok) throw new Error("mint failed");
+    expect((await deliveryCounts()).links).toBe(1);
+
+    // Cross the stamp without running the prune alarm: the holder row stays.
+    advanceNow(2_001);
+    expect(await deliveryStub().checkIntent({ nonce: minted.nonce })).toEqual({ ok: false });
+    const linked = await deliveryStub().finalizeLink({
+      nonce: minted.nonce,
+      subject: SUBJECT,
+    });
+    expect(linked).toEqual({ ok: false, code: "INVALID_INTENT" });
+    const holders = await runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ status: string }>("SELECT status FROM links")
+        .toArray(),
+    );
+    expect(holders).toEqual([{ status: "provisional" }]);
     expect((await deliveryCounts()).subjects).toBe(0);
     expect((await counterMap())["link_failed:past-retention"]).toBe(1);
   });
@@ -1425,10 +1534,13 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(
-      pAdapterDay({ purgeAt: Date.now() - 1_000 }),
-      pApprove(reservationId),
-    );
+    await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE partition_meta SET purge_at = ? WHERE singleton = 1",
+        Date.now() - 1_000,
+      );
+    });
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toEqual([]);
     expect(await ledgerReasons()).toEqual([
@@ -1476,6 +1588,102 @@ describe("delivery pipeline", () => {
       { reason: "past-retention", event_type: "approve" },
     ]);
     expect(calls.push).toHaveLength(0);
+  });
+
+  it("does not start a push when unlink commits while the token fetch is held", async () => {
+    const reservationId = await queueDelivery();
+
+    let calls!: ReturnType<typeof lineApi>;
+    await runInDurableObject(deliveryStub(), async (instance) => {
+      calls = lineApi({
+        duringToken: () => instance.unlink({ reservationId }),
+      });
+      await instance.alarm();
+    });
+
+    expect(calls.push).toHaveLength(0);
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([{ reason: "unlinked", event_type: "approve" }]);
+  });
+
+  it("does not start a push when disable commits while the token fetch is held", async () => {
+    await queueDelivery();
+
+    let calls!: ReturnType<typeof lineApi>;
+    await runInDurableObject(deliveryStub(), async (instance) => {
+      calls = lineApi({
+        duringToken: () => instance.beginDisable(),
+      });
+      await instance.alarm();
+    });
+
+    expect(calls.push).toHaveLength(0);
+  });
+
+  it("does not start a push when unfollow commits while the token fetch is held", async () => {
+    await queueDelivery();
+
+    let calls!: ReturnType<typeof lineApi>;
+    await runInDurableObject(deliveryStub(), async (instance) => {
+      calls = lineApi({
+        duringToken: () =>
+          instance.processWebhook({
+            events: [
+              {
+                type: "unfollow",
+                webhookEventId: `wh-race-unfollow-${pipelineSerial}`,
+                timestamp: Date.now(),
+                userId: SUBJECT,
+                isRedelivery: false,
+              },
+            ],
+          }),
+      });
+      await instance.alarm();
+    });
+
+    expect(calls.push).toHaveLength(0);
+    expect(await deliveryRows()).toMatchObject([
+      { status: "parked", park_reason: "unfollow" },
+    ]);
+  });
+
+  it("sends exactly one push when the token fetch finishes before unlink commits", async () => {
+    const reservationId = await queueDelivery();
+
+    let calls!: ReturnType<typeof lineApi>;
+    await runInDurableObject(deliveryStub(), async (instance) => {
+      calls = lineApi({
+        duringPush: () => instance.unlink({ reservationId }),
+      });
+      await instance.alarm();
+    });
+
+    expect(calls.push).toHaveLength(1);
+  });
+
+  it("does not start a push when the retention boundary is crossed while the token fetch is held", async () => {
+    await queueDelivery();
+
+    const boundary = Date.now() + 5_000;
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec("UPDATE deliveries SET purge_at = ?", boundary);
+    });
+    let calls!: ReturnType<typeof lineApi>;
+    await runInDurableObject(deliveryStub(), async (instance) => {
+      calls = lineApi({
+        duringToken: () => {
+          advanceNow(5_001);
+        },
+      });
+      await instance.alarm();
+    });
+
+    expect(calls.push).toHaveLength(0);
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([
+      { reason: "past-retention", event_type: "approve" },
+    ]);
   });
 
   it("never leaks customer PII into outbox, payload, push body, ledger, or diagnostics", async () => {
@@ -1755,4 +1963,3 @@ describe("delivery pipeline", () => {
 
 // Binding value from vitest.config.ts — fictional, never a real channel secret.
 const LINE_TEST_SECRET_BINDING = "line-test-channel-secret-0123456789abcdef";
-

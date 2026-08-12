@@ -226,6 +226,29 @@ test.describe("state 2: active", () => {
     await expect(page.locator("[data-line-back]")).toBeVisible();
   });
 
+  test("a stalled optional module cannot block booking cancellation", async ({ page }) => {
+    await bookAndRemember(page, "12:00");
+    let releaseModule!: () => void;
+    const heldModule = new Promise<void>((resolve) => {
+      releaseModule = resolve;
+    });
+    await page.route("**/line-link.mjs", async (route) => {
+      await heldModule;
+      await route.abort();
+    });
+
+    try {
+      await page.goto("/bookings");
+      const card = page.locator("[data-booking-card]").first();
+      await card.locator("[data-booking-cancel]").click();
+      await page.locator("[data-booking-cancel-confirm-button]").click();
+      await expect(card).toHaveAttribute("data-booking-state", "cancelled");
+      await expect(page.locator("[data-bookings-status]")).toContainText("取り消しました");
+    } finally {
+      releaseModule();
+    }
+  });
+
   test("a provisional link shows its unfinished state and can be abandoned", async ({ page }) => {
     await interceptLineOrigins(page);
     await bookAndRemember(page, "11:00");
@@ -242,10 +265,26 @@ test.describe("state 2: active", () => {
       "完了していません",
     );
     await expect(provisionalRow.getByRole("button", { name: "連携を続ける" })).toBeVisible();
-    await provisionalRow.getByRole("button", { name: "手続きを取りやめる" }).click();
+    const abandon = provisionalRow.getByRole("button", { name: "手続きを取りやめる" });
+    await abandon.focus();
+    await page.keyboard.press("Enter");
     await expect(provisionalRow.locator("[data-line-link-status]")).toContainText(
       "LINE で受け取れます",
     );
+    await expect(
+      provisionalRow.getByRole("button", { name: "LINE で通知を受け取る" }),
+    ).toBeFocused();
+
+    // A cancellation rebuilds the booking card. The optional enhancer is
+    // retained and runs for that replacement card as well.
+    await provisionalRow.getByRole("button", { name: "LINE で通知を受け取る" }).click();
+    await page.waitForURL(`${BROWSER_ORIGIN}/line.html`);
+    await page.goto("/bookings");
+    const card = page.locator("[data-booking-card]").first();
+    await card.locator("[data-booking-cancel]").click();
+    await page.locator("[data-booking-cancel-confirm-button]").click();
+    await expect(card).toHaveAttribute("data-booking-state", "cancelled");
+    await expect(card.locator("[data-line-link-status]")).toContainText("完了していません");
 
     // The webhook endpoint exists but refuses an unsigned body outright.
     const webhook = await page.evaluate(async () => {

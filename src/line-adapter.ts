@@ -388,51 +388,34 @@ export type MessageFragment = {
   type: "approve" | "reject" | "reschedule" | "cancel" | "expire";
   date: string;
   startTime: string;
+  serviceLabel: string;
 };
 
-const EVENT_LINES: Record<MessageFragment["type"], { state: string; next: string }> = {
-  approve: {
-    state: "ご予約が確定しました。",
-    next: "当日のご来店をお待ちしております。",
-  },
-  reject: {
-    state: "ご予約をお受けできませんでした。",
-    next: "別の日時で改めてご予約いただけます。",
-  },
-  reschedule: {
-    state: "ご予約の日時が変更されました。",
-    next: "新しい日時をご確認ください。",
-  },
-  cancel: {
-    state: "ご予約がキャンセルされました。",
-    next: "必要な場合は改めてご予約ください。",
-  },
-  expire: {
-    state: "ご予約の申し込みが期限切れになりました。",
-    next: "改めてご予約いただけます。",
-  },
+const EVENT_LINES: Record<MessageFragment["type"], string> = {
+  approve: "ご予約が確定しました。",
+  reject: "ご予約をお受けできませんでした。",
+  reschedule: "ご予約の日時が変更されました。",
+  cancel: "ご予約がキャンセルされました。",
+  expire: "ご予約の申し込みが期限切れになりました。",
 };
 
 /**
- * Wire-format v1: one text message, minimal payload (time, state, next step,
- * management link — spec FR-009; no notes, names, or history). v1 is never
+ * Wire-format v1: one text message containing only state, time, and service
+ * label (spec FR-009; no notes, names, contact, or management URL). v1 is never
  * removed or changed once shipped — retries must stay byte-identical across
  * deploys, and an independent installation can hold a v1 delivery until the
  * retention bound.
  */
 export const serializeMessageV1 = (
   fragment: MessageFragment,
-  origin: string,
 ): { type: "text"; text: string }[] => {
-  const lines = EVENT_LINES[fragment.type];
   return [
     {
       type: "text",
       text:
-        `${lines.state}\n` +
+        `${EVENT_LINES[fragment.type]}\n` +
         `日時: ${fragment.date} ${fragment.startTime}\n` +
-        `${lines.next}\n` +
-        `ご予約の確認・変更はこちら: ${origin}/bookings.html`,
+        `サービス: ${fragment.serviceLabel}`,
     },
   ];
 };

@@ -38,9 +38,10 @@
       "type": "durable-object",
       "storage": "sqlite"
     },
-    // Optional LINE adapter delivery authority. Never delete this entry as
-    // part of a rollback: dropping it alone preserves the namespace and its
-    // stored data; a "deleted" tombstone would destroy both. See
+    // Optional LINE adapter delivery authority. A compatible backout is a
+    // forward deploy that retains this entry, binding, export, and class; do
+    // not use wrangler rollback to a pre-adapter deployment. A "deleted"
+    // tombstone would destroy the namespace and its data. See
     // specs/003-line-adapter/research.md R5 and docs/RELEASING.md.
     "AdapterDelivery": {
       "type": "durable-object",
