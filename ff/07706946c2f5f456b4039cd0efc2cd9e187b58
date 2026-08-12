@@ -1,0 +1,112 @@
+specs/002-parity-roadmap-contracts/research.md
+  s_7c8b13bff90366::t_062cb6fcc6333e 66
+  s_7c8b13bff90366::t_9576f1664a5a11 42
+  s_7c8b13bff90366::t_a967ba67233fb7 23
+  s_7c8b13bff90366::t_502865512b5eb8 71
+  s_7c8b13bff90366::t_137f7d882a5aa2 3,5,7,9,11,13,15,17,19-20,27-28,30,32-37,40,44
+  s_7c8b13bff90366::t_05f6ff0f0ebda9 39
+  s_7c8b13bff90366::t_0cd06904f267c5 56,58,62-65,67,70,72-75
+  s_7c8b13bff90366::t_c496659341d425 25
+  s_7c8b13bff90366::t_ff664146e24bf7 12
+  s_7c8b13bff90366::t_1288da0db7ed3d 50
+  s_7c8b13bff90366::t_ffe9b1e2603ce8 38
+  s_7c8b13bff90366::t_6edc4faa77e8fd 68-69
+  s_7c8b13bff90366::t_1d6a110cf25436 1-2,4,6,8,10,14,16,18,21-22,24,26,29,41,43,45-47,49,53-55,57,59,61
+  s_7c8b13bff90366::t_8dd22e8d51a37c 60
+  s_7c8b13bff90366::t_11a7c833392e36 31
+  s_7c8b13bff90366::t_efea0e293cbbb6 48,51-52
+specs/002-parity-roadmap-contracts/plan.md
+  s_7c8b13bff90366::t_18740845fb9a1f 88
+  s_7c8b13bff90366::t_c2a642f28e8501 1-4,6-8,10-14,16-18,20-22,24-26,28,30-33,35,37,39-48,50-54,56-59,62,75-76,78-80,90-96,103-105
+  s_7c8b13bff90366::t_52288ab76ddcfb 85
+  s_7c8b13bff90366::t_429d3e44f1fcc7 81
+  s_7c8b13bff90366::t_dd2c6cb20b6db5 5,15,19,23,27,38,49,55,60-61,63-65,74,77,82-84,86,97-100,102,106,109-110
+  s_7c8b13bff90366::t_064332eb66137c 9
+  s_7c8b13bff90366::t_b3403d25178ef5 108
+  s_7c8b13bff90366::t_b62f5d9e4f4527 107
+  s_7c8b13bff90366::t_6b15b25b099a37 36
+  s_7c8b13bff90366::t_971cc266ae170c 66-73
+  s_7c8b13bff90366::t_07bdf2c20e1fe2 101
+  s_7c8b13bff90366::t_b8fca4b22732b6 87
+  s_7c8b13bff90366::t_01a13b639987a1 29
+  s_7c8b13bff90366::t_9ff29daf96bd70 34
+  s_7c8b13bff90366::t_9f25b993ad0903 89
+specs/002-parity-roadmap-contracts/spec.md
+  s_7c8b13bff90366::t_d5617f83261f2e 19
+  s_7c8b13bff90366::t_32ee42e26415f6 76
+  s_7c8b13bff90366::t_efa4d72ff7ae6c 77
+  s_7c8b13bff90366::t_6e38b17d9d5ec8 23
+  s_7c8b13bff90366::t_15529f17fee26d 41
+  s_7c8b13bff90366::t_dadff01377812a 1-18,20-22,24-34,36-40,43-51,53-55,57-75,78-94,96-103,105-107
+  s_7c8b13bff90366::t_78264835abb64a 42
+  s_7c8b13bff90366::t_dd9eb9c4cf2246 35
+  s_7c8b13bff90366::t_b8f2abe13cb884 52
+  s_7c8b13bff90366::t_b47a63c8b00dca 56
+  s_7c8b13bff90366::t_ec2bd4c76f94f0 104
+  s_7c8b13bff90366::t_aebd82600e29c6 95
+README.md
+  s_7c8b13bff90366::t_64447059b4758f 29-31,37-46
+  s_7c8b13bff90366::t_16f1ed7bb485e0 47
+specs/002-parity-roadmap-contracts/checklists/requirements.md
+  s_7c8b13bff90366::t_c1049efd6cf507 1-35
+docs/ROADMAP.md
+  s_7c8b13bff90366::t_cf10d3772a81ef 41
+  s_7c8b13bff90366::t_eefe2d047da124 48
+  s_7c8b13bff90366::t_ba59dd3436efb2 37
+  s_7c8b13bff90366::t_404b743526429d 40
+  s_7c8b13bff90366::t_d5f86245cb6354 29-31
+  s_7c8b13bff90366::t_d059986231e94c 1-28,32-36,38,42-47,49
+  s_7c8b13bff90366::t_fa4da06471e034 39
+docs/RELEASING.md
+  s_7c8b13bff90366::t_459965239229cb 54-57
+docs/PARITY.md
+  s_7c8b13bff90366::t_205d8e6cf59e5e 7-9
+  s_7c8b13bff90366::t_a556d72dfbdea0 131
+  s_7c8b13bff90366::t_0b392d3587defa 97
+  s_7c8b13bff90366::t_2299ec00e02c9d 75
+  s_7c8b13bff90366::t_f5eb3a55aa4fe2 3-5
+  s_7c8b13bff90366::t_eb5837fe0a9b45 104
+  s_7c8b13bff90366::t_c556167b1bfd67 137-142
+  s_7c8b13bff90366::t_9a50b6e0bdd8e6 1,10-18,51-74,76-96,98,100-103,105-128,130,132-136,143-152
+  s_7c8b13bff90366::t_dfb3943f6502ec 6
+docs/UX-PARITY.md
+  s_7c8b13bff90366::t_4a9aa380e46ca1 59
+  s_7c8b13bff90366::t_2977fe7b0f8289 21-22
+  s_7c8b13bff90366::t_db8caf8f7902c6 7-10
+  s_7c8b13bff90366::t_50cf308d7b3b67 6,11
+  s_7c8b13bff90366::t_1ad948341399c2 62-64
+specs/002-parity-roadmap-contracts/tasks.md
+  s_7c8b13bff90366::t_2d2ac6162cd4ed 22
+  s_7c8b13bff90366::t_0b62be39868c79 29
+  s_7c8b13bff90366::t_d3ce834f0e60d0 1-14,17-21,24-28,33-37,40-47
+  s_7c8b13bff90366::t_deadfd805e52ae 15-16,23,30-32,38-39
+docs/ADAPTER-CONTRACTS.md
+  s_7c8b13bff90366::t_03308e926ce4cf 20-29
+  s_7c8b13bff90366::t_483ead7339bfcf 60
+  s_7c8b13bff90366::t_4219cdaccaada3 103
+  s_7c8b13bff90366::t_5f057a27843d57 110-112
+  s_7c8b13bff90366::t_62d9110bd5697f 84
+  s_7c8b13bff90366::t_d164ef000e632c 87
+  s_7c8b13bff90366::t_07175bed8b7758 1-19,33-59,61-75,80-83,85-86,89-102,104-109,113-114
+  s_7c8b13bff90366::t_909c22747e9fc8 88
+  s_7c8b13bff90366::t_25d6bf9cbef7a4 30-32
+  s_7c8b13bff90366::t_3245da6162c48e 76-79
+release/public-files.txt
+  s_7c8b13bff90366::t_7431df5b597e23 18,23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "ff07706946c2f5f456b4039cd0efc2cd9e187b58",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
