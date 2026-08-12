@@ -1,0 +1,101 @@
+public/app.js
+  s_7c8b13bff90366::t_28caf90bdf2110 1199
+  s_7c8b13bff90366::t_152c79159e429e 1162-1165
+  s_7c8b13bff90366::t_75e4ceaae5571e 1296-1319
+test/adapter-delivery.test.ts
+  s_a546c8dc2f182a::t_77259651a009c1 118-127,216-220,222,996
+  s_a546c8dc2f182a::t_2f60ec4d129bfa 11,541
+  s_a546c8dc2f182a::t_970c758ee3567e 1392-1393
+  s_a546c8dc2f182a::t_13ae3334776391 221,995
+  s_a546c8dc2f182a::t_e256ad9f7ef88a 591,593-623
+  s_a546c8dc2f182a::t_aacdb3eed5d663 857-858,862,866-870,875,877-881,883,927,929
+  s_a546c8dc2f182a::t_f43516aebc0ba1 1451-1453,1467-1513
+  s_a546c8dc2f182a::t_1e5ec43fc661c7 1537-1543
+  s_a546c8dc2f182a::t_32453935c052f6 963-972,1594,1610,1624,1652,1666
+  s_a546c8dc2f182a::t_0fcba67c567ead 731-736
+  s_a546c8dc2f182a::t_8520c027373875 540,542-543
+  s_a546c8dc2f182a::t_f1750fcb30e30a 1593,1595-1609,1611-1623,1625-1651,1653-1665,1667-1688
+  s_a546c8dc2f182a::t_e73faabf3a307f 379,388,848
+  s_a546c8dc2f182a::t_43b73c636c0a15 263-272
+  s_a546c8dc2f182a::t_4d3282038f8511 1514
+tests-browser/line.spec.ts
+  s_a546c8dc2f182a::t_0627ceef5ad5fb 229-251,268-270,274-287
+specs/003-line-adapter/plan.md
+  s_a546c8dc2f182a::t_22a4e028a4401c 5,445-449,461
+  s_a546c8dc2f182a::t_9a3533f8d24d96 39
+  s_a546c8dc2f182a::t_3bee6fb467a196 41
+  s_a546c8dc2f182a::t_da554115670f8c 112-121,186-189,406-409
+  s_a546c8dc2f182a::t_35871996c9b13d 40,42
+  s_a546c8dc2f182a::t_ece24c703f15fe 43
+  s_a546c8dc2f182a::t_1dec0c737d75d6 414-416
+docs/LINE-SETUP.md
+  s_a546c8dc2f182a::t_1dec0c737d75d6 92-94,119
+specs/003-line-adapter/spec.md
+  s_a546c8dc2f182a::t_22a4e028a4401c 7
+docs/RELEASING.md
+  s_a546c8dc2f182a::t_f1ccd420000b12 65-72,76-81,85
+test/line-helpers.ts
+  s_a546c8dc2f182a::t_2f60ec4d129bfa 106-127,129
+specs/003-line-adapter/security-scan.md
+  s_a546c8dc2f182a::t_d8c4f274e7ee93 6,25-35
+  s_a546c8dc2f182a::t_1649028de3eed7 36
+wrangler.jsonc
+  s_a546c8dc2f182a::t_f1ccd420000b12 41-44
+src/installation-config.ts
+  s_a546c8dc2f182a::t_8520c027373875 1716-1717
+  s_a546c8dc2f182a::t_e256ad9f7ef88a 1718-1719
+src/line-adapter.ts
+  s_a546c8dc2f182a::t_970c758ee3567e 391,394-399,403-404,416,418
+public/line-link.mjs
+  s_7c8b13bff90366::t_22bbe919c3832a 50,63-65
+  s_a546c8dc2f182a::t_43b73c636c0a15 53-54,62,186
+src/adapter-delivery.ts
+  s_a546c8dc2f182a::t_f1ccd420000b12 115-116,129-133
+  s_a546c8dc2f182a::t_e73faabf3a307f 21,279,1095-1096,1118,1391
+  s_a546c8dc2f182a::t_89b3ead4a07014 27-28
+  s_a546c8dc2f182a::t_2195a873ef7783 1217
+  s_a546c8dc2f182a::t_be2949cef7ef2e 1683
+  s_a546c8dc2f182a::t_f20c66d7ff7f74 603-606,659-660,662-674,679-681,772-789,1358,1364,1375-1381,1387-1390,1392-1394,1402,1405,1434,1437
+  s_a546c8dc2f182a::t_970c758ee3567e 398,1460
+  s_a546c8dc2f182a::t_a698161232387e 655,661
+src/reservation-day.ts
+  s_a546c8dc2f182a::t_970c758ee3567e 170,697-699,1012,1030,1054,1063,1122,1126,1147,1161,1599,1638,2304,2513
+  s_a546c8dc2f182a::t_43b73c636c0a15 1039-1042,1065
+specs/003-line-adapter/research.md
+  s_a546c8dc2f182a::t_da554115670f8c 200-208,213-216
+  s_a546c8dc2f182a::t_463640d91276e7 196-199
+specs/003-line-adapter/tasks.md
+  s_a546c8dc2f182a::t_da554115670f8c 120
+  s_a546c8dc2f182a::t_be2949cef7ef2e 130
+  s_a546c8dc2f182a::t_ece24c703f15fe 72
+  s_a546c8dc2f182a::t_35871996c9b13d 119
+  s_a546c8dc2f182a::t_22a4e028a4401c 84,96,109
+test/line-adapter.test.ts
+  s_a546c8dc2f182a::t_77259651a009c1 433,436,451-452,459-460
+  s_a546c8dc2f182a::t_1e014107d9d88c 445,467-468
+  s_a546c8dc2f182a::t_970c758ee3567e 587-593,621-627
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "a40523be292533fc42091e1e96b86a94d5f3e5dd",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
