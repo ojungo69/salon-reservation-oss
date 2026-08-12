@@ -49,6 +49,9 @@ export type AdapterDiagnostics = {
   generation: number;
   pending: number;
   oldestPendingAt: string | null;
+  // Installation-level aggregates only — never a subject or reservation ID.
+  links: { final: number; provisional: number };
+  subjects: { followed: number; unfollowed: number };
   sweepCursor: string | null;
   purgeCompletedAt: number | null;
   counters: Record<string, number>;
@@ -493,6 +496,26 @@ export class AdapterDelivery extends DurableObject<Env> {
         "SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM deliveries",
       )
       .toArray()[0];
+    const linkRows = sql
+      .exec<{ status: string; n: number }>(
+        "SELECT status, COUNT(*) AS n FROM links GROUP BY status",
+      )
+      .toArray();
+    const links = { final: 0, provisional: 0 };
+    for (const row of linkRows) {
+      if (row.status === "final") links.final = row.n;
+      if (row.status === "provisional") links.provisional = row.n;
+    }
+    const subjectRows = sql
+      .exec<{ followed: number; n: number }>(
+        "SELECT followed, COUNT(*) AS n FROM subjects GROUP BY followed",
+      )
+      .toArray();
+    const subjects = { followed: 0, unfollowed: 0 };
+    for (const row of subjectRows) {
+      if (row.followed === 1) subjects.followed = row.n;
+      else subjects.unfollowed = row.n;
+    }
     const counters: Record<string, number> = {};
     for (const row of sql
       .exec<{ name: string; value: number }>("SELECT name, value FROM counters")
@@ -514,6 +537,8 @@ export class AdapterDelivery extends DurableObject<Env> {
       generation: meta.generation,
       pending: pendingRow?.n ?? 0,
       oldestPendingAt: pendingRow?.oldest ?? null,
+      links,
+      subjects,
       sweepCursor: meta.sweepCursor,
       purgeCompletedAt: meta.purgeCompletedAt,
       counters,
@@ -642,7 +667,13 @@ export class AdapterDelivery extends DurableObject<Env> {
         input.nonce,
       )
       .toArray()[0];
-    if (pre === undefined) return { ok: false, code: "INVALID_INTENT" };
+    if (pre === undefined) {
+      // Counted only while active: priority 0 (disabled) persists nothing.
+      if (this.#readMeta().state === "active") {
+        this.#bumpCounter("link_failed:invalid-intent", 1);
+      }
+      return { ok: false, code: "INVALID_INTENT" };
+    }
     // Watermark read is a day RPC, so it happens before the local transaction.
     let watermark = 0;
     try {
@@ -669,6 +700,9 @@ export class AdapterDelivery extends DurableObject<Env> {
         meta.state !== "active" ||
         intent.generation !== meta.generation
       ) {
+        if (meta.state === "active") {
+          this.#bumpCounter("link_failed:invalid-intent", 1);
+        }
         return { ok: false as const, code: "INVALID_INTENT" as const };
       }
       sql.exec("DELETE FROM intents WHERE nonce = ?", input.nonce);
@@ -686,6 +720,7 @@ export class AdapterDelivery extends DurableObject<Env> {
             replayed: true,
           };
         }
+        this.#bumpCounter("link_failed:conflict", 1);
         return { ok: false as const, code: "LINK_CONFLICT" as const };
       }
       const now = new Date().toISOString();

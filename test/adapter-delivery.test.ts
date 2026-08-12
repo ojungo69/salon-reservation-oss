@@ -1173,6 +1173,31 @@ describe("delivery pipeline", () => {
     },
   );
 
+  it("diagnostics expose installation aggregates and never a subject", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    // A failed finalize attempt shows up as a count, not an identity.
+    await deliveryStub().finalizeLink({ nonce: "f".repeat(32), subject: SUBJECT });
+
+    const diagnostics = await deliveryStub().diagnostics();
+    expect(diagnostics).toMatchObject({
+      state: "active",
+      links: { final: 1, provisional: 0 },
+      subjects: { followed: 1, unfollowed: 0 },
+      pending: 1,
+    });
+    expect(diagnostics!.counters["link_failed:invalid-intent"]).toBe(1);
+    // No LINE subject, reservation ID, or secret-shaped value anywhere in the
+    // operator-facing payload.
+    const serialized = JSON.stringify(diagnostics);
+    expect(serialized).not.toMatch(/U[0-9a-f]{32}/);
+    expect(serialized).not.toContain(reservationId);
+  });
+
   it("purges one consumer's day rows and drops tables only when no consumer remains", async () => {
     const reservationId = await createPending(pDate);
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
