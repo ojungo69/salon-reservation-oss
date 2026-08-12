@@ -1,0 +1,41 @@
+specs/002-parity-roadmap-contracts/tasks.md
+  s_7c8b13bff90366::t_96b1194c6dec8c 5
+specs/002-parity-roadmap-contracts/plan.md
+  s_7c8b13bff90366::t_0be0964a0661f5 19
+  s_7c8b13bff90366::t_4c54e2cf9e4b3b 23
+  s_7c8b13bff90366::t_ed8b424012288d 85
+  s_7c8b13bff90366::t_a42bf412267533 89
+  s_7c8b13bff90366::t_587a1e5ec83047 29
+specs/002-parity-roadmap-contracts/research.md
+  s_7c8b13bff90366::t_07d9a84cc7f974 23
+specs/002-parity-roadmap-contracts/spec.md
+  s_7c8b13bff90366::t_ab4f096f82d11c 96
+  s_7c8b13bff90366::t_aa223966c196a2 76
+scripts/release-audit.mjs
+  s_7c8b13bff90366::t_e6ee75dcb0fd8e 38,41
+README.md
+  s_7c8b13bff90366::t_7e643d6f04557f 44
+docs/ADAPTER-CONTRACTS.md
+  s_7c8b13bff90366::t_bb08429f1499b5 16-19
+  s_7c8b13bff90366::t_5983d7d93d43f3 36-39
+specs/002-parity-roadmap-contracts/checklists/requirements.md
+  s_7c8b13bff90366::t_c99292e2f9e389 35
+docs/ROADMAP.md
+  s_7c8b13bff90366::t_7166e8f883695a 18-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "7f90722e338de40f53e774b7f82b26a837034cdd",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
