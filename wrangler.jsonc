@@ -11,7 +11,7 @@
   "assets": {
     "binding": "ASSETS",
     "directory": "./public",
-    "run_worker_first": ["/api/*", "/line", "/line/", "/line.html", "/line-link.mjs", "/line-liff.mjs", "/privacy.html"]
+    "run_worker_first": ["/api/*", "/line", "/line/", "/line.html", "/line-link.mjs", "/line-liff.mjs", "/privacy", "/privacy.html"]
   },
   "durable_objects": {
     "bindings": [

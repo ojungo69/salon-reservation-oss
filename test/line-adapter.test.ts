@@ -1,4 +1,4 @@
-import { env, reset, runInDurableObject } from "cloudflare:test";
+import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ADAPTER, fullCycleBoundS, WORST_CASE_PARTITIONS } from "../src/adapter-constants.ts";
@@ -19,10 +19,12 @@ import {
   deliveryStub,
   enableLineAdapter,
   identifiers,
+  installationStub,
   LINE_TEST_SECRET,
   lineDay,
   MANAGEMENT_KEY,
   signWebhookBody,
+  testRuntime,
 } from "./line-helpers.ts";
 
 const NOW = Date.parse("2027-01-14T15:00:00.000Z");
@@ -250,6 +252,61 @@ describe("constants inequalities (T033)", () => {
         expect(value, name).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("privacy page state rule", () => {
+  const fetchPrivacy = async (customEnv: Env = env): Promise<Response> =>
+    worker.fetch(new Request("https://example.test/privacy.html"), customEnv);
+
+  it("serves the asset byte-identically until the adapter exists, then discloses per state", async () => {
+    const baselineResponse = await fetchPrivacy();
+    expect(baselineResponse.status).toBe(200);
+    expect(baselineResponse.headers.get("cache-control")).toBe("no-store");
+    const baseline = await baselineResponse.text();
+    expect(baseline).not.toContain("LINE 連携を利用する場合");
+    // The permanent operational-records paragraph is static, not state-gated.
+    expect(baseline).toContain("個人を特定しない運用記録");
+
+    await enableLineAdapter();
+    const active = await (await fetchPrivacy()).text();
+    expect(active).toContain("LINE 連携を利用する場合");
+
+    // Missing secret (state active, binding absent): still rendered — data
+    // may still be held.
+    const noSecretEnv = Object.create(env) as Env;
+    Object.defineProperty(noSecretEnv, "LINE_MESSAGING_CHANNEL_SECRET", {
+      value: undefined,
+    });
+    const degraded = await (await fetchPrivacy(noSecretEnv)).text();
+    expect(degraded).toContain("LINE 連携を利用する場合");
+
+    // Post-purge: the section is gone and the body is byte-identical to the
+    // never-configured baseline (the state rule, not a diff, decides).
+    const disable = await installationStub().executeLineCommand(
+      {
+        operation: "line.disable",
+        commandId: crypto.randomUUID(),
+        expectedLifecycleVersion: 2,
+      },
+      testRuntime(),
+    );
+    expect(disable).toMatchObject({ ok: true, phase: "deactivating" });
+    const deactivating = await (await fetchPrivacy()).text();
+    expect(deactivating).toContain("LINE 連携を利用する場合");
+
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE meta SET purge_completed_at = ? WHERE singleton = 1",
+        Date.now(),
+      );
+    });
+    await deliveryStub().completeDisable();
+    // Drive the coordinator past its lease wait so the phase flips.
+    vi.setSystemTime(Date.now() + 61_000);
+    await runDurableObjectAlarm(installationStub());
+    const after = await (await fetchPrivacy()).text();
+    expect(after).toBe(baseline);
   });
 });
 

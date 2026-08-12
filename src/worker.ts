@@ -1930,17 +1930,61 @@ const handleLineAsset = async (
   const allowed =
     line !== null && (isOptInModule || !("cleanup" in line));
   if (!allowed) return notFoundPage(env, url);
-  const assetPath = url.pathname === "/line" || url.pathname === "/line/"
-    ? "/line.html"
-    : url.pathname;
+  // The assets service html-handles paths (/line serves line.html; asking for
+  // the .html form gets a redirect), so the binding is always asked for the
+  // extensionless page path.
+  const isPage =
+    url.pathname === "/line" || url.pathname === "/line/" || url.pathname === "/line.html";
+  const assetPath = isPage ? "/line" : url.pathname;
   const asset = await env.ASSETS.fetch(new Request(new URL(assetPath, url.origin), request));
   if (!asset.ok) return notFoundPage(env, url);
   const headers = new Headers(asset.headers);
   headers.set("cache-control", "no-store");
-  if (assetPath === "/line.html") {
+  if (isPage) {
     headers.set("content-security-policy", LINE_PAGE_CSP);
   }
   return new Response(asset.body, { status: asset.status, headers });
+};
+
+// Rendered into privacy.html only while the adapter state table says the
+// section exists (active, missing-secret, deactivating): the state rule, not
+// the request, decides — a never-configured installation serves the asset
+// byte-identically (the slot comment stays, invisible in the DOM).
+const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
+      <p>
+        この設置では、予約の通知を LINE で受け取る連携を有効にしています。連携はお客様が予約ごとに自分で選んだ場合にだけ行われ、連携した予約について LINE のユーザー識別子と予約の対応、および通知の送信記録を保存します。お名前やご連絡先を LINE に送ることはありません。通知の本文には日時と予約の状態だけを含めます。
+      </p>
+      <p>
+        連携は予約管理ページからいつでも解除でき、解除すると対応関係と未送信の通知を削除します。予約の保存期限が過ぎたとき、および運営者が連携機能を停止したときも同じように削除します。LINE 側でのデータの取り扱いは LINE の利用規約とプライバシーポリシーに従います。
+      </p>`;
+
+const handlePrivacyPage = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET, HEAD" });
+  }
+  const asset = await env.ASSETS.fetch(
+    new Request(new URL("/privacy", url.origin), request),
+  );
+  if (!asset.ok) return notFoundPage(env, url);
+  const headers = new Headers(asset.headers);
+  // State-dependent response: a cached copy must never leak across states.
+  headers.set("cache-control", "no-store");
+  const context = await installationContext(env, url, false);
+  if (linePublicConfig(context) === null) {
+    return new Response(asset.body, { status: asset.status, headers });
+  }
+  const body = (await asset.text()).replace(
+    "<!-- adapter-disclosure-slot -->",
+    LINE_PRIVACY_SECTION,
+  );
+  return new Response(request.method === "HEAD" ? null : body, {
+    status: asset.status,
+    headers,
+  });
 };
 
 const handle = async (request: Request, env: AppEnv): Promise<Response> => {
@@ -2028,6 +2072,9 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
     url.pathname === "/line-liff.mjs"
   ) {
     return handleLineAsset(request, env, url);
+  }
+  if (url.pathname === "/privacy" || url.pathname === "/privacy.html") {
+    return handlePrivacyPage(request, env, url);
   }
 
   if (url.pathname.startsWith("/api/")) return errorResponse(404, "BAD_REQUEST");

@@ -24,7 +24,8 @@ const rowFor = (card) => {
   actions.className = "button-row";
   row.append(label, status, actions);
   const summary = card.querySelector("[data-booking-summary]");
-  (summary ?? card).insertAdjacentElement("afterend", row);
+  if (summary) summary.insertAdjacentElement("afterend", row);
+  else card.append(row);
   return row;
 };
 

@@ -62,6 +62,24 @@ changelog.
 Tags matching `v*` are protected by a repository ruleset: they cannot be deleted or moved. A
 mistaken release is corrected by publishing the next patch version, never by rewriting a tag.
 
+## Rolling back a release with the LINE adapter
+
+The `AdapterDelivery` Durable Object is declared in the `exports` field of
+`wrangler.jsonc`. When rolling back to a version without the adapter:
+
+- **Never add a `deleted` tombstone for `AdapterDelivery`.** Deploying a
+  config that omits the export entry entirely preserves the namespace and
+  its stored data (see `specs/003-line-adapter/research.md` R5); a `deleted`
+  tombstone destroys both. The adapter's safety against generation reuse
+  depends on the stored high-water mark surviving rollbacks.
+- Roll back only after the adapter shows `disabled` in
+  `/api/admin/line/status` (or was never enabled): a disabled authority with
+  drained TTL stores keeps no pending alarm, so the old Worker — which no
+  longer exports the class — is never asked to run one.
+- The reservation-day objects need no attention: adapter state lives in
+  `__`-prefixed tables the pre-adapter schema checks ignore, and a completed
+  disable removes even those.
+
 ## Scope of `release:audit` and `release:audit:public`
 
 `npm run release:audit` runs on every pull request as part of `npm run check`. It verifies the file
