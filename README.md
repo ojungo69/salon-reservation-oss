@@ -26,13 +26,24 @@ application uptime guarantee.
 ## Deliberate limits
 
 One `Asia/Tokyo` location, 1–8 capacity-one resources, 1–16 services, 1–4 services per request,
-same-day rescheduling, and a bounded seven-day operator view are in scope. Payments, notifications,
-external identity, calendar sync, customer CRM/medical notes, multiple locations, staff roles, and
-cross-day moves are intentionally absent. See [the parity matrix](docs/PARITY.md).
+same-day rescheduling, and a bounded seven-day operator view are in scope. What lies beyond that —
+and its current status — is recorded capability by capability in
+[the parity matrices](docs/PARITY.md), not here.
 
 Service and resource identifiers must stay stable while future dates already contain reservations.
 Replacing or disabling one safely stops incompatible new bookings on those pinned dates; existing
 bookings, cancellation, and accepted retry results remain available.
+
+## Parity status
+
+Production parity is determined by
+[the production-parity target matrix](docs/PARITY.md#production-parity-target-matrix): a release
+may claim it only when every target row is implemented or deliberately excluded. Current releases
+are **core-feature parity, not production parity** — the
+[implemented capability matrix](docs/PARITY.md#implemented-capability-matrix) records what exists
+with evidence, and planned target rows remain open. The order in which the remaining rows land is
+[the roadmap](docs/ROADMAP.md); the obligations any external integration must meet are
+[the adapter extension contracts](docs/ADAPTER-CONTRACTS.md).
 
 ## Deploy and finish setup
 

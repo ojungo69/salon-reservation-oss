@@ -51,9 +51,10 @@ changelog.
    key is available, say so in the release notes rather than leaving readers to guess.
 6. Publish the GitHub Release for that tag. The notes must state:
    - what the release contains, in operator-visible terms;
-   - the limitations that are still intentional at this version, repeated in full until those
-     capabilities ship — currently: one location, no LINE or other external identity, no messaging
-     or calendar integration, no payments, no staff roles;
+   - the limitations that are still intentional at this version, derived at release time from
+     [the production-parity target matrix](PARITY.md#production-parity-target-matrix): list every
+     row that is not `Implemented` (planned, partial, and deliberately excluded alike), so the
+     notes never carry a hand-maintained capability list that can drift from the matrix;
    - which checks were performed and whether the tag is signed;
    - upgrade notes, including anything an existing deployment must do;
    - a link to the exact source commit.
