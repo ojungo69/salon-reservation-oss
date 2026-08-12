@@ -1,5 +1,7 @@
 import type { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 
+import { ADAPTER } from "./adapter-constants.ts";
+
 const directNodeRuntime =
   typeof navigator !== "undefined" && navigator.userAgent.startsWith("Node.js/");
 
@@ -113,6 +115,7 @@ export interface ReadinessRuntime {
   ownerSecretPresent: boolean;
   ownerAuthenticated: boolean;
   turnstileSecretPresent: boolean;
+  lineSecretPresent: boolean;
   hostname: string;
 }
 
@@ -990,11 +993,317 @@ const RPC_RUNTIME_KEYS = [
   "ownerSecretPresent",
   "ownerAuthenticated",
   "turnstileSecretPresent",
+  "lineSecretPresent",
   "hostname",
 ] as const;
 const INSTALLATION_TABLES = ["installation_state"] as const;
 const APPLICATION_VERSION = "0.2.0";
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+// ---- LINE adapter lifecycle (specs/003-line-adapter/plan.md, decision 8) ----
+// Lives in its own `__`-prefixed table so the exact-set schema check above and
+// the settings JSON round-trip never see it: a pre-adapter Worker reads this
+// storage exactly as before, and no `lineAdapter` settings key ever exists.
+
+const LIFF_ID = /^[0-9]{7,14}-[A-Za-z0-9]{4,20}$/;
+const CHANNEL_ID = /^[0-9]{7,14}$/;
+const LINE_OPERATIONS = ["line.settings", "line.enable", "line.disable"] as const;
+type LineOperationName = (typeof LINE_OPERATIONS)[number];
+
+export type LineIdentifiers = {
+  liffId: string;
+  loginChannelId: string;
+  messagingChannelId: string;
+};
+
+export type LineLifecyclePhase = "disabled" | "activating" | "active" | "deactivating";
+
+type LineSagaOperation = {
+  operationId: string;
+  kind: "enable" | "disable";
+  step: "activate" | "begin-disable" | "final-wait" | "complete";
+  startedAt: string;
+  identifiers: LineIdentifiers | null;
+  finalPassAt: number | null;
+};
+
+type LineReceipt = {
+  commandId: string;
+  operation: LineOperationName;
+  fingerprint: string;
+  responseJson: string;
+  createdAt: string;
+};
+
+type LineLifecycle = {
+  schemaVersion: 1;
+  lifecycleVersion: number;
+  phase: LineLifecyclePhase;
+  draft: LineIdentifiers | null;
+  active: (LineIdentifiers & { generation: number; activatedAt: string }) | null;
+  operation: LineSagaOperation | null;
+  // Diagnostic copy only — the authoritative high-water lives in AdapterDelivery.
+  highWaterCopy: number;
+  receipts: LineReceipt[];
+  updatedAt: string;
+};
+
+export type LineCommandInput = {
+  operation: LineOperationName;
+  commandId: string;
+  expectedLifecycleVersion: number;
+  identifiers?: LineIdentifiers;
+};
+
+export type LineCommandOutcome = {
+  ok: true;
+  phase: LineLifecyclePhase;
+  lifecycleVersion: number;
+  replayed: boolean;
+};
+
+export type LineCommandResult =
+  | LineCommandOutcome
+  | {
+      ok: false;
+      code:
+        | "BAD_REQUEST"
+        | "IDEMPOTENCY_CONFLICT"
+        | "VERSION_CONFLICT"
+        | "PHASE_CONFLICT"
+        | "SECRET_MISSING"
+        | "TEMPORARILY_UNAVAILABLE";
+    };
+
+// What the Worker's per-request context read receives. The lease is minted
+// here, at the projection read, and forwarded to days unmodified.
+export type LineContext = {
+  phase: LineLifecyclePhase;
+  lifecycleVersion: number;
+  liffId?: string;
+  loginChannelId?: string;
+  messagingChannelId?: string;
+  generation?: number;
+  lease: { issuedAt: number; notAfter: number };
+};
+
+const LINE_LIFECYCLE_KEYS = [
+  "schemaVersion",
+  "lifecycleVersion",
+  "phase",
+  "draft",
+  "active",
+  "operation",
+  "highWaterCopy",
+  "receipts",
+  "updatedAt",
+] as const;
+const LINE_IDENTIFIER_KEYS = ["liffId", "loginChannelId", "messagingChannelId"] as const;
+const LINE_ACTIVE_KEYS = [...LINE_IDENTIFIER_KEYS, "generation", "activatedAt"] as const;
+const LINE_OPERATION_KEYS = [
+  "operationId",
+  "kind",
+  "step",
+  "startedAt",
+  "identifiers",
+  "finalPassAt",
+] as const;
+const LINE_RECEIPT_KEYS = [
+  "commandId",
+  "operation",
+  "fingerprint",
+  "responseJson",
+  "createdAt",
+] as const;
+
+const parseLineIdentifiers = (value: unknown): LineIdentifiers => {
+  if (!isRecord(value) || !hasExactKeys(value, LINE_IDENTIFIER_KEYS)) {
+    return corruptStorage();
+  }
+  if (
+    typeof value.liffId !== "string" ||
+    !LIFF_ID.test(value.liffId) ||
+    typeof value.loginChannelId !== "string" ||
+    !CHANNEL_ID.test(value.loginChannelId) ||
+    typeof value.messagingChannelId !== "string" ||
+    !CHANNEL_ID.test(value.messagingChannelId)
+  ) {
+    return corruptStorage();
+  }
+  return {
+    liffId: value.liffId,
+    loginChannelId: value.loginChannelId,
+    messagingChannelId: value.messagingChannelId,
+  };
+};
+
+const parseLineLifecycle = (value: unknown): LineLifecycle => {
+  if (!isRecord(value) || !hasExactKeys(value, LINE_LIFECYCLE_KEYS)) {
+    return corruptStorage();
+  }
+  if (
+    value.schemaVersion !== 1 ||
+    !Number.isSafeInteger(value.lifecycleVersion) ||
+    (value.lifecycleVersion as number) < 0 ||
+    !["disabled", "activating", "active", "deactivating"].includes(
+      value.phase as string,
+    ) ||
+    !Number.isSafeInteger(value.highWaterCopy) ||
+    (value.highWaterCopy as number) < 0 ||
+    !Array.isArray(value.receipts) ||
+    value.receipts.length > 64 ||
+    typeof value.updatedAt !== "string"
+  ) {
+    return corruptStorage();
+  }
+  const draft = value.draft === null ? null : parseLineIdentifiers(value.draft);
+  let active: LineLifecycle["active"] = null;
+  if (value.active !== null) {
+    if (!isRecord(value.active) || !hasExactKeys(value.active, LINE_ACTIVE_KEYS)) {
+      return corruptStorage();
+    }
+    const { generation, activatedAt, ...identifiers } = value.active;
+    if (
+      !Number.isSafeInteger(generation) ||
+      (generation as number) < 1 ||
+      typeof activatedAt !== "string"
+    ) {
+      return corruptStorage();
+    }
+    active = {
+      ...parseLineIdentifiers(identifiers),
+      generation: generation as number,
+      activatedAt: canonicalTimestamp(activatedAt),
+    };
+  }
+  let operation: LineSagaOperation | null = null;
+  if (value.operation !== null) {
+    if (
+      !isRecord(value.operation) ||
+      !hasExactKeys(value.operation, LINE_OPERATION_KEYS)
+    ) {
+      return corruptStorage();
+    }
+    const candidate = value.operation;
+    if (
+      typeof candidate.operationId !== "string" ||
+      !UUID.test(candidate.operationId) ||
+      (candidate.kind !== "enable" && candidate.kind !== "disable") ||
+      !["activate", "begin-disable", "final-wait", "complete"].includes(
+        candidate.step as string,
+      ) ||
+      typeof candidate.startedAt !== "string" ||
+      (candidate.finalPassAt !== null &&
+        !Number.isSafeInteger(candidate.finalPassAt))
+    ) {
+      return corruptStorage();
+    }
+    operation = {
+      operationId: candidate.operationId,
+      kind: candidate.kind,
+      step: candidate.step as LineSagaOperation["step"],
+      startedAt: canonicalTimestamp(candidate.startedAt),
+      identifiers:
+        candidate.identifiers === null
+          ? null
+          : parseLineIdentifiers(candidate.identifiers),
+      finalPassAt: candidate.finalPassAt as number | null,
+    };
+  }
+  const receipts = value.receipts.map((entry): LineReceipt => {
+    if (!isRecord(entry) || !hasExactKeys(entry, LINE_RECEIPT_KEYS)) {
+      return corruptStorage();
+    }
+    if (
+      typeof entry.commandId !== "string" ||
+      !UUID.test(entry.commandId) ||
+      !LINE_OPERATIONS.includes(entry.operation as LineOperationName) ||
+      typeof entry.fingerprint !== "string" ||
+      !SHA256_HEX.test(entry.fingerprint) ||
+      typeof entry.responseJson !== "string" ||
+      typeof entry.createdAt !== "string"
+    ) {
+      return corruptStorage();
+    }
+    return {
+      commandId: entry.commandId,
+      operation: entry.operation as LineOperationName,
+      fingerprint: entry.fingerprint,
+      responseJson: entry.responseJson,
+      createdAt: canonicalTimestamp(entry.createdAt),
+    };
+  });
+  if (new Set(receipts.map(({ commandId }) => commandId)).size !== receipts.length) {
+    return corruptStorage();
+  }
+  return {
+    schemaVersion: 1,
+    lifecycleVersion: value.lifecycleVersion as number,
+    phase: value.phase as LineLifecyclePhase,
+    draft,
+    active,
+    operation,
+    highWaterCopy: value.highWaterCopy as number,
+    receipts,
+    updatedAt: canonicalTimestamp(value.updatedAt),
+  };
+};
+
+const defaultLineLifecycle = (now: string): LineLifecycle => ({
+  schemaVersion: 1,
+  lifecycleVersion: 0,
+  phase: "disabled",
+  draft: null,
+  active: null,
+  operation: null,
+  highWaterCopy: 0,
+  receipts: [],
+  updatedAt: now,
+});
+
+const parseLineCommand = (value: unknown): LineCommandInput | null => {
+  if (!isRecord(value)) return null;
+  const withIdentifiers =
+    value.operation === "line.settings" || value.operation === "line.enable";
+  const expected = withIdentifiers
+    ? ["operation", "commandId", "expectedLifecycleVersion", "identifiers"]
+    : ["operation", "commandId", "expectedLifecycleVersion"];
+  if (!hasExactKeys(value, expected)) return null;
+  if (
+    !LINE_OPERATIONS.includes(value.operation as LineOperationName) ||
+    typeof value.commandId !== "string" ||
+    !UUID.test(value.commandId) ||
+    !Number.isSafeInteger(value.expectedLifecycleVersion) ||
+    (value.expectedLifecycleVersion as number) < 0
+  ) {
+    return null;
+  }
+  let identifiers: LineIdentifiers | undefined;
+  if (withIdentifiers) {
+    try {
+      identifiers = parseLineIdentifiers(value.identifiers);
+    } catch {
+      return null;
+    }
+  }
+  return {
+    operation: value.operation as LineOperationName,
+    commandId: value.commandId,
+    expectedLifecycleVersion: value.expectedLifecycleVersion as number,
+    ...(identifiers === undefined ? {} : { identifiers }),
+  };
+};
+
+const lineCommandFingerprint = async (input: LineCommandInput): Promise<string> =>
+  sha256Hex(
+    canonicalJson([
+      1,
+      input.operation,
+      input.commandId,
+      input.expectedLifecycleVersion,
+      input.identifiers ?? null,
+    ]),
+  );
 
 const corruptStorage = (): never => {
   throw new Error("Invalid installation storage");
@@ -1157,7 +1466,8 @@ const parseRpcRuntime = (value: unknown): ReadinessRuntime => {
   if (
     typeof value.ownerSecretPresent !== "boolean" ||
     typeof value.ownerAuthenticated !== "boolean" ||
-    typeof value.turnstileSecretPresent !== "boolean"
+    typeof value.turnstileSecretPresent !== "boolean" ||
+    typeof value.lineSecretPresent !== "boolean"
   ) {
     throw new Error("Invalid installation runtime");
   }
@@ -1165,6 +1475,7 @@ const parseRpcRuntime = (value: unknown): ReadinessRuntime => {
     ownerSecretPresent: value.ownerSecretPresent,
     ownerAuthenticated: value.ownerAuthenticated,
     turnstileSecretPresent: value.turnstileSecretPresent,
+    lineSecretPresent: value.lineSecretPresent,
     hostname: parseHostname(value.hostname),
   };
 };
@@ -1236,6 +1547,318 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   getState(): InstallationState {
     return clone(this.#readStoredState().state);
+  }
+
+  // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
+
+  #lineTableExists(): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__line_lifecycle'",
+        )
+        .toArray().length > 0
+    );
+  }
+
+  #readLineLifecycle(): LineLifecycle | null {
+    if (!this.#lineTableExists()) return null;
+    const rows = this.ctx.storage.sql
+      .exec<{ singleton: number; lifecycle_json: string }>(
+        "SELECT singleton, lifecycle_json FROM __line_lifecycle",
+      )
+      .toArray();
+    const row = rows[0];
+    if (rows.length !== 1 || row === undefined || row.singleton !== 1) {
+      return corruptStorage();
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.lifecycle_json);
+    } catch {
+      return corruptStorage();
+    }
+    const lifecycle = parseLineLifecycle(parsed);
+    if (JSON.stringify(lifecycle) !== row.lifecycle_json) return corruptStorage();
+    return lifecycle;
+  }
+
+  // First write creates the table — the lifecycle appears only on operator
+  // commands, never on reads.
+  #writeLineLifecycle(lifecycle: LineLifecycle): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS __line_lifecycle (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        lifecycle_json TEXT NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO __line_lifecycle (singleton, lifecycle_json) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
+      JSON.stringify(parseLineLifecycle(lifecycle)),
+    );
+  }
+
+  /**
+   * The Worker's single per-request read: installation state plus the LINE
+   * projection with a freshly minted descriptor lease. The lease bounds how
+   * long the projection may be trusted by a day-side event commit.
+   */
+  getContext(): { state: InstallationState; line?: LineContext } {
+    const state = clone(this.#readStoredState().state);
+    const lifecycle = this.#readLineLifecycle();
+    if (lifecycle === null) return { state };
+    const issuedAt = Date.now();
+    const line: LineContext = {
+      phase: lifecycle.phase,
+      lifecycleVersion: lifecycle.lifecycleVersion,
+      lease: {
+        issuedAt,
+        notAfter: issuedAt + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1000,
+      },
+      ...(lifecycle.active === null
+        ? {}
+        : {
+            liffId: lifecycle.active.liffId,
+            loginChannelId: lifecycle.active.loginChannelId,
+            messagingChannelId: lifecycle.active.messagingChannelId,
+            generation: lifecycle.active.generation,
+          }),
+    };
+    return { state, line };
+  }
+
+  /** Owner setup surface: draft and lifecycle facts (never the secret). */
+  lineAdapterStatus(): {
+    phase: LineLifecyclePhase;
+    lifecycleVersion: number;
+    draft: LineIdentifiers | null;
+    active: (LineIdentifiers & { generation: number; activatedAt: string }) | null;
+    operationInFlight: boolean;
+    highWaterCopy: number;
+  } {
+    const lifecycle = this.#readLineLifecycle();
+    if (lifecycle === null) {
+      return {
+        phase: "disabled",
+        lifecycleVersion: 0,
+        draft: null,
+        active: null,
+        operationInFlight: false,
+        highWaterCopy: 0,
+      };
+    }
+    return {
+      phase: lifecycle.phase,
+      lifecycleVersion: lifecycle.lifecycleVersion,
+      draft: clone(lifecycle.draft),
+      active: clone(lifecycle.active),
+      operationInFlight: lifecycle.operation !== null,
+      highWaterCopy: lifecycle.highWaterCopy,
+    };
+  }
+
+  /**
+   * The three lifecycle commands share this one pipeline: receipt match →
+   * phase + version CAS → execute. `lifecycleVersion` bumps exactly once per
+   * accepted external command; saga re-drives never change it.
+   */
+  async executeLineCommand(
+    input: unknown,
+    runtime: ReadinessRuntime,
+  ): Promise<LineCommandResult> {
+    const safeRuntime = parseRpcRuntime(runtime);
+    const command = parseLineCommand(input);
+    if (command === null) return { ok: false, code: "BAD_REQUEST" };
+    const fingerprint = await lineCommandFingerprint(command);
+    const now = new Date().toISOString();
+
+    const result = this.ctx.storage.transactionSync((): LineCommandResult => {
+      const lifecycle = this.#readLineLifecycle() ?? defaultLineLifecycle(now);
+
+      const receipt = lifecycle.receipts.find(
+        ({ commandId }) => commandId === command.commandId,
+      );
+      if (receipt !== undefined) {
+        if (receipt.fingerprint !== fingerprint) {
+          return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+        }
+        const stored = JSON.parse(receipt.responseJson) as LineCommandOutcome;
+        return { ...stored, replayed: true };
+      }
+      if (command.expectedLifecycleVersion !== lifecycle.lifecycleVersion) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+
+      let next: LineLifecycle;
+      if (command.operation === "line.settings") {
+        if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
+          return { ok: false, code: "PHASE_CONFLICT" };
+        }
+        next = {
+          ...lifecycle,
+          draft: command.identifiers,
+          lifecycleVersion: lifecycle.lifecycleVersion + 1,
+          updatedAt: now,
+        };
+      } else if (command.operation === "line.enable") {
+        if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
+          return { ok: false, code: "PHASE_CONFLICT" };
+        }
+        if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
+        next = {
+          ...lifecycle,
+          phase: "activating",
+          operation: {
+            operationId: crypto.randomUUID(),
+            kind: "enable",
+            step: "activate",
+            startedAt: now,
+            // Enable's identifiers are authoritative; the draft is a setup
+            // convenience they supersede.
+            identifiers: command.identifiers,
+            finalPassAt: null,
+          },
+          lifecycleVersion: lifecycle.lifecycleVersion + 1,
+          updatedAt: now,
+        };
+      } else {
+        if (lifecycle.phase !== "active" && lifecycle.phase !== "activating") {
+          return { ok: false, code: "PHASE_CONFLICT" };
+        }
+        next = {
+          ...lifecycle,
+          phase: "deactivating",
+          operation: {
+            operationId: crypto.randomUUID(),
+            kind: "disable",
+            step: "begin-disable",
+            startedAt: now,
+            identifiers: null,
+            finalPassAt: null,
+          },
+          lifecycleVersion: lifecycle.lifecycleVersion + 1,
+          updatedAt: now,
+        };
+      }
+
+      const outcome: LineCommandOutcome = {
+        ok: true,
+        phase: next.phase,
+        lifecycleVersion: next.lifecycleVersion,
+        replayed: false,
+      };
+      const cutoff = Date.now() - ADAPTER.RECEIPT_TTL_S * 1000;
+      next.receipts = [
+        ...lifecycle.receipts.filter(
+          ({ createdAt }) => Date.parse(createdAt) >= cutoff,
+        ),
+        {
+          commandId: command.commandId,
+          operation: command.operation,
+          fingerprint,
+          responseJson: JSON.stringify(outcome),
+          createdAt: now,
+        },
+      ].slice(-ADAPTER.RECEIPT_CAP);
+      this.#writeLineLifecycle(next);
+      return outcome;
+    });
+
+    if (result.ok && !result.replayed) await this.#driveLineSaga();
+    return result;
+  }
+
+  // Single-coordinator saga driver: idempotent, re-entrant, alarm re-driven.
+  // Every step reads its work from storage, performs one adapter RPC, then
+  // records the step's completion; a crash anywhere re-drives from the record.
+  async #driveLineSaga(): Promise<void> {
+    for (let step = 0; step < 4; step += 1) {
+      const lifecycle = this.#readLineLifecycle();
+      const operation = lifecycle?.operation ?? null;
+      if (lifecycle === null || operation === null) return;
+      const authority = this.env.ADAPTER_DELIVERY.getByName("installation");
+      const now = new Date().toISOString();
+      try {
+        if (operation.kind === "enable") {
+          if (operation.identifiers === null) throw new Error("corrupt enable operation");
+          const meta = await authority.readMeta();
+          const generation = (meta?.highWater ?? 0) + 1;
+          const activated = await authority.activate({ generation, watermark: 0 });
+          if (!activated.ok) continue; // raced a concurrent mint; re-read and retry
+          this.ctx.storage.transactionSync(() => {
+            const current = this.#readLineLifecycle();
+            if (current?.operation?.operationId !== operation.operationId) return;
+            this.#writeLineLifecycle({
+              ...current,
+              phase: "active",
+              active: {
+                ...operation.identifiers as LineIdentifiers,
+                generation: activated.meta.generation,
+                activatedAt: now,
+              },
+              operation: null,
+              highWaterCopy: activated.meta.highWater,
+              updatedAt: now,
+            });
+          });
+          return;
+        }
+        if (operation.step === "begin-disable") {
+          await authority.beginDisable();
+          const finalPassAt = Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
+          // Pre-arm before recording the step so a crash between the two can
+          // only re-run the idempotent beginDisable, never lose the wake-up.
+          await this.ctx.storage.setAlarm(finalPassAt);
+          this.ctx.storage.transactionSync(() => {
+            const current = this.#readLineLifecycle();
+            if (current?.operation?.operationId !== operation.operationId) return;
+            this.#writeLineLifecycle({
+              ...current,
+              operation: { ...operation, step: "final-wait", finalPassAt },
+              updatedAt: now,
+            });
+          });
+          return;
+        }
+        if (operation.step === "final-wait") {
+          if (operation.finalPassAt === null || Date.now() < operation.finalPassAt) {
+            await this.ctx.storage.setAlarm(
+              operation.finalPassAt ?? Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000,
+            );
+            return;
+          }
+          await authority.completeDisable();
+          this.ctx.storage.transactionSync(() => {
+            const current = this.#readLineLifecycle();
+            if (current?.operation?.operationId !== operation.operationId) return;
+            this.#writeLineLifecycle({
+              ...current,
+              phase: "disabled",
+              active: null,
+              // Draft cleared on disable completion: re-enabling re-enters
+              // identifiers deliberately.
+              draft: null,
+              operation: null,
+              updatedAt: now,
+            });
+          });
+          return;
+        }
+        return;
+      } catch {
+        // Adapter RPC failed; leave the operation recorded and let the alarm
+        // re-drive it.
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        return;
+      }
+    }
+  }
+
+  override async alarm(): Promise<void> {
+    await this.#driveLineSaga();
+    // No re-arm when idle: with no operation in flight this object keeps no
+    // pending alarm (the same disarm invariant the delivery object holds).
   }
 
   async executeCommand(

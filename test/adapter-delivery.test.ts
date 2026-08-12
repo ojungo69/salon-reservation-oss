@@ -1,8 +1,10 @@
-import { env, reset, runInDurableObject } from "cloudflare:test";
+import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdapterDelivery } from "../src/adapter-delivery.ts";
+import type { InstallationConfig, ReadinessRuntime } from "../src/installation-config.ts";
 import type { DayAdapterDescriptor, DayConfig, ReservationDay } from "../src/reservation-day.ts";
+import worker from "../src/worker.ts";
 
 const NOW = Date.parse("2025-01-14T15:00:00.000Z");
 
@@ -364,5 +366,269 @@ describe("adapter event foundation", () => {
       },
       { timeout: 5_000, interval: 100 },
     );
+  });
+});
+
+const identifiers = {
+  liffId: "1234567890-abcdefgh",
+  loginChannelId: "1234567890",
+  messagingChannelId: "9876543210",
+};
+
+const installationStub = () =>
+  env.INSTALLATION_CONFIG.getByName(
+    "installation",
+  ) as unknown as DurableObjectStub<InstallationConfig>;
+
+const runtime = (overrides: Partial<ReadinessRuntime> = {}): ReadinessRuntime => ({
+  ownerSecretPresent: true,
+  ownerAuthenticated: true,
+  turnstileSecretPresent: true,
+  lineSecretPresent: true,
+  hostname: "example.test",
+  ...overrides,
+});
+
+const lineCommand = (
+  operation: "line.settings" | "line.enable" | "line.disable",
+  expectedLifecycleVersion: number,
+  overrides: Record<string, unknown> = {},
+) =>
+  installationStub().executeLineCommand(
+    {
+      operation,
+      commandId: crypto.randomUUID(),
+      expectedLifecycleVersion,
+      ...(operation === "line.disable" ? {} : { identifiers }),
+      ...overrides,
+    },
+    runtime(),
+  );
+
+const fetchConfig = async (customEnv: Env = env): Promise<string> => {
+  const response = await worker.fetch(
+    new Request("https://example.test/api/config"),
+    customEnv,
+  );
+  expect(response.status).toBe(200);
+  return response.text();
+};
+
+describe("LINE lifecycle authority", () => {
+  it("runs the shared command pipeline: receipts, CAS, phase gates", async () => {
+    const commandId = crypto.randomUUID();
+    const first = await lineCommand("line.settings", 0, { commandId });
+    expect(first).toEqual({ ok: true, phase: "disabled", lifecycleVersion: 1, replayed: false });
+
+    // Same command replays; a different payload under the same id conflicts.
+    expect(await lineCommand("line.settings", 0, { commandId })).toEqual({
+      ok: true,
+      phase: "disabled",
+      lifecycleVersion: 1,
+      replayed: true,
+    });
+    expect(
+      await lineCommand("line.settings", 1, { commandId }),
+    ).toEqual({ ok: false, code: "IDEMPOTENCY_CONFLICT" });
+
+    // Stale version, wrong phase, missing secret.
+    expect(await lineCommand("line.settings", 0)).toEqual({
+      ok: false,
+      code: "VERSION_CONFLICT",
+    });
+    expect(await lineCommand("line.disable", 1)).toEqual({
+      ok: false,
+      code: "PHASE_CONFLICT",
+    });
+    expect(
+      await installationStub().executeLineCommand(
+        {
+          operation: "line.enable",
+          commandId: crypto.randomUUID(),
+          expectedLifecycleVersion: 1,
+          identifiers,
+        },
+        runtime({ lineSecretPresent: false }),
+      ),
+    ).toEqual({ ok: false, code: "SECRET_MISSING" });
+
+    const status = await installationStub().lineAdapterStatus();
+    expect(status).toMatchObject({
+      phase: "disabled",
+      lifecycleVersion: 1,
+      draft: identifiers,
+      active: null,
+      operationInFlight: false,
+    });
+  });
+
+  it("keeps the config JSON byte-identical while only a draft exists", async () => {
+    const baseline = await fetchConfig();
+    await lineCommand("line.settings", 0);
+    expect(await fetchConfig()).toBe(baseline);
+
+    // The lifecycle table stays invisible to the exact-set schema check.
+    const tables = await runInDurableObject(installationStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__*' ORDER BY name",
+        )
+        .toArray()
+        .map(({ name }) => name),
+    );
+    expect(tables).toEqual(["installation_state"]);
+  });
+
+  it("enables through the saga, mints strictly above high-water, and serves the capability", async () => {
+    await lineCommand("line.settings", 0);
+    const enabled = await lineCommand("line.enable", 1);
+    expect(enabled).toMatchObject({ ok: true, lifecycleVersion: 2 });
+
+    const status = await installationStub().lineAdapterStatus();
+    expect(status).toMatchObject({
+      phase: "active",
+      lifecycleVersion: 2,
+      active: { ...identifiers, generation: 1 },
+      operationInFlight: false,
+      highWaterCopy: 1,
+    });
+    expect(await deliveryStub().readMeta()).toMatchObject({
+      state: "active",
+      generation: 1,
+      highWater: 1,
+    });
+
+    const context = await installationStub().getContext();
+    expect(context.line).toMatchObject({ phase: "active", generation: 1 });
+    expect(context.line!.lease.notAfter - context.line!.lease.issuedAt).toBe(30_000);
+
+    const config = JSON.parse(await fetchConfig()) as Record<string, unknown>;
+    expect(config.lineAdapter).toEqual({ liffId: identifiers.liffId });
+
+    // Same capability read without the messaging secret: cleanup marker.
+    const noSecretEnv = Object.create(env) as Env;
+    Object.defineProperty(noSecretEnv, "LINE_MESSAGING_CHANNEL_SECRET", {
+      value: undefined,
+    });
+    const degraded = JSON.parse(await fetchConfig(noSecretEnv)) as Record<string, unknown>;
+    expect(degraded.lineAdapter).toEqual({ cleanup: true });
+  });
+
+  it("disables through the lease-wait saga, purges, clears the draft, and re-enables above high-water", async () => {
+    const baseline = await fetchConfig();
+    await lineCommand("line.settings", 0);
+    await lineCommand("line.enable", 1);
+
+    const disabled = await lineCommand("line.disable", 2);
+    expect(disabled).toMatchObject({ ok: true, phase: "deactivating", lifecycleVersion: 3 });
+    expect(await deliveryStub().readMeta()).toMatchObject({ state: "deactivating" });
+    const during = JSON.parse(await fetchConfig()) as Record<string, unknown>;
+    expect(during.lineAdapter).toEqual({ cleanup: true });
+
+    // The final pass waits out the descriptor lease window. Under the frozen
+    // clock the saga holds in deactivating; once the clock passes lease
+    // expiry, driving the alarm completes the purge. (The runtime may have
+    // auto-fired the past-dated alarm already, so fire-then-poll.)
+    expect((await installationStub().lineAdapterStatus()).phase).toBe("deactivating");
+    vi.spyOn(Date, "now").mockReturnValue(NOW + 61_000);
+    await runDurableObjectAlarm(installationStub());
+    await vi.waitFor(
+      async () => {
+        expect((await installationStub().lineAdapterStatus()).phase).toBe("disabled");
+      },
+      { timeout: 5_000, interval: 50 },
+    );
+    const after = await installationStub().lineAdapterStatus();
+    expect(after).toMatchObject({ phase: "disabled", draft: null, active: null });
+    expect(await deliveryStub().readMeta()).toMatchObject({
+      state: "disabled",
+      highWater: 1,
+    });
+    expect((await deliveryCounts()).links).toBe(0);
+    expect((await deliveryCounts()).deliveries).toBe(0);
+    expect(await fetchConfig()).toBe(baseline);
+
+    // Re-enable mints strictly above the surviving high-water.
+    await lineCommand("line.settings", 3);
+    await lineCommand("line.enable", 4);
+    expect(await deliveryStub().readMeta()).toMatchObject({
+      state: "active",
+      generation: 2,
+      highWater: 2,
+    });
+  });
+
+  it("gates the admin routes and accepts the full HTTP flow", async () => {
+    const post = (path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+      worker.fetch(
+        new Request(`https://example.test${path}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://example.test",
+            ...headers,
+          },
+          body: JSON.stringify(body),
+        }),
+        env,
+      );
+    const ownerHeaders = {
+      authorization: "Bearer owner-test-token-0123456789abcdef0123456789",
+    };
+
+    // Owner gate first.
+    expect(
+      (
+        await post("/api/admin/line/settings", {
+          commandId: crypto.randomUUID(),
+          expectedLifecycleVersion: 0,
+          identifiers,
+        })
+      ).status,
+    ).toBe(401);
+
+    const accepted = await post(
+      "/api/admin/line/settings",
+      { commandId: crypto.randomUUID(), expectedLifecycleVersion: 0, identifiers },
+      ownerHeaders,
+    );
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ ok: true, phase: "disabled" });
+
+    // Body-supplied operation and unknown keys are refused.
+    expect(
+      (
+        await post(
+          "/api/admin/line/enable",
+          {
+            operation: "line.disable",
+            commandId: crypto.randomUUID(),
+            expectedLifecycleVersion: 1,
+            identifiers,
+          },
+          ownerHeaders,
+        )
+      ).status,
+    ).toBe(400);
+
+    const enabled = await post(
+      "/api/admin/line/enable",
+      { commandId: crypto.randomUUID(), expectedLifecycleVersion: 1, identifiers },
+      ownerHeaders,
+    );
+    expect(enabled.status).toBe(200);
+
+    const statusResponse = await worker.fetch(
+      new Request("https://example.test/api/admin/line/status", {
+        headers: ownerHeaders,
+      }),
+      env,
+    );
+    expect(statusResponse.status).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({
+      phase: "active",
+      secretPresent: true,
+      authority: { state: "active", generation: 1 },
+    });
   });
 });

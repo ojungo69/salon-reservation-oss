@@ -6,6 +6,7 @@ import {
   projectPublicConfig,
   type InstallationSettings,
   type InstallationState,
+  type LineContext,
   type ReadinessRuntime,
 } from "./installation-config.ts";
 import {
@@ -39,6 +40,7 @@ type InstallationContext = {
   state: InstallationState;
   settings: InstallationSettings;
   runtime: ReadinessRuntime;
+  line?: LineContext;
 };
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -68,6 +70,10 @@ const ERROR_MESSAGES = {
   NOT_LIVE: "現在は予約を受け付けていません。",
   TEMPORARILY_UNAVAILABLE: "現在処理できません。しばらく待ってからお試しください。",
   UNAUTHORIZED: "認証情報を確認できませんでした。",
+  VERSION_CONFLICT: "設定が更新されています。最新の状態を読み込み直してください。",
+  PHASE_CONFLICT: "現在の連携状態ではこの操作を実行できません。",
+  SECRET_MISSING:
+    "LINE のチャネルシークレットが設定されていません。シークレットを登録してから有効化してください。",
 } as const;
 
 type PublicErrorCode = keyof typeof ERROR_MESSAGES;
@@ -205,7 +211,10 @@ const equalBytes = (left: Uint8Array, right: Uint8Array): boolean => {
   return difference === 0;
 };
 
-const secret = (env: AppEnv, name: "OWNER_TOKEN" | "TURNSTILE_SECRET"): string | null => {
+const secret = (
+  env: AppEnv,
+  name: "OWNER_TOKEN" | "TURNSTILE_SECRET" | "LINE_MESSAGING_CHANNEL_SECRET",
+): string | null => {
   const value = (env as unknown as Record<string, unknown>)[name];
   return typeof value === "string" && !/\s/.test(value) && !CONTROL.test(value)
     ? value
@@ -228,6 +237,11 @@ const OWNER_TOKEN_PLACEHOLDER = "replace-with-at-least-32-random-characters";
 const ownerSecretPresent = (env: AppEnv): boolean => {
   const value = secret(env, "OWNER_TOKEN");
   return value !== null && value.length >= 32 && value !== OWNER_TOKEN_PLACEHOLDER;
+};
+
+const lineSecretPresent = (env: AppEnv): boolean => {
+  const value = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
+  return value !== null && value.length >= 16 && value.length <= 128;
 };
 
 const ownerAuthenticated = async (
@@ -274,6 +288,7 @@ const runtimeFor = (
   ownerSecretPresent: ownerSecretPresent(env),
   ownerAuthenticated: authenticated,
   turnstileSecretPresent: turnstileSecretPresent(env),
+  lineSecretPresent: lineSecretPresent(env),
   hostname: url.hostname.toLowerCase(),
 });
 
@@ -282,12 +297,54 @@ const installationContext = async (
   url: URL,
   authenticated: boolean,
 ): Promise<InstallationContext> => {
-  const state = await installationStub(env).getState();
+  const { state, line } = await installationStub(env).getContext();
   const record = state.settingsVersions.find(
     ({ version }) => version === state.activeSettingsVersion,
   );
   if (record === undefined) throw new Error("missing active installation settings");
-  return { state, settings: record.settings, runtime: runtimeFor(env, url, authenticated) };
+  return {
+    state,
+    settings: record.settings,
+    runtime: runtimeFor(env, url, authenticated),
+    ...(line === undefined ? {} : { line }),
+  };
+};
+
+// The day-side descriptor travels only while events may be committed (active)
+// or drained (deactivating); the lease is forwarded unmodified from the
+// projection read.
+const adapterDescriptor = (
+  context: InstallationContext,
+): DayConfig["adapter"] | undefined => {
+  const line = context.line;
+  if (line === undefined || line.generation === undefined) return undefined;
+  if (line.phase !== "active" && line.phase !== "deactivating") return undefined;
+  return {
+    consumer: "line",
+    generation: line.generation,
+    phase: line.phase,
+    leaseIssuedAt: line.lease.issuedAt,
+    leaseNotAfter: line.lease.notAfter,
+  };
+};
+
+// One retry with a fresh projection when a day refuses an expired lease;
+// booking commands are idempotent, so re-invoking is safe.
+const dayCallWithRetry = async <R>(
+  env: AppEnv,
+  url: URL,
+  authenticated: boolean,
+  date: string,
+  context: InstallationContext,
+  invoke: (config: DayConfig) => PromiseLike<R>,
+): Promise<R> => {
+  const result = await invoke(toDayConfig(date, context));
+  const failed = result as { ok?: unknown; code?: unknown };
+  if (failed.ok === false && failed.code === "RETRY_CONFIG") {
+    const fresh = await installationContext(env, url, authenticated);
+    return invoke(toDayConfig(date, fresh));
+  }
+  return result;
 };
 
 const minutes = (time: string): number => {
@@ -358,6 +415,7 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
   const midnight = parseDateJstToUtcIso(date);
   if (midnight === null) throw new Error("invalid date");
   const { settings, state } = context;
+  const adapter = adapterDescriptor(context);
   return {
     date,
     resourceIds: settings.resources.filter(({ active }) => active).map(({ id }) => id),
@@ -378,6 +436,7 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     // default is applied here rather than in the parser, which has to leave the
     // stored JSON byte-identical.
     pendingExpiryMinutes: settings.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
+    ...(adapter === undefined ? {} : { adapter }),
   };
 };
 
@@ -962,6 +1021,25 @@ const setupProjection = (context: InstallationContext) => ({
   replayed: false,
 });
 
+// Public capability while effectively active; cleanup-only marker while
+// previously created LINE data may still exist (missing secret, deactivating);
+// otherwise the property is absent so the JSON stays byte-identical to its
+// pre-adapter shape. The adapter state table in specs/003-line-adapter/plan.md
+// is the single authority for this mapping.
+const linePublicConfig = (
+  context: InstallationContext,
+): { liffId: string } | { cleanup: true } | null => {
+  const line = context.line;
+  if (line === undefined) return null;
+  if (line.phase === "active" && line.liffId !== undefined) {
+    return context.runtime.lineSecretPresent
+      ? { liffId: line.liffId }
+      : { cleanup: true };
+  }
+  if (line.phase === "deactivating") return { cleanup: true };
+  return null;
+};
+
 const handleConfig = async (
   request: Request,
   env: AppEnv,
@@ -977,9 +1055,11 @@ const handleConfig = async (
     ownerAuthenticated: context.runtime.ownerSecretPresent,
   });
   const projected = projectPublicConfig(context.state);
+  const line = linePublicConfig(context);
   return json({
     ...projected,
     mode: context.state.mode === "live" && readiness.ready ? "live" : "demo",
+    ...(line === null ? {} : { lineAdapter: line }),
   });
 };
 
@@ -1000,9 +1080,8 @@ const handleAvailability = async (
   ) {
     return errorResponse(400, "BAD_REQUEST");
   }
-  const result = await dayStub(env, query.date).availability(
-    toDayConfig(query.date, context),
-    query.serviceIds,
+  const result = await dayCallWithRetry(env, url, false, query.date, context, async (config) =>
+    dayStub(env, query.date).availability(config, query.serviceIds),
   );
   if (!result.ok) return failureResponse(result);
   const { ok: _ok, ...availability } = result;
@@ -1034,10 +1113,8 @@ const handleOwnerAvailability = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   const context = await installationContext(env, url, true);
-  const result = await dayStub(env, query.date).availability(
-    toDayConfig(query.date, context),
-    query.serviceIds,
-    query.reservationId,
+  const result = await dayCallWithRetry(env, url, true, query.date, context, async (config) =>
+    dayStub(env, query.date).availability(config, query.serviceIds, query.reservationId),
   );
   if (!result.ok) return failureResponse(result);
   if (!result.pinned && !isBookableDate(query.date, Date.now(), context.settings)) {
@@ -1081,10 +1158,8 @@ const handlePublicCreate = async (
       return errorResponse(400, "BAD_REQUEST");
     }
     return mutationResponse(
-      await dayStub(env, input.date).createPublic(
-        toDayConfig(input.date, context),
-        dayInput,
-        false,
+      await dayCallWithRetry(env, url, false, input.date, context, async (config) =>
+        dayStub(env, input.date).createPublic(config, dayInput, false),
       ),
       "create",
       201,
@@ -1114,10 +1189,8 @@ const handlePublicCreate = async (
   if (verification === "unavailable") {
     return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
   }
-  const result = await dayStub(env, input.date).createPublic(
-    toDayConfig(input.date, context),
-    dayInput,
-    true,
+  const result = await dayCallWithRetry(env, url, false, input.date, context, async (config) =>
+    dayStub(env, input.date).createPublic(config, dayInput, true),
   );
   return mutationResponse(result, "create", 201);
 };
@@ -1144,9 +1217,8 @@ const handlePublicStatus = async (
   if (!withinPartitionWindow(input.date, Date.now())) {
     return errorResponse(400, "BAD_REQUEST");
   }
-  const result = await dayStub(env, input.date).statusPublic(
-    toDayConfig(input.date, context),
-    input,
+  const result = await dayCallWithRetry(env, url, false, input.date, context, async (config) =>
+    dayStub(env, input.date).statusPublic(config, input),
   );
   return result.ok
     ? json(ownedReservation(result))
@@ -1178,7 +1250,9 @@ const handlePublicCancel = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   return mutationResponse(
-    await dayStub(env, input.date).cancelPublic(toDayConfig(input.date, context), input),
+    await dayCallWithRetry(env, url, false, input.date, context, async (config) =>
+      dayStub(env, input.date).cancelPublic(config, input),
+    ),
     "cancel",
     200,
   );
@@ -1243,6 +1317,86 @@ const handleLive = async (
     runtimeFor(env, url, true),
   );
   return setupResultResponse(result);
+};
+
+const lineCommandResponse = (
+  result: Awaited<ReturnType<InstallationConfig["executeLineCommand"]>>,
+): Response => {
+  if (result.ok) {
+    return json({
+      ok: true,
+      phase: result.phase,
+      lifecycleVersion: result.lifecycleVersion,
+      replayed: result.replayed,
+    });
+  }
+  switch (result.code) {
+    case "BAD_REQUEST":
+      return errorResponse(400, "BAD_REQUEST");
+    case "IDEMPOTENCY_CONFLICT":
+      return errorResponse(409, "IDEMPOTENCY_CONFLICT");
+    case "VERSION_CONFLICT":
+      return errorResponse(409, "VERSION_CONFLICT");
+    case "PHASE_CONFLICT":
+      return errorResponse(409, "PHASE_CONFLICT");
+    case "SECRET_MISSING":
+      return errorResponse(409, "SECRET_MISSING");
+    case "TEMPORARILY_UNAVAILABLE":
+      return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+  }
+};
+
+const handleLineLifecycle = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  operation: "line.settings" | "line.enable" | "line.disable",
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await ownerGate(request, env, "line-lifecycle");
+  if (gate !== null) return gate;
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (!isObject(parsed.value) || "operation" in parsed.value) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  const result = await installationStub(env).executeLineCommand(
+    { operation, ...parsed.value },
+    runtimeFor(env, url, true),
+  );
+  return lineCommandResponse(result);
+};
+
+const handleLineStatus = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET" });
+  }
+  const gate = await ownerGate(request, env, "line-status");
+  if (gate !== null) return gate;
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  const lifecycle = await installationStub(env).lineAdapterStatus();
+  // The authority read is diagnostic; a stalled delivery object must not take
+  // the setup surface down with it.
+  let authority: Awaited<ReturnType<AdapterDelivery["readMeta"]>> | "unavailable" = null;
+  try {
+    authority = await env.ADAPTER_DELIVERY.getByName("installation").readMeta();
+  } catch {
+    authority = "unavailable";
+  }
+  return json({
+    ...lifecycle,
+    secretPresent: lineSecretPresent(env),
+    authority,
+  });
 };
 
 const handleReceipt = async (
@@ -1338,7 +1492,9 @@ const handleSchedule = async (
   ).blockers.length;
   for (let offset = 0; offset < query.days; offset += 1) {
     const date = addDays(query.startDate, offset);
-    const result = await dayStub(env, date).listOwner(toDayConfig(date, context));
+    const result = await dayCallWithRetry(env, url, true, date, context, async (config) =>
+      dayStub(env, date).listOwner(config),
+    );
     if (!result.ok) return failureResponse(result);
     attentionCount += result.reservations.filter(({ status }) => status === "pending").length;
     if (
@@ -1390,10 +1546,8 @@ const handleOwnerCreate = async (
   if (!allowFresh && !withinPartitionWindow(input.date, Date.now())) {
     return errorResponse(400, "BAD_REQUEST");
   }
-  const result = await dayStub(env, input.date).createOwner(
-    toDayConfig(input.date, context),
-    input,
-    allowFresh,
+  const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
+    dayStub(env, input.date).createOwner(config, input, allowFresh),
   );
   if (!allowFresh && !result.ok && result.code === "UNAVAILABLE") {
     if (context.state.mode !== "live") return errorResponse(403, "NOT_LIVE");
@@ -1425,7 +1579,9 @@ const handleOwnerTransition = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   return mutationResponse(
-    await dayStub(env, input.date).transitionOwner(toDayConfig(input.date, context), input),
+    await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
+      dayStub(env, input.date).transitionOwner(config, input),
+    ),
     input.action,
     200,
   );
@@ -1452,10 +1608,8 @@ const handleClosureCreate = async (
   if (!allowFresh && !withinPartitionWindow(input.date, Date.now())) {
     return errorResponse(400, "BAD_REQUEST");
   }
-  const result = await dayStub(env, input.date).createClosure(
-    toDayConfig(input.date, context),
-    input,
-    allowFresh,
+  const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
+    dayStub(env, input.date).createClosure(config, input, allowFresh),
   );
   return !allowFresh && !result.ok && result.code === "UNAVAILABLE"
     ? errorResponse(400, "BAD_REQUEST")
@@ -1484,7 +1638,9 @@ const handleClosureRemove = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   return closureResponse(
-    await dayStub(env, input.date).removeClosure(toDayConfig(input.date, context), input),
+    await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
+      dayStub(env, input.date).removeClosure(config, input),
+    ),
     "closure_remove",
     200,
   );
@@ -1506,6 +1662,18 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   }
 
   if (url.pathname === "/api/admin/setup") return handleSetup(request, env, url);
+  if (url.pathname === "/api/admin/line/settings") {
+    return handleLineLifecycle(request, env, url, "line.settings");
+  }
+  if (url.pathname === "/api/admin/line/enable") {
+    return handleLineLifecycle(request, env, url, "line.enable");
+  }
+  if (url.pathname === "/api/admin/line/disable") {
+    return handleLineLifecycle(request, env, url, "line.disable");
+  }
+  if (url.pathname === "/api/admin/line/status") {
+    return handleLineStatus(request, env, url);
+  }
   if (url.pathname === "/api/admin/setup/live") return handleLive(request, env, url);
   if (url.pathname === "/api/admin/installation-receipt") {
     return handleReceipt(request, env, url);
