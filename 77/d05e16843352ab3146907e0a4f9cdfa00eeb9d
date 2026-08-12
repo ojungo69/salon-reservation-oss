@@ -1,0 +1,20 @@
+specs/002-parity-roadmap-contracts/plan.md
+  s_7c8b13bff90366::t_fb09604c907e51 75
+  s_7c8b13bff90366::t_c3b4eab4607072 89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "77d05e16843352ab3146907e0a4f9cdfa00eeb9d",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
