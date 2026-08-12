@@ -1,0 +1,59 @@
+wrangler.jsonc
+  s_7c8b13bff90366::t_80e0f989d0d5dd 25-28,40-45
+  s_7c8b13bff90366::t_9a113363d7ae69 46-47
+playwright.config.ts
+  s_7c8b13bff90366::t_ef6c6f01fe8423 9
+  s_7c8b13bff90366::t_0dd724e5c38f19 136
+vitest.config.ts
+  s_7c8b13bff90366::t_daf9cc28f2a22a 12
+  s_7c8b13bff90366::t_92056902617908 19-24
+src/worker.ts
+  s_7c8b13bff90366::t_4e59cec247190c 25-27
+  s_7c8b13bff90366::t_f37919925da358 922-926
+tests-browser/harness.ts
+  s_7c8b13bff90366::t_e8812f04cfdeff 8
+test/adapter-delivery.test.ts
+  s_7c8b13bff90366::t_91f4882d786314 295-300,303
+  s_7c8b13bff90366::t_ebc51f18c2465f 225-226,235-241,249-250
+  s_7c8b13bff90366::t_f2bfb30c08faba 1-224,227-234,242-248,251-294,301-302,304-368
+src/reservation-day.ts
+  s_7c8b13bff90366::t_5aea49880e379a 146-177,185-188
+  s_7c8b13bff90366::t_107031a6ab11e8 526-527
+  s_7c8b13bff90366::t_8ee82b722d24ee 2254-2263,2266-2267,2269-2270
+  s_7c8b13bff90366::t_11cb7d8cf88782 1848,1850,2011,2014,2340,2464-2473,2476-2477,2479-2480
+  s_7c8b13bff90366::t_c081b0e91d83f3 1548-1553,1559,1576-1578,1587-1595,1598
+  s_7c8b13bff90366::t_7dd2db6c86c7ac 970-1193,1847,2344,2626
+  s_7c8b13bff90366::t_f8154e69a2b565 80-82
+  s_7c8b13bff90366::t_a17cca7bd25764 3,10-12
+  s_7c8b13bff90366::t_b2eb188ae7dda4 492-504
+  s_7c8b13bff90366::t_15dac7a1f8d374 13,1851,2012,2015,2341,2343,2627,2629-2630,2711-2712,2714-2715,2810-2811,2813-2814
+src/adapter-constants.ts
+  s_7c8b13bff90366::t_4c9d7911f63bf2 1-93
+src/adapter-delivery.ts
+  s_7c8b13bff90366::t_998d7f23224a72 1-239,313-320
+  s_7c8b13bff90366::t_0bca005df13d7a 240-312
+specs/003-line-adapter/plan.md
+  s_7c8b13bff90366::t_cf235a98c2ea3c 36
+specs/003-line-adapter/research.md
+  s_7c8b13bff90366::t_98b6d04d628ae6 181-212
+specs/003-line-adapter/tasks.md
+  s_7c8b13bff90366::t_9f53060022b3ae 63,65,110,121,124
+worker-configuration.d.ts
+  s_7c8b13bff90366::t_bd5d16c26bc05e 2,12,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "92cb222fca9b4ad97407b3dda68def47abde874f",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
