@@ -15,9 +15,11 @@ means editing that one status cell (plus a revision-log line); `Complete` requir
 completion evidence to exist. Restructuring the table — adding, splitting, or reordering stages —
 is a versioned revision of this document, not a status update.
 
-**Every stage's completion criteria are in addition to the constitution's quality gates**: the full
-`npm run check` and browser suites, a correctness review plus a separate over-implementation review
-for every diff, and the security review battery for changes in security scope. No stage is
+**Every stage's completion criteria are in addition to the project's standing quality gates**,
+stated here so they are self-contained: the full `npm run check` and browser suites; a correctness
+review plus a separate over-implementation review for every diff; and, for changes in security
+scope (authentication, secrets, validation, hashing, payment-like paths), a security review
+battery — rule-based static analysis plus an adversarial security-focused review. No stage is
 completable on feature tests alone.
 
 **Dependencies versus recommended order**: `Prerequisites` distinguishes *hard* dependencies (must

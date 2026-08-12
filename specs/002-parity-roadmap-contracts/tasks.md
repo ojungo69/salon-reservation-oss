@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `/specs/002-parity-roadmap-contracts/` (spec.md, plan.md, research.md)
 
-**Tests**: No new automated tests (documentation-only slice; FR-009 forbids test changes). Verification is the existing suite run unchanged plus the document-level audits below.
+**Tests**: No new automated tests — test changes are out of this slice's scope by design, and FR-009 requires the existing tests to pass unchanged. Verification is the existing suite run unchanged plus the document-level audits below.
 
 **Organization**: Strictly the plan's implementation order — anchors are written before the documents that link to them (contracts → roadmap → matrices → derived views), verification last.
 

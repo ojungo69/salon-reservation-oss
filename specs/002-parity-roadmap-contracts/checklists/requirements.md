@@ -32,4 +32,5 @@
 ## Notes
 
 - Documentation-only slice: "implementation path" phrases inside the spec refer to matrix *content* (rows that name file paths as evidence), not to a chosen implementation of this feature.
+- "No implementation details" is validated as: no implementation design beyond the integration boundaries issue #1 itself specifies — the calendar integration modes and the deferred code-level interfaces come from the issue's recorded decisions, not from this spec inventing design.
 - Slicing of issue #1 (docs first, LINE adapter second) is recorded in Assumptions and is presented for approval at the plan gate, not silently settled.

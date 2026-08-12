@@ -13,8 +13,10 @@ These hold for every adapter, in addition to each seam's table below.
 1. **Provider-neutral core.** The booking path works with zero external services. No adapter is
    required for any customer or operator task the implemented matrix records.
 2. **Disabled by default, invisible until configured.** An adapter activates only through explicit
-   configuration. While unconfigured it leaves no trace: no UI element, no stored external
-   identifier, no booking-path dependency, no outbound request.
+   configuration. While unconfigured it leaves no customer-facing or booking-path trace: no
+   customer UI element, no stored external identifier, no booking-path dependency, no outbound
+   request. The operator's setup and diagnostics surfaces may show the adapter as available and
+   disabled — that is how it gets configured at all.
 3. **One Worker.** Adapters ship as configuration-gated modules inside the single Worker — never as
    separate deployables — so the Free-plan budget and the five-minute deploy story survive.
 4. **Post-commit events only.** Adapters consume explicit events emitted after a reservation
@@ -31,7 +33,10 @@ These hold for every adapter, in addition to each seam's table below.
    reservation transaction, and the calendar contract's mode 3 — if ever scheduled — affects
    availability only through a local snapshot refreshed out-of-band, per its own contract row.
 5. **Failure is visible, never blocking.** An adapter failure may degrade the adapter's own feature
-   and must surface to the operator; it must not reject, delay, or roll back a reservation.
+   and must surface to the operator; it must not reject, delay, or roll back a reservation. The
+   one recorded availability effect is calendar mode 3's fail-close from invariant 4: a stale
+   snapshot shrinks bookable inventory for the affected slots ahead of any booking attempt — it
+   never touches an accepted reservation.
 
 Each seam's table states, per dimension, what the core guarantees, what the adapter must guarantee,
 and what the operator sees.

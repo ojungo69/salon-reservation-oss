@@ -41,7 +41,7 @@ Production parity is determined by
 may claim it only when every target row is implemented or deliberately excluded. Current releases
 are **core-feature parity, not production parity** — the
 [implemented capability matrix](docs/PARITY.md#implemented-capability-matrix) records what exists
-with evidence, and target rows remain open. The order in which the remaining rows land is
+with evidence, and planned target rows remain open. The order in which the remaining rows land is
 [the roadmap](docs/ROADMAP.md); the obligations any external integration must meet are
 [the adapter extension contracts](docs/ADAPTER-CONTRACTS.md).
 
