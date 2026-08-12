@@ -1,0 +1,27 @@
+src/worker.ts
+  s_7c8b13bff90366::t_73436f6d65ee7b 73-76
+  s_7c8b13bff90366::t_3de5b9fb8e808f 9,43,214-217,242-246,291,300,305-347,418,439,1024-1042,1058,1062,1083-1084,1116-1117,1161-1162,1192-1193,1220-1221,1253-1255,1322-1401,1495-1497,1549-1550,1582-1584,1611-1612,1641-1643,1665-1676
+src/installation-config.ts
+  s_7c8b13bff90366::t_51369b8fbe6f9c 3-4
+  s_7c8b13bff90366::t_33e60374fa6fc9 1470,1552-1863
+  s_7c8b13bff90366::t_3ded331c1df9e4 996,1003-1307
+  s_7c8b13bff90366::t_45615dcef53a80 118,1469,1478
+test/adapter-delivery.test.ts
+  s_7c8b13bff90366::t_647c5e2acb6171 1,5,7,371-634
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "17697e7f5b33a809ebf2ecfe80d4fc1f02f4697e",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
