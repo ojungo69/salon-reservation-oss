@@ -761,13 +761,22 @@ export class AdapterDelivery extends DurableObject<Env> {
       }
       const now = new Date().toISOString();
       const linkVersion = (existing?.link_version ?? 0) + 1;
-      const provisionalPurgeAt =
-        sql
-          .exec<{ purge_at: number | null }>(
-            "SELECT purge_at FROM links WHERE reservation_id = ?",
-            intent.reservation_id,
-          )
-          .toArray()[0]?.purge_at ?? null;
+      // The link row was created in the same transaction as the intent, so its
+      // absence here means the retention prune has already taken it — the
+      // parent crossed its boundary while the customer was logging in. Nothing
+      // derived from that reservation may be created, and finalizing anyway
+      // would write a link with no retention deadline at all.
+      const holder = sql
+        .exec<{ purge_at: number | null }>(
+          "SELECT purge_at FROM links WHERE reservation_id = ?",
+          intent.reservation_id,
+        )
+        .toArray()[0];
+      if (holder === undefined || holder.purge_at === null) {
+        this.#bumpCounter("link_failed:past-retention", 1);
+        return { ok: false as const, code: "INVALID_INTENT" as const };
+      }
+      const provisionalPurgeAt = holder.purge_at;
       sql.exec(
         `INSERT INTO links
            (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at, purge_at)
@@ -1022,7 +1031,10 @@ export class AdapterDelivery extends DurableObject<Env> {
 
   /** Bounded signature-failure counter: one 24 h window at a time. */
   async noteSignatureFailure(): Promise<{ ok: true }> {
-    this.#ensureSchema();
+    // Unauthenticated callers reach this. The schema exists whenever the route
+    // is reachable (activation creates it), so a bad signature must never be
+    // the request that builds it.
+    if (!this.#hasSchema()) return { ok: true };
     this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
       const windowStart = sql

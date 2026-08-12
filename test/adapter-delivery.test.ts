@@ -1375,6 +1375,51 @@ describe("delivery pipeline", () => {
     expect(await ledgerReasons()).toEqual([{ reason: "retention", event_type: "approve" }]);
   });
 
+  it("refuses to finalize once the prune has taken the reservation's link holder", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    // The intent outlives its holder: mint with a boundary that passes while
+    // the customer is still at the LINE login screen.
+    const minted = await deliveryStub().mintIntent({
+      reservationId,
+      date: pDate,
+      generation: 1,
+      purgeAt: Date.now() + 2_000,
+    });
+    if (!minted.ok) throw new Error("mint failed");
+
+    // A real prune pass removes the provisional link — no SQL shortcut.
+    advanceNow(3_000);
+    await runDurableObjectAlarm(deliveryStub());
+    expect((await deliveryCounts()).links).toBe(0);
+
+    // Finalizing now would create a final link with no retention deadline at
+    // all, which is exactly the leak the boundary exists to prevent.
+    const linked = await deliveryStub().finalizeLink({
+      nonce: minted.nonce,
+      subject: SUBJECT,
+    });
+    expect(linked).toEqual({ ok: false, code: "INVALID_INTENT" });
+    expect((await deliveryCounts()).links).toBe(0);
+    expect((await deliveryCounts()).subjects).toBe(0);
+    expect((await counterMap())["link_failed:past-retention"]).toBe(1);
+  });
+
+  it("stamps every finalized link with the parent boundary", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    const stamped = await runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ purge_at: number | null }>("SELECT purge_at FROM links")
+        .toArray(),
+    );
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0]!.purge_at).toBeGreaterThan(Date.now());
+  });
+
   it("dispositions an event past its purgeAt as past-retention at accept time", async () => {
     lineApi();
     const reservationId = await createPending(pDate);

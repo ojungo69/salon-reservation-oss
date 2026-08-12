@@ -71,14 +71,17 @@
      `waitUntil` died is re-drained by the `AdapterDelivery` sweep within one cycle even if the
      day is never used again — no silent drop, no dependence on traffic or on diagnostics being
      opened; worst-case handoff latency is one sweep cycle.
-   - **No send at or past the retention boundary, enforced at runtime**: the day-side re-poke
-     refuses once `purgeAt − margin ≤ now` (margin covers RPC + outbound timeout);
-     `AdapterDelivery` enforces independently — accept refuses inside its transaction when
-     `purgeAt − margin ≤ capturedNow`, and a push may start only when
-     `now + timeout + slack < purgeAt`, with an `AbortSignal` cutting the fetch at the
-     deadline. Expected outcomes are pinned in clock-controlled tests: delayed re-poke → no
-     handoff; accept at the boundary → refused; a push parked across the boundary → aborted
-     before `purgeAt`. Sustained `AdapterDelivery` unreachability is intra-platform (same
+   - **No send at or past the retention boundary**: `AdapterDelivery` enforces this itself, at
+     the two points where it can. Accept refuses inside its transaction when `purgeAt ≤ now`
+     (disposition `past-retention`), and the claim transaction re-checks the delivery's stored
+     `purgeAt` immediately before a push may start, terminalizing rather than sending. Both are
+     pinned in clock-controlled tests. The boundary is the bare deadline, not a deadline minus a
+     margin: a push that starts just inside it can still be in flight for up to the outbound
+     timeout (10 s) afterwards, which is deliberate — a 10-second overshoot on a boundary
+     measured in days is not worth the complexity of a purgeAt-relative abort, and the message
+     itself carries only a date and a state. The day-side re-poke performs no boundary check of
+     its own; it is a latency optimization, and every event it hands off is dispositioned by the
+     authority above. Sustained `AdapterDelivery` unreachability is intra-platform (same
      substrate as storage itself) and out of model; recorded here.
 3. **Deterministic outbox event IDs**, unique per (event, consumer): versioned tuple
    `consumer + date + reservationId + commandId + eventType` for command transitions and
