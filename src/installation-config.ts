@@ -1021,11 +1021,13 @@ export type LineLifecyclePhase = "disabled" | "activating" | "active" | "deactiv
 type LineSagaOperation = {
   operationId: string;
   kind: "enable" | "disable";
-  step: "activate" | "begin-disable" | "final-wait" | "complete";
+  step: "activate" | "begin-disable" | "final-wait";
   startedAt: string;
   identifiers: LineIdentifiers | null;
-  // Request origin captured at enable time; becomes the authority's snapshot
-  // origin for management links in messages. Null for disable operations.
+  // Public origin resolved from the installation's declared hostname at enable
+  // time; becomes the authority's snapshot origin for the management link in
+  // messages. Never request-derived, so it cannot be poisoned by a Host header
+  // and cannot be left pointing at a preview deployment. Null for disable.
   origin: string | null;
   finalPassAt: number | null;
 };
@@ -1075,6 +1077,7 @@ export type LineCommandResult =
         | "VERSION_CONFLICT"
         | "PHASE_CONFLICT"
         | "SECRET_MISSING"
+        | "ORIGIN_UNCONFIGURED"
         | "TEMPORARILY_UNAVAILABLE";
     };
 
@@ -1193,7 +1196,7 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
       typeof candidate.operationId !== "string" ||
       !UUID.test(candidate.operationId) ||
       (candidate.kind !== "enable" && candidate.kind !== "disable") ||
-      !["activate", "begin-disable", "final-wait", "complete"].includes(
+      !["activate", "begin-disable", "final-wait"].includes(
         candidate.step as string,
       ) ||
       typeof candidate.startedAt !== "string" ||
@@ -1672,13 +1675,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeLineCommand(
     input: unknown,
     runtime: ReadinessRuntime,
-    context?: { origin?: string },
   ): Promise<LineCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const command = parseLineCommand(input);
     if (command === null) return { ok: false, code: "BAD_REQUEST" };
     const fingerprint = await lineCommandFingerprint(command);
     const now = new Date().toISOString();
+
+    // Pre-armed before the accepting commit: if this invocation dies between
+    // the commit and the saga driver below, the coordinator alarm still wakes
+    // and re-drives the stored operation to completion. A spurious wake-up
+    // with no operation is a no-op.
+    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
 
     const result = this.ctx.storage.transactionSync((): LineCommandResult => {
       const lifecycle = this.#readLineLifecycle() ?? defaultLineLifecycle(now);
@@ -1713,6 +1721,13 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           return { ok: false, code: "PHASE_CONFLICT" };
         }
         if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
+        // The management link customers receive is built from this: refuse to
+        // enable rather than bake in a wrong or empty origin.
+        const hostname = activeVersion(this.#readStoredState().state)
+          .settings.allowedHostname.trim()
+          .toLowerCase();
+        if (hostname.length === 0) return { ok: false, code: "ORIGIN_UNCONFIGURED" };
+        const publicOrigin = `https://${hostname}`;
         next = {
           ...lifecycle,
           phase: "activating",
@@ -1724,14 +1739,17 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             // Enable's identifiers are authoritative; the draft is a setup
             // convenience they supersede.
             identifiers: command.identifiers,
-            origin: typeof context?.origin === "string" ? context.origin : null,
+            origin: publicOrigin,
             finalPassAt: null,
           },
           lifecycleVersion: lifecycle.lifecycleVersion + 1,
           updatedAt: now,
         };
       } else {
-        if (lifecycle.phase !== "active" && lifecycle.phase !== "activating") {
+        // Only a settled installation can be disabled: interleaving a disable
+        // with an in-flight activation would let both sagas drive the
+        // authority in opposite directions.
+        if (lifecycle.phase !== "active") {
           return { ok: false, code: "PHASE_CONFLICT" };
         }
         next = {
@@ -1794,6 +1812,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           const meta = await authority.readMeta();
           const generation = (meta?.highWater ?? 0) + 1;
           const activated = await authority.activate({
+            operationId: operation.operationId,
             generation,
             watermark: 0,
             snapshot: {

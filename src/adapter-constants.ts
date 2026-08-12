@@ -22,8 +22,10 @@ export const ADAPTER = Object.freeze({
   RETRY_KEY_VALIDITY_S: 86400,
   /** Timeout for every outbound LINE API call. */
   OUTBOUND_TIMEOUT_MS: 10000,
-  /** Stateless channel access token cache lifetime; must stay under the 900 s expires_in. */
+  /** Stateless channel access token cache ceiling; the granted expires_in wins when it is shorter. */
   TOKEN_CACHE_TTL_S: 840,
+  /** Never serve a cached token this close to its granted expiry. */
+  TOKEN_CACHE_SAFETY_MS: 60000,
   /** Webhook raw-body byte cap, enforced before HMAC. */
   WEBHOOK_BODY_MAX_BYTES: 262144,
   /** Webhook event-count cap, enforced after signature verification. */
@@ -43,6 +45,8 @@ export const ADAPTER = Object.freeze({
   DESCRIPTOR_LEASE_WINDOW_S: 30,
   /** Disable saga: wait after projection clear before the final zero pass (≥ 2 × lease window). */
   FINAL_PASS_LEASE_WAIT_S: 60,
+  /** Coordinator re-drive delay, pre-armed before a lifecycle command commits. */
+  SAGA_REDRIVE_DELAY_S: 5,
   /** Events per drainOutbox pull. */
   OUTBOX_DRAIN_BATCH: 32,
   /** Day objects per sweep alarm run. */
@@ -51,8 +55,9 @@ export const ADAPTER = Object.freeze({
   SWEEP_REARM_DELAY_S: 60,
   /** Per drain/ack RPC deadline; a timeout counts as one fault-budget failure. */
   SWEEP_RPC_DEADLINE_MS: 5000,
-  /** Worst single-batch runtime: 16 days × 2 RPC × 5 s + local work. */
-  SWEEP_MAX_BATCH_RUNTIME_S: 180,
+  /** Worst single-batch runtime: 16 days × 3 RPC (drain, ack, and the purge a
+   * deactivating cycle adds) × 5 s deadline + local work. */
+  SWEEP_MAX_BATCH_RUNTIME_S: 300,
   /** Platform's documented ~1 minute alarm-lateness worst case. */
   ALARM_LATENESS_ALLOWANCE_S: 60,
   /** Platform alarm retry: exponential from 2 s, ≤ 6 retries ≈ 126 s worst (research R5). */
@@ -91,8 +96,10 @@ export const ADAPTER = Object.freeze({
   SIGFAIL_WINDOW_S: 86400,
 } as const);
 
-/** Worst-case sweep partitions: MAX_RETENTION_DAYS + 1 + MAX_HORIZON_DAYS (src/worker.ts). */
-export const WORST_CASE_PARTITIONS = 456;
+/** Worst-case sweep partitions: every day the fixed window visits, inclusive of
+ * both endpoints and today. Derived so the bound can never drift from the window. */
+export const WORST_CASE_PARTITIONS =
+  ADAPTER.SWEEP_PAST_DAYS + 1 + ADAPTER.SWEEP_FUTURE_DAYS;
 
 /** The documented cycle bound, computed for a given partition count. */
 export function fullCycleBoundS(partitions: number): number {

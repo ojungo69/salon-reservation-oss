@@ -22,6 +22,18 @@ Rule-based static analysis gate (tasks.md T038), reproducible invocation.
 No findings were introduced by the feature-003 diff: the only finding is on a
 baseline line outside the feature's changed files.
 
+## Manual LIFF SDK verification
+
+On 2026-08-12, the pinned LIFF SDK at
+`https://static.line-scdn.net/liff/edge/versions/2.29.2/sdk.js` was fetched
+directly. The response was HTTP 200 and contained 125806 bytes. Its SHA-384
+digest was
+`sha384-lIqmzc+FKSRwPp/kKmwE+MwctaDWs6FhFaqE1B9Jksq6PPZj8588nVrMR03O3KpB`,
+which exactly matches the `integrity` value in `public/line.html`.
+
+A review claimed that LIFF SDK 2.29.2 was unpublished. The direct successful
+fetch and matching digest refuted that claim.
+
 ## Result
 
 - Blocking findings introduced by this feature: **0**

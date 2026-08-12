@@ -81,6 +81,8 @@ const ERROR_MESSAGES = {
   LINE_LINK_CONFLICT:
     "この予約には別の LINE アカウントが連携されています。現在の連携を解除してからやり直してください。",
   PHASE_CONFLICT: "現在の連携状態ではこの操作を実行できません。",
+  ORIGIN_UNCONFIGURED:
+    "公開ホスト名が設定されていません。設定画面で公開ホスト名を保存してから有効化してください。",
   SECRET_MISSING:
     "LINE のチャネルシークレットが設定されていません。シークレットを登録してから有効化してください。",
 } as const;
@@ -331,6 +333,11 @@ const adapterDescriptor = (
   const line = context.line;
   if (line === undefined || line.generation === undefined) return undefined;
   if (line.phase !== "active" && line.phase !== "deactivating") return undefined;
+  // Without the secret the adapter is in cleanup mode: it can still drain what
+  // exists, but a fresh request must not create new outbox rows that nothing
+  // is able to send. Only leases issued before the secret vanished still
+  // apply, and those expire on their own.
+  if (line.phase === "active" && !context.runtime.lineSecretPresent) return undefined;
   return {
     consumer: "line",
     generation: line.generation,
@@ -423,6 +430,14 @@ const addDays = (date: string, count: number): string =>
     .toISOString()
     .slice(0, 10);
 
+/** The partition's retention deadline: the one boundary every reservation-scoped
+ * row — day-side or adapter-side — is held to. */
+const purgeAtFor = (date: string, context: InstallationContext): number => {
+  const midnight = parseDateJstToUtcIso(date);
+  if (midnight === null) throw new Error("invalid date");
+  return Date.parse(midnight) + (context.settings.retentionDays + 1) * DAY_MS;
+};
+
 const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
   const midnight = parseDateJstToUtcIso(date);
   if (midnight === null) throw new Error("invalid date");
@@ -433,7 +448,7 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     resourceIds: settings.resources.filter(({ active }) => active).map(({ id }) => id),
     startTimes: startTimes(settings),
     slotMinutes: settings.startIntervalMinutes,
-    purgeAt: Date.parse(midnight) + (settings.retentionDays + 1) * DAY_MS,
+    purgeAt: purgeAtFor(date, context),
     settingsVersion: state.activeSettingsVersion,
     resources: settings.resources.map((resource) => ({ ...resource })),
     services: settings.services.map((service) => ({
@@ -1331,6 +1346,19 @@ const handleLive = async (
   return setupResultResponse(result);
 };
 
+const LINE_COMMAND_STATUS: Record<
+  Exclude<Awaited<ReturnType<InstallationConfig["executeLineCommand"]>>, { ok: true }>["code"],
+  number
+> = {
+  BAD_REQUEST: 400,
+  IDEMPOTENCY_CONFLICT: 409,
+  VERSION_CONFLICT: 409,
+  PHASE_CONFLICT: 409,
+  SECRET_MISSING: 409,
+  ORIGIN_UNCONFIGURED: 409,
+  TEMPORARILY_UNAVAILABLE: 503,
+};
+
 const lineCommandResponse = (
   result: Awaited<ReturnType<InstallationConfig["executeLineCommand"]>>,
 ): Response => {
@@ -1342,20 +1370,7 @@ const lineCommandResponse = (
       replayed: result.replayed,
     });
   }
-  switch (result.code) {
-    case "BAD_REQUEST":
-      return errorResponse(400, "BAD_REQUEST");
-    case "IDEMPOTENCY_CONFLICT":
-      return errorResponse(409, "IDEMPOTENCY_CONFLICT");
-    case "VERSION_CONFLICT":
-      return errorResponse(409, "VERSION_CONFLICT");
-    case "PHASE_CONFLICT":
-      return errorResponse(409, "PHASE_CONFLICT");
-    case "SECRET_MISSING":
-      return errorResponse(409, "SECRET_MISSING");
-    case "TEMPORARILY_UNAVAILABLE":
-      return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
-  }
+  return errorResponse(LINE_COMMAND_STATUS[result.code], result.code);
 };
 
 const handleLineLifecycle = async (
@@ -1380,7 +1395,6 @@ const handleLineLifecycle = async (
   const result = await installationStub(env).executeLineCommand(
     { operation, ...parsed.value },
     runtimeFor(env, url, true),
-    { origin: url.origin },
   );
   return lineCommandResponse(result);
 };
@@ -1712,50 +1726,104 @@ const lineManagementProof = async (
   return { ok: true, date, status: result.status };
 };
 
-const handleLineLinkIntent = async (
+// A hidden LINE surface must be indistinguishable from a path that was never
+// routed: the method check, the Origin check and the rate limiter all come
+// after the lifecycle gate, so none of them can answer for a route that is
+// supposed to not exist. `residual` marks the cleanup routes, which stay
+// reachable while previously created LINE data may still exist.
+const lineRouteGate = async (
+  env: AppEnv,
+  url: URL,
+  residual: boolean,
+): Promise<InstallationContext | null> => {
+  const context = await installationContext(env, url, false);
+  if (lineEffectivelyActive(context)) return context;
+  const line = context.line;
+  if (
+    residual &&
+    line !== undefined &&
+    line.generation !== undefined &&
+    (line.phase === "active" || line.phase === "deactivating")
+  ) {
+    // Missing secret or mid-deactivation: the customer can still see and
+    // remove their own link. A draft, an activating installation and a
+    // completed purge all fall through to the 404 below.
+    return context;
+  }
+  return null;
+};
+
+/** Shared preamble for the three reservation-scoped LINE routes. */
+const lineReservationRoute = async (
   request: Request,
   env: AppEnv,
   url: URL,
   reservationId: string,
+  options: { bucket: string; residual: boolean },
+  run: (
+    context: InstallationContext,
+    proof: { date: string; status: string },
+  ) => Promise<Response>,
 ): Promise<Response> => {
+  const context = await lineRouteGate(env, url, options.residual);
+  if (context === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   if (request.method !== "POST") {
     return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-intent")) {
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, options.bucket)) {
     return rateLimited();
   }
   if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  const context = await installationContext(env, url, false);
-  if (!lineEffectivelyActive(context)) {
-    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  }
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
   if (!proof.ok) return proof.response;
-  if (proof.status !== "pending" && proof.status !== "approved") {
-    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  }
-  const minted = await adapterDeliveryStub(env).mintIntent({
-    reservationId,
-    date: proof.date,
-    generation: context.line.generation,
-  });
-  if (!minted.ok) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  return json({
-    nonce: minted.nonce,
-    liffId: context.line.liffId,
-    expiresAt: minted.expiresAt,
-  });
+  return run(context, { date: proof.date, status: proof.status });
 };
+
+const handleLineLinkIntent = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  reservationId: string,
+): Promise<Response> =>
+  lineReservationRoute(
+    request,
+    env,
+    url,
+    reservationId,
+    { bucket: "line-intent", residual: false },
+    async (context, proof) => {
+      if (proof.status !== "pending" && proof.status !== "approved") {
+        return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+      }
+      const line = context.line as LineContext & { generation: number; liffId: string };
+      const minted = await adapterDeliveryStub(env).mintIntent({
+        reservationId,
+        date: proof.date,
+        generation: line.generation,
+        purgeAt: purgeAtFor(proof.date, context),
+      });
+      if (!minted.ok) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+      return json({
+        nonce: minted.nonce,
+        liffId: line.liffId,
+        expiresAt: minted.expiresAt,
+      });
+    },
+  );
 
 const handleLineLinkComplete = async (
   request: Request,
   env: AppEnv,
   url: URL,
 ): Promise<Response> => {
+  const context = await lineRouteGate(env, url, false);
+  if (context === null || !lineEffectivelyActive(context)) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
   if (request.method !== "POST") {
     return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
   }
@@ -1763,10 +1831,6 @@ const handleLineLinkComplete = async (
   if (originFailure !== null) return originFailure;
   if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-link")) {
     return rateLimited();
-  }
-  const context = await installationContext(env, url, false);
-  if (!lineEffectivelyActive(context)) {
-    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   }
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
@@ -1794,9 +1858,11 @@ const handleLineLinkComplete = async (
     subject: verified.sub,
   });
   if (!finalized.ok) {
-    return finalized.code === "LINK_CONFLICT"
-      ? errorResponse(409, "LINE_LINK_CONFLICT")
-      : errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+    if (finalized.code === "LINK_CONFLICT") return errorResponse(409, "LINE_LINK_CONFLICT");
+    if (finalized.code === "TEMPORARILY_UNAVAILABLE") {
+      return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+    }
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   }
   return json({ ok: true, linked: true, replayed: finalized.replayed });
 };
@@ -1806,81 +1872,68 @@ const handleLineUnlink = async (
   env: AppEnv,
   url: URL,
   reservationId: string,
-): Promise<Response> => {
-  if (request.method !== "POST") {
-    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
-  }
-  const originFailure = requireMutationOrigin(request, url);
-  if (originFailure !== null) return originFailure;
-  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-unlink")) {
-    return rateLimited();
-  }
-  if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  const context = await installationContext(env, url, false);
-  // Unlink stays reachable in every degraded state; only a never-configured
-  // installation (no lifecycle at all) hides it.
-  if (context.line === undefined) {
-    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  }
-  const parsed = await bodyOrError(request);
-  if ("response" in parsed) return parsed.response;
-  const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
-  if (!proof.ok) return proof.response;
-  const result = await adapterDeliveryStub(env).unlink({ reservationId });
-  return json({ ok: true, unlinked: result.existed });
-};
+): Promise<Response> =>
+  lineReservationRoute(
+    request,
+    env,
+    url,
+    reservationId,
+    { bucket: "line-unlink", residual: true },
+    async () => {
+      const result = await adapterDeliveryStub(env).unlink({ reservationId });
+      return json({ ok: true, unlinked: result.existed });
+    },
+  );
 
 const handleLineLinkStatus = async (
   request: Request,
   env: AppEnv,
   url: URL,
   reservationId: string,
-): Promise<Response> => {
-  if (request.method !== "POST") {
-    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
-  }
-  const originFailure = requireMutationOrigin(request, url);
-  if (originFailure !== null) return originFailure;
-  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-link-status")) {
-    return rateLimited();
-  }
-  if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  const context = await installationContext(env, url, false);
-  if (context.line === undefined) {
-    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  }
-  const parsed = await bodyOrError(request);
-  if ("response" in parsed) return parsed.response;
-  const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
-  if (!proof.ok) return proof.response;
-  const status = await adapterDeliveryStub(env).linkStatus({ reservationId });
-  if (status.linked === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  return json({ linked: status.linked });
-};
+): Promise<Response> =>
+  lineReservationRoute(
+    request,
+    env,
+    url,
+    reservationId,
+    { bucket: "line-link-status", residual: true },
+    async () => {
+      const status = await adapterDeliveryStub(env).linkStatus({ reservationId });
+      if (status.linked === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+      return json({ linked: status.linked });
+    },
+  );
 
 const handleLineWebhook = async (
   request: Request,
   env: AppEnv,
   url: URL,
 ): Promise<Response> => {
-  if (request.method !== "POST") {
-    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
-  }
   // LINE posts cross-origin; the signature is the only authentication, and
   // while the adapter is not effectively active the endpoint does not exist.
   const context = await installationContext(env, url, false);
   if (!lineEffectivelyActive(context)) {
     return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   }
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
   const channelSecret = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
   if (channelSecret === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  // Unauthenticated endpoint: reject on the cheapest evidence first, so a
+  // header-less flood never pays for the body read, the HMAC, or a durable
+  // write, and give it its own rate-limit bucket so it cannot crowd out the
+  // customer routes. LINE retries webhooks, and duplicates are deduplicated.
+  const signature = request.headers.get("x-line-signature");
+  if (signature === null || signature.length === 0 || signature.length > 64) {
+    return errorResponse(403, "PROTECTION_REFUSED");
+  }
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-webhook")) {
+    return rateLimited();
+  }
   const body = await readBoundedBytes(request.body, ADAPTER.WEBHOOK_BODY_MAX_BYTES);
   if (body === null) return errorResponse(413, "BAD_REQUEST");
-  const signatureValid = await verifyWebhookSignature(
-    channelSecret,
-    request.headers.get("x-line-signature"),
-    body,
-  );
+  const signatureValid = await verifyWebhookSignature(channelSecret, signature, body);
   if (!signatureValid) {
     await adapterDeliveryStub(env).noteSignatureFailure();
     return errorResponse(403, "PROTECTION_REFUSED");
@@ -1894,21 +1947,27 @@ const handleLineWebhook = async (
 // The LIFF page needs LINE's SDK origin, so it gets its own tightened CSP
 // instead of the site-wide one from _headers. connect-src covers liff.init's
 // API calls; everything else stays same-origin.
+// Every path the assets service serves the LIFF page under, plus its modules:
+// one source for the router, the gate, and the run_worker_first list.
+const LINE_PAGE_PATHS = new Set(["/line", "/line/", "/line.html", "/line/index", "/line/index.html"]);
+const LINE_MODULE_PATHS = new Set(["/line-link.mjs", "/line-liff.mjs"]);
+
 const LINE_PAGE_CSP =
   "default-src 'self'; script-src 'self' https://static.line-scdn.net; " +
   "connect-src 'self' https://api.line.me https://liff.line.me; " +
   "img-src 'self' data:; style-src 'self'; font-src 'self'; base-uri 'none'; " +
   "form-action 'self'; frame-ancestors 'none'; object-src 'none'";
 
+// The assets service html-handles paths, so the canonical form is asked for
+// directly; requesting "/404.html" would answer with its redirect instead of
+// the page. The security headers the asset carries are kept.
 const notFoundPage = async (env: AppEnv, url: URL): Promise<Response> => {
-  const asset = await env.ASSETS.fetch(new Request(new URL("/404.html", url.origin)));
-  return new Response(asset.body, {
-    status: 404,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
+  const asset = await env.ASSETS.fetch(new Request(new URL("/404", url.origin)));
+  const headers = new Headers(asset.headers);
+  headers.set("content-type", "text/html; charset=utf-8");
+  headers.set("cache-control", "no-store");
+  headers.delete("etag");
+  return new Response(asset.ok ? asset.body : null, { status: 404, headers });
 };
 
 // Worker-first LINE assets (run_worker_first routes /line* here): served only
@@ -1933,10 +1992,13 @@ const handleLineAsset = async (
   // The assets service html-handles paths (/line serves line.html; asking for
   // the .html form gets a redirect), so the binding is always asked for the
   // extensionless page path.
-  const isPage =
-    url.pathname === "/line" || url.pathname === "/line/" || url.pathname === "/line.html";
+  const isPage = LINE_PAGE_PATHS.has(url.pathname);
   const assetPath = isPage ? "/line" : url.pathname;
-  const asset = await env.ASSETS.fetch(new Request(new URL(assetPath, url.origin), request));
+  // Fetched without the caller's validators: a 304 here would leave the gated
+  // response with no body to serve.
+  const asset = await env.ASSETS.fetch(
+    new Request(new URL(assetPath, url.origin), { method: request.method }),
+  );
   if (!asset.ok) return notFoundPage(env, url);
   const headers = new Headers(asset.headers);
   headers.set("cache-control", "no-store");
@@ -1952,31 +2014,38 @@ const handleLineAsset = async (
 // byte-identically (the slot comment stays, invisible in the DOM).
 const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
       <p>
+        連携の運用記録(処理件数や失敗理由と時刻だけの、個人を特定しない記録)は、障害の把握のために一定期間だけ保持し、それぞれの保持期限と件数上限を過ぎたものから自動的に削除します。
+      </p>
+      <p>
         この設置では、予約の通知を LINE で受け取る連携を有効にしています。連携はお客様が予約ごとに自分で選んだ場合にだけ行われ、連携した予約について LINE のユーザー識別子と予約の対応、および通知の送信記録を保存します。お名前やご連絡先を LINE に送ることはありません。通知の本文には日時と予約の状態だけを含めます。
       </p>
       <p>
         連携は予約管理ページからいつでも解除でき、解除すると対応関係と未送信の通知を削除します。予約の保存期限が過ぎたとき、および運営者が連携機能を停止したときも同じように削除します。LINE 側でのデータの取り扱いは LINE の利用規約とプライバシーポリシーに従います。
       </p>`;
 
+// Only the canonical path is worker-served, and only a state that actually has
+// a disclosure changes anything: without one the assets response is returned
+// exactly as the platform produced it — same status, same headers, same body —
+// so an installation without the adapter is byte-identical to one built before
+// this feature existed.
 const handlePrivacyPage = async (
   request: Request,
   env: AppEnv,
   url: URL,
 ): Promise<Response> => {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return errorResponse(405, "BAD_REQUEST", { allow: "GET, HEAD" });
-  }
-  const asset = await env.ASSETS.fetch(
-    new Request(new URL("/privacy", url.origin), request),
-  );
-  if (!asset.ok) return notFoundPage(env, url);
-  const headers = new Headers(asset.headers);
-  // State-dependent response: a cached copy must never leak across states.
-  headers.set("cache-control", "no-store");
   const context = await installationContext(env, url, false);
-  if (linePublicConfig(context) === null) {
-    return new Response(asset.body, { status: asset.status, headers });
-  }
+  const disclose = linePublicConfig(context) !== null;
+  const asset = await env.ASSETS.fetch(
+    new Request(new URL("/privacy", url.origin), disclose ? { method: request.method } : request),
+  );
+  if (!disclose) return asset;
+  if (!asset.ok) return asset;
+  const headers = new Headers(asset.headers);
+  // State-dependent and rewritten: a cached copy must never leak across
+  // states, and the asset's own validators no longer describe this body.
+  headers.set("cache-control", "no-store");
+  headers.delete("etag");
+  headers.delete("content-length");
   const body = (await asset.text()).replace(
     "<!-- adapter-disclosure-slot -->",
     LINE_PRIVACY_SECTION,
@@ -2064,16 +2133,10 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
     return handleClosureRemove(request, env, url, closureRemove[1]);
   }
 
-  if (
-    url.pathname === "/line" ||
-    url.pathname === "/line/" ||
-    url.pathname === "/line.html" ||
-    url.pathname === "/line-link.mjs" ||
-    url.pathname === "/line-liff.mjs"
-  ) {
+  if (LINE_PAGE_PATHS.has(url.pathname) || LINE_MODULE_PATHS.has(url.pathname)) {
     return handleLineAsset(request, env, url);
   }
-  if (url.pathname === "/privacy" || url.pathname === "/privacy.html") {
+  if (url.pathname === "/privacy") {
     return handlePrivacyPage(request, env, url);
   }
 

@@ -24,6 +24,7 @@ and tests import it — no literal re-statements elsewhere.
 | `RETRY_OFFSETS_S` | `[0, 60, 360, 1260, 4860, 15660, 37260]` | plan's 7-attempt schedule (t0…+10h21m); total 10.35 h < 24 h retry-key validity |
 | `OUTBOUND_TIMEOUT_MS` | 10000 | plan: 10 s cap on every LINE API call |
 | `TOKEN_CACHE_TTL_S` | 840 | < 900 s stateless-token `expires_in` with 60 s skew |
+| `TOKEN_CACHE_SAFETY_MS` | 60000 | cached tokens are never served within 60 s of their granted expiry |
 | `WEBHOOK_BODY_MAX_BYTES` | 262144 | pre-HMAC byte cap (defensive; LINE batches are far smaller) |
 | `WEBHOOK_EVENTS_MAX` | 50 | post-signature event-count cap |
 | `VERIFY_RESPONSE_MAX_BYTES` | 16384 | bounded reader for verify/token responses |
@@ -33,20 +34,22 @@ and tests import it — no literal re-statements elsewhere.
 | `PROVISIONAL_LINK_TTL_S` | 900 | two-phase link: provisional row lifetime (finalize or expire) |
 | `DESCRIPTOR_LEASE_WINDOW_S` | 30 | InstallationConfig-minted lease `notAfter − issuedAt`; day validates in-transaction |
 | `FINAL_PASS_LEASE_WAIT_S` | 60 | ≥ 2× lease window; disable saga waits this after projection clear before the final zero pass |
+| `SAGA_REDRIVE_DELAY_S` | 5 | coordinator alarm delay pre-armed before a lifecycle command commits |
 | `OUTBOX_DRAIN_BATCH` | 32 | events per `drainOutbox` pull |
 | `SWEEP_DAY_BATCH` | 16 | day objects per sweep alarm run |
 | `SWEEP_REARM_DELAY_S` | 60 | delay between sweep alarm runs while work remains |
 | `SWEEP_RPC_DEADLINE_MS` | 5000 | per drain/ack RPC; a timeout counts as one fault-budget failure |
-| `SWEEP_MAX_BATCH_RUNTIME_S` | 180 | 16 days × 2 RPC × 5 s + local work |
+| `SWEEP_MAX_BATCH_RUNTIME_S` | 300 | 16 days × up to 3 RPC × 5 s + local work; a deactivating visit adds `purgeConsumer` to drain/ack |
 | `ALARM_LATENESS_ALLOWANCE_S` | 60 | platform's documented ~1 min worst case |
 | `ALARM_RETRY_BACKOFF_ALLOWANCE_S` | 300 | per-attempt allowance for platform alarm retry backoff |
 | `FAULT_BUDGET_F` | 3 | allowed batch failures per sweep cycle; beyond F is out-of-model |
 | `SWEEP_RPC_MARGIN_S` | 300 | fullCycleBound additive margin |
-| `HANDOFF_TERMINAL_LEAD_S` | 43200 (12 h) | > worst fullCycleBound ≈ 5.4 h (below) with > 2× headroom; < 24 h retry-key validity |
+| `HANDOFF_TERMINAL_LEAD_S` | 43200 (12 h) | > worst `fullCycleBoundS(WORST_CASE_PARTITIONS)` ≈ 6.48 h (below); < 24 h retry-key validity |
 | `WEBHOOK_DEDUP_TTL_S` / `WEBHOOK_DEDUP_CAP` | 259200 (72 h) / 5000 | installation-scoped `webhookEventId` dedup; cap evicts into aggregate counter |
 | `LEDGER_TTL_S` / `LEDGER_CAP` | 2592000 (30 d) / 500 | redacted terminal ledger; cap evicts into aggregate counter |
 | `DELIVERY_QUEUE_CAP` | 2000 | pending deliveries per installation; overflow terminalizes oldest with reason `overflow` |
-| `SWEEP_PAST_DAYS` / `SWEEP_FUTURE_DAYS` | 366 / 90 | Fixed sweep window `[today−366, today+90]` — a deliberate superset of every configurable retention/horizon window (365+1 and 90 at their caps), so the authority needs no config read; out-of-window days simply hold no outbox. `fullCycleBoundS` was already computed against these 456 worst-case partitions. |
+| `SWEEP_PAST_DAYS` / `SWEEP_FUTURE_DAYS` | 366 / 90 | Fixed sweep window `[today−366, today+90]` — a deliberate superset of every configurable retention/horizon window (365+1 and 90 at their caps), so the authority needs no config read; out-of-window days simply hold no outbox. |
+| `WORST_CASE_PARTITIONS` | `SWEEP_PAST_DAYS + 1 + SWEEP_FUTURE_DAYS` = 457 | Inclusive fixed sweep window: 366 past days + today + 90 future days; derived so the cycle bound cannot drift from the window. |
 | `SEND_BATCH` | 8 | Deliveries attempted per alarm run (each ≤ 1 token mint + 1 push at 10 s timeouts — bounded well inside the alarm invocation budget). |
 | `SEND_CLAIM_LEASE_S` | 30 | In-flight send claim lease; a claim older than this recovers to `queued` with the same retry key (byte-identical rebuild makes the repeat safe). |
 | `CONFIG_RECHECK_S` | 300 | Re-check cadence for `awaiting-configuration` recovery while the secret is absent. |
@@ -54,10 +57,11 @@ and tests import it — no literal re-statements elsewhere.
 | `RECEIPT_CAP` / `RECEIPT_TTL_S` | 50 / 7776000 (90 d) | lifecycle command receipts |
 | `SIGFAIL_WINDOW_S` | 86400 | bounded webhook signature-failure counter window |
 
-**Derived bound (documented in the constants module, tested in T033)**:
-`partitions = retentionDays + 1 + horizonDays` (runtime settings; worst case 365+1+90 = 456) →
+**Derived bound (computed by `fullCycleBoundS`, tested in T033)**:
+`partitions = SWEEP_PAST_DAYS + 1 + SWEEP_FUTURE_DAYS = 366+1+90 = 457` →
 `fullCycleBound = (ceil(partitions / SWEEP_DAY_BATCH) + FAULT_BUDGET_F) × (SWEEP_MAX_BATCH_RUNTIME_S + SWEEP_REARM_DELAY_S + ALARM_LATENESS_ALLOWANCE_S + ALARM_RETRY_BACKOFF_ALLOWANCE_S) + SWEEP_RPC_MARGIN_S`
-= worst (29+3) × 600 + 300 = **19,500 s ≈ 5.42 h** < `HANDOFF_TERMINAL_LEAD_S`.
+= (29+3) × (300+60+60+300) + 300 = **23,340 s ≈ 6.48 h** <
+`HANDOFF_TERMINAL_LEAD_S` (43,200 s).
 
 **Inequalities a test must assert (T033)**: retry total < 24 h retry-key validity; token cache
 < 900 s; worst fullCycleBound < `HANDOFF_TERMINAL_LEAD_S`; `FINAL_PASS_LEASE_WAIT_S` ≥ 2 ×
@@ -108,10 +112,10 @@ and tests import it — no literal re-statements elsewhere.
 
 ## Phase 5: [US1] Notifications end to end (plan decisions 2, 3, 8; LINE core push half)
 
-- [X] T026 [US1] src/line-adapter.ts: stateless token mint (`POST /oauth2/v3/token`, cache `TOKEN_CACHE_TTL_S`, keyed generation + channel ID + secret discriminator) + push client (`POST /v2/bot/message/push`, persisted `X-Line-Retry-Key` minted before first attempt, byte-identical retries, retry only 5xx/timeout, 409 = accepted via `x-line-accepted-request-id`, `redirect:"manual"`, wire-format v1 serializer — subject resolved at send from the link row).
+- [X] T026 [US1] src/line-adapter.ts: stateless token mint (`POST /oauth2/v3/token`, cache `TOKEN_CACHE_TTL_S`, keyed generation + channel ID + secret discriminator) + push client (`POST /v2/bot/message/push`, persisted `X-Line-Retry-Key` minted before first attempt, byte-identical retries, 5xx/429/timeout retryable, 409 accepted, 401 parked as `awaiting-configuration`, other 4xx terminal, `redirect:"manual"`, wire-format v1 serializer — subject resolved at send from the link row).
 - [X] T027 [US1] src/adapter-delivery.ts: common disposition function with the plan's priority order 0–6 (disabled no-persist → stale-gen canceled → past-lead terminal → provisional held → seq≤watermark ignored-prelink → delivery/awaiting-configuration → no-link ignored-no-recipient); delivery rows (canonical fragment + link ID/version + retry key), `RETRY_OFFSETS_S` schedule on the DO alarm, `DELIVERY_QUEUE_CAP` overflow terminalization.
-- [X] T028 [US1] Durable sweep: cursor over `[today−(retentionDays+1), today+horizonDays]`, `SWEEP_DAY_BATCH`/`SWEEP_REARM_DELAY_S`/`SWEEP_RPC_DEADLINE_MS` (timeout = one `FAULT_BUDGET_F` failure, batch re-drives), per-cycle request budget = batch days × 2 RPC; `HANDOFF_TERMINAL_LEAD_S` terminalization for events whose next guaranteed visit falls past their lead; runs only while active/deactivating.
-- [X] T029 [US1] Terminal visibility: redacted ledger (reason + time, `LEDGER_TTL_S`/`LEDGER_CAP`, aggregate-counter eviction), webhook-dedup eviction likewise; unfollow parks that subject's pending deliveries; quota-refused push parks with its reason; diagnostics counters wired into T015's endpoint.
+- [X] T028 [US1] Durable sweep: cursor over the fixed `[today−SWEEP_PAST_DAYS, today+SWEEP_FUTURE_DAYS]` window, `SWEEP_DAY_BATCH`/`SWEEP_REARM_DELAY_S`/`SWEEP_RPC_DEADLINE_MS` (timeout = one `FAULT_BUDGET_F` failure, batch re-drives), with up to three RPCs per day in a deactivating cycle (drain, conditional ack, and purge); `HANDOFF_TERMINAL_LEAD_S` terminalization for events whose next guaranteed visit falls past their lead; runs only while active/deactivating.
+- [X] T029 [US1] Terminal visibility: redacted ledger (reason + time, `LEDGER_TTL_S`/`LEDGER_CAP`, aggregate-counter eviction), webhook-dedup eviction likewise; unfollow parks that subject's pending deliveries; a credential rejection parks the delivery as awaiting-configuration and counts as an attempt; diagnostics counters wired into T015's endpoint.
 - [X] T030 [US1] Message templates for the five events (approve/reject/reschedule/cancel/expire) — short polite Japanese, minimal payload per FR-009 (time, state, next step, management link — no notes/history; asserted by a payload-field test), fragment-only storage, no retroactive delivery for pre-link events.
 - [X] T031 [US3] Deactivation saga (here because it drains Phases 4–5 structures): disable → `deactivating` (cleanup surfaces) → cancel stale-generation day rows (`canceled`, acked+deleted) → projection clear → `FINAL_PASS_LEASE_WAIT_S` → full-window zero pass → purge complete → `disabled`; final pass removes every LINE-owned row/sequence/meta, drops tables only when no consumer remains; re-drive from InstallationConfig alarm; on completion `AdapterDelivery` disarms its alarm once TTL stores drain (T009 invariant — rollback then leaves no pending alarm for a class the old worker cannot run).
 - [X] T032 [US1] Pipeline tests in test/adapter-delivery.test.ts: accept → resolve → queue → push → terminal with fetchMock; sustained 5xx through the full retry ladder; timeout; 409-accepted; disposition matrix (all 7 branches, byte-identical store for branch 0 across accept/finalize/webhook); follow/unfollow ordering; watermark ignored-prelink; awaiting-configuration under missing secret then recovery; overflow; deactivation saga incl. mid-saga death + re-drive; clock-tested sweep cycle with per-batch lateness + mid-batch death + parked pull + parked ack in one run.

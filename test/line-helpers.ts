@@ -13,6 +13,27 @@ export const identifiers = {
   messagingChannelId: "9876543210",
 };
 
+// Derive the suite clock from the real wall clock before any fake timers land,
+// roughly one year ahead, so scheduled alarms never collide with the real year.
+const wallMs = Date.now();
+const wall = new Date(wallMs);
+export const SUITE_NOW = Date.UTC(
+  wall.getUTCFullYear() + 1,
+  wall.getUTCMonth(),
+  wall.getUTCDate(),
+  15,
+  0,
+  0,
+  0,
+);
+
+/** Calendar date (UTC) `dayOffset` days after the suite's base midnight-ish NOW. */
+export const suiteDate = (dayOffset: number): string =>
+  new Date(SUITE_NOW + dayOffset * 86_400_000).toISOString().slice(0, 10);
+
+/** Far-future retention deadline that stays ahead of any suite clock advance. */
+export const SUITE_PURGE_AT = SUITE_NOW + 10 * 365 * 86_400_000;
+
 export const lineDay: DayConfig & {
   settingsVersion: number;
   resources: Array<{ id: string; label: string; active: boolean }>;
@@ -31,7 +52,7 @@ export const lineDay: DayConfig & {
   startIntervalMinutes: number;
   consentVersion: string;
 } = {
-  date: "2027-01-15",
+  date: suiteDate(1),
   settingsVersion: 7,
   resourceIds: ["resource-chair-a"],
   resources: [{ id: "resource-chair-a", label: "架空チェア A", active: true }],
@@ -53,7 +74,7 @@ export const lineDay: DayConfig & {
   startTimes: ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00"],
   slotMinutes: 60,
   consentVersion: "consent-v2",
-  purgeAt: Date.parse("2100-01-01T00:00:00.000Z"),
+  purgeAt: SUITE_PURGE_AT,
 };
 
 export const dayStub = (date = lineDay.date) =>
@@ -117,19 +138,30 @@ export const sha256Hex = async (value: string): Promise<string> => {
     .join("");
 };
 
-export const createPendingReservation = async (): Promise<string> => {
-  const created = await dayStub().createPublic(lineDay, {
-    commandId: crypto.randomUUID(),
-    settingsVersion: lineDay.settingsVersion,
-    serviceIds: ["service-cut"],
-    resourceId: "resource-chair-a",
-    date: lineDay.date,
-    startTime: "09:00",
-    customerName: "架空 花子",
-    contact: "hanako@example.invalid",
-    consentVersion: lineDay.consentVersion,
-    managementDigest: await sha256Hex(MANAGEMENT_KEY),
-  });
+export const createPendingReservation = async (
+  overrides: Partial<{
+    date: string;
+    startTime: string;
+    customerName: string;
+    contact: string;
+  }> = {},
+): Promise<string> => {
+  const date = overrides.date ?? lineDay.date;
+  const created = await dayStub(date).createPublic(
+    { ...lineDay, date },
+    {
+      commandId: crypto.randomUUID(),
+      settingsVersion: lineDay.settingsVersion,
+      serviceIds: ["service-cut"],
+      resourceId: "resource-chair-a",
+      date,
+      startTime: overrides.startTime ?? "09:00",
+      customerName: overrides.customerName ?? "架空 花子",
+      contact: overrides.contact ?? "hanako@example.invalid",
+      consentVersion: lineDay.consentVersion,
+      managementDigest: await sha256Hex(MANAGEMENT_KEY),
+    },
+  );
   if (!created.ok) throw new Error("fixture reservation failed");
   return created.reservationId;
 };

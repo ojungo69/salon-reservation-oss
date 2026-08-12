@@ -12,7 +12,7 @@ import type { AdapterOutboxEvent } from "./reservation-day.ts";
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const NONCE = /^[0-9a-f]{32}$/;
+const NONCE = /^[0-9a-f]{64}$/;
 const LINE_SUBJECT = /^U[0-9a-f]{32}$/;
 const NONCE_FREE_ID = /^[0-9A-Za-z-]{1,64}$/;
 
@@ -59,6 +59,7 @@ export type AdapterDiagnostics = {
 };
 
 type DeliveryRow = {
+  purge_at: number | null;
   delivery_id: string;
   event_id: string;
   reservation_id: string;
@@ -82,7 +83,13 @@ const dateOffset = (date: string, days: number): string => {
   return shifted.toISOString().slice(0, 10);
 };
 
-const withDeadline = async <T>(work: Promise<T>, ms: number): Promise<T> => {
+/** Lowercase hex SHA-256 — the storage form of every link nonce. */
+const digestHex = async (value: string): Promise<string> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -164,7 +171,8 @@ export class AdapterDelivery extends DurableObject<Env> {
           link_version INTEGER NOT NULL,
           created_at TEXT NOT NULL,
           finalized_at TEXT,
-          expires_at INTEGER
+          expires_at INTEGER,
+          purge_at INTEGER
         )
       `);
       sql.exec(`
@@ -183,7 +191,8 @@ export class AdapterDelivery extends DurableObject<Env> {
           status TEXT NOT NULL,
           park_reason TEXT,
           date TEXT NOT NULL,
-          created_at TEXT NOT NULL
+          created_at TEXT NOT NULL,
+          purge_at INTEGER
         )
       `);
       sql.exec(`
@@ -342,6 +351,10 @@ export class AdapterDelivery extends DurableObject<Env> {
     const occurredAtMs = Date.parse(event.occurredAt);
     if (event.generation !== meta.generation) {
       disposition = "canceled";
+    } else if (event.purgeAt <= now) {
+      // The parent reservation data is already gone (or due to go): nothing
+      // derived from it may be created, let alone sent.
+      disposition = "past-retention";
     } else if (
       now + fullCycleBoundS(WORST_CASE_PARTITIONS) * 1000 >
       occurredAtMs + ADAPTER.HANDOFF_TERMINAL_LEAD_S * 1000
@@ -388,8 +401,8 @@ export class AdapterDelivery extends DurableObject<Env> {
           `INSERT INTO deliveries
              (delivery_id, event_id, reservation_id, type, payload_json, link_version,
               retry_key, attempt, next_attempt_at, first_attempt_at, claimed_at, status,
-              park_reason, date, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, NULL, ?, ?)
+              park_reason, date, created_at, purge_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, NULL, ?, ?, ?)
            ON CONFLICT(delivery_id) DO NOTHING`,
           `${event.generation}:${event.eventId}`,
           event.eventId,
@@ -402,11 +415,13 @@ export class AdapterDelivery extends DurableObject<Env> {
           disposition === "held" ? "held" : disposition,
           event.date,
           new Date().toISOString(),
+          event.purgeAt,
         );
       }
     }
     if (disposition === "late-terminal") this.#recordTerminal("late-handoff", event.type);
     if (disposition === "overflow") this.#recordTerminal("overflow", event.type);
+    if (disposition === "past-retention") this.#recordTerminal("past-retention", event.type);
     sql.exec(
       `INSERT INTO accepted_events (event_key, event_id, date, generation, seq, disposition, accepted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -562,6 +577,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     reservationId: string;
     date: string;
     generation: number;
+    purgeAt: number;
   }): Promise<{ ok: true; nonce: string; expiresAt: number } | { ok: false; code: "INACTIVE" }> {
     if (
       typeof input !== "object" ||
@@ -569,14 +585,20 @@ export class AdapterDelivery extends DurableObject<Env> {
       !UUID.test(input.reservationId) ||
       !DATE.test(input.date) ||
       !Number.isSafeInteger(input.generation) ||
-      input.generation < 1
+      input.generation < 1 ||
+      !Number.isSafeInteger(input.purgeAt) ||
+      input.purgeAt <= 0
     ) {
       throw new Error("bad intent input");
     }
     if (!this.#hasSchema()) return { ok: false, code: "INACTIVE" };
-    const bytes = new Uint8Array(16);
+    if (input.purgeAt <= Date.now()) return { ok: false, code: "INACTIVE" };
+    // 256 bits, handed to the customer once and never stored in the clear: the
+    // table keeps only its digest, so a storage read cannot replay a link.
+    const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
     const nonce = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const nonceDigest = await digestHex(nonce);
     const expiresAt = Date.now() + ADAPTER.INTENT_NONCE_TTL_S * 1000;
     await this.#armAlarm(Date.now() + ADAPTER.PROVISIONAL_LINK_TTL_S * 1000);
     return this.ctx.storage.transactionSync(() => {
@@ -590,7 +612,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       sql.exec(
         `INSERT INTO intents (nonce, reservation_id, date, generation, expires_at)
          VALUES (?, ?, ?, ?, ?)`,
-        nonce, input.reservationId, input.date, input.generation, expiresAt,
+        nonceDigest, input.reservationId, input.date, input.generation, expiresAt,
       );
       const existing = sql
         .exec<{ status: string }>(
@@ -603,15 +625,17 @@ export class AdapterDelivery extends DurableObject<Env> {
       if (existing === undefined || existing.status === "provisional") {
         sql.exec(
           `INSERT INTO links
-             (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at)
-           VALUES (?, ?, '', 'provisional', ?, 0, 0, ?, NULL, ?)
+             (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at, purge_at)
+           VALUES (?, ?, '', 'provisional', ?, 0, 0, ?, NULL, ?, ?)
            ON CONFLICT(reservation_id) DO UPDATE SET
              generation = excluded.generation,
              created_at = excluded.created_at,
-             expires_at = excluded.expires_at`,
+             expires_at = excluded.expires_at,
+             purge_at = excluded.purge_at`,
           input.reservationId, input.date, input.generation,
           new Date().toISOString(),
           Date.now() + ADAPTER.PROVISIONAL_LINK_TTL_S * 1000,
+          input.purgeAt,
         );
       }
       return { ok: true as const, nonce, expiresAt };
@@ -629,7 +653,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     const row = this.ctx.storage.sql
       .exec<{ generation: number; expires_at: number }>(
         "SELECT generation, expires_at FROM intents WHERE nonce = ?",
-        input.nonce,
+        await digestHex(input.nonce),
       )
       .toArray()[0];
     return {
@@ -654,7 +678,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     subject: string;
   }): Promise<
     | { ok: true; reservationId: string; replayed: boolean }
-    | { ok: false; code: "INVALID_INTENT" | "LINK_CONFLICT" }
+    | { ok: false; code: "INVALID_INTENT" | "LINK_CONFLICT" | "TEMPORARILY_UNAVAILABLE" }
   > {
     if (
       typeof input !== "object" ||
@@ -665,10 +689,11 @@ export class AdapterDelivery extends DurableObject<Env> {
       return { ok: false, code: "INVALID_INTENT" };
     }
     if (!this.#hasSchema()) return { ok: false, code: "INVALID_INTENT" };
+    const nonceDigest = await digestHex(input.nonce);
     const pre = this.ctx.storage.sql
       .exec<{ reservation_id: string; date: string }>(
         "SELECT reservation_id, date FROM intents WHERE nonce = ?",
-        input.nonce,
+        nonceDigest,
       )
       .toArray()[0];
     if (pre === undefined) {
@@ -679,14 +704,21 @@ export class AdapterDelivery extends DurableObject<Env> {
       return { ok: false, code: "INVALID_INTENT" };
     }
     // Watermark read is a day RPC, so it happens before the local transaction.
-    let watermark = 0;
+    // It is load-bearing: without the day's current sequence there is no fence
+    // between pre-link history and post-link events, and defaulting to zero
+    // would send the customer their own past. A day that cannot answer means
+    // "try again", never "assume nothing has happened yet".
+    let watermark: number;
     try {
       const sequence = await this.env.RESERVATION_DAYS.getByName(
         `single-location:${pre.date}`,
       ).readEventSequence();
+      if (!Number.isSafeInteger(sequence.eventSeq) || sequence.eventSeq < 0) {
+        throw new Error("bad event sequence");
+      }
       watermark = sequence.eventSeq;
     } catch {
-      // A day that cannot answer has no adapter rows to fence; zero is safe.
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     await this.#armAlarm(Date.now());
     return this.ctx.storage.transactionSync(() => {
@@ -695,7 +727,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       const intent = sql
         .exec<{ reservation_id: string; date: string; generation: number; expires_at: number }>(
           "SELECT reservation_id, date, generation, expires_at FROM intents WHERE nonce = ?",
-          input.nonce,
+          nonceDigest,
         )
         .toArray()[0];
       if (
@@ -709,7 +741,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         }
         return { ok: false as const, code: "INVALID_INTENT" as const };
       }
-      sql.exec("DELETE FROM intents WHERE nonce = ?", input.nonce);
+      sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
       const existing = sql
         .exec<{ subject: string; status: string; link_version: number }>(
           "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
@@ -729,10 +761,17 @@ export class AdapterDelivery extends DurableObject<Env> {
       }
       const now = new Date().toISOString();
       const linkVersion = (existing?.link_version ?? 0) + 1;
+      const provisionalPurgeAt =
+        sql
+          .exec<{ purge_at: number | null }>(
+            "SELECT purge_at FROM links WHERE reservation_id = ?",
+            intent.reservation_id,
+          )
+          .toArray()[0]?.purge_at ?? null;
       sql.exec(
         `INSERT INTO links
-           (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at)
-         VALUES (?, ?, ?, 'final', ?, ?, ?, ?, ?, NULL)
+           (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at, purge_at)
+         VALUES (?, ?, ?, 'final', ?, ?, ?, ?, ?, NULL, ?)
          ON CONFLICT(reservation_id) DO UPDATE SET
            subject = excluded.subject,
            status = 'final',
@@ -740,9 +779,10 @@ export class AdapterDelivery extends DurableObject<Env> {
            watermark_seq = excluded.watermark_seq,
            link_version = excluded.link_version,
            finalized_at = excluded.finalized_at,
-           expires_at = NULL`,
+           expires_at = NULL,
+           purge_at = excluded.purge_at`,
         intent.reservation_id, intent.date, input.subject, intent.generation,
-        watermark, linkVersion, now, now,
+        watermark, linkVersion, now, now, provisionalPurgeAt,
       );
       sql.exec(
         `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, 1, ?)
@@ -811,6 +851,9 @@ export class AdapterDelivery extends DurableObject<Env> {
       sql.exec("DELETE FROM deliveries WHERE reservation_id = ?", input.reservationId);
       sql.exec("DELETE FROM links WHERE reservation_id = ?", input.reservationId);
       sql.exec("DELETE FROM intents WHERE reservation_id = ?", input.reservationId);
+      sql.exec(
+        `DELETE FROM subjects WHERE subject NOT IN (SELECT subject FROM links WHERE status = 'final')`,
+      );
       return { ok: true as const, existed };
     });
   }
@@ -894,6 +937,20 @@ export class AdapterDelivery extends DurableObject<Env> {
         );
         if (inserted.rowsWritten === 0) {
           duplicates += 1;
+          continue;
+        }
+        // Deliverability is only worth persisting for a subject this
+        // installation can actually send to: an unlinked follower leaves
+        // nothing behind but its webhookEventId in the dedup table.
+        const linked =
+          sql
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) AS n FROM links WHERE subject = ? AND status = 'final'",
+              event.userId,
+            )
+            .toArray()[0]?.n ?? 0;
+        if (linked === 0) {
+          applied += 1;
           continue;
         }
         const current = sql
@@ -1007,10 +1064,15 @@ export class AdapterDelivery extends DurableObject<Env> {
     generation: number;
     watermark: number;
     snapshot?: AdapterSnapshot;
+    // Names the saga operation this activation belongs to. A re-driven
+    // operation reports the activation it already performed instead of
+    // burning another generation.
+    operationId?: string;
   }): Promise<{ ok: true; meta: AdapterDeliveryMeta } | { ok: false; code: "STALE_GENERATION" }> {
     if (
       typeof input !== "object" ||
       input === null ||
+      (input.operationId !== undefined && !UUID.test(input.operationId)) ||
       !Number.isSafeInteger(input.generation) ||
       input.generation < 1 ||
       !Number.isSafeInteger(input.watermark) ||
@@ -1027,7 +1089,31 @@ export class AdapterDelivery extends DurableObject<Env> {
     await this.#armAlarm(Date.now() + ADAPTER.SWEEP_REARM_DELAY_S * 1000);
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
+      const sql = this.ctx.storage.sql;
+      if (input.operationId !== undefined) {
+        const previous = sql
+          .exec<{ value: number }>(
+            "SELECT value FROM counters WHERE name = ?",
+            `activation:${input.operationId}`,
+          )
+          .toArray()[0];
+        if (previous !== undefined) {
+          // Same operation, already activated: report that activation rather
+          // than minting a second generation for one operator command.
+          return meta.state === "active" && meta.generation === previous.value
+            ? { ok: true as const, meta }
+            : { ok: false as const, code: "STALE_GENERATION" as const };
+        }
+      }
       if (input.generation <= meta.highWater) return { ok: false as const, code: "STALE_GENERATION" as const };
+      if (input.operationId !== undefined) {
+        sql.exec(
+          `INSERT INTO counters (name, value) VALUES (?, ?)
+           ON CONFLICT(name) DO UPDATE SET value = excluded.value`,
+          `activation:${input.operationId}`,
+          input.generation,
+        );
+      }
       this.ctx.storage.sql.exec(
         `UPDATE meta SET state = 'active', generation = ?, high_water = ?, watermark = ?,
                 updated_at = ?, snapshot_json = ?, begin_disable_at = NULL,
@@ -1196,8 +1282,21 @@ export class AdapterDelivery extends DurableObject<Env> {
       "DELETE FROM webhook_dedup WHERE seen_at < ?",
       now - ADAPTER.WEBHOOK_DEDUP_TTL_S * 1000,
     );
-    // No reservation-scoped row may outlive the largest configurable
-    // retention window; the real purge boundary is enforced day-side.
+    // Reservation-scoped rows die with their parent: every one carries the
+    // partition's own purgeAt, so a linked LINE user ID can never outlive the
+    // reservation that justified holding it. The date floor below stays as a
+    // backstop for rows that predate the stamp or somehow lack one.
+    const expired = sql
+      .exec<{ delivery_id: string; type: string }>(
+        "SELECT delivery_id, type FROM deliveries WHERE purge_at IS NOT NULL AND purge_at <= ?",
+        now,
+      )
+      .toArray();
+    for (const row of expired) {
+      this.#recordTerminal("retention", row.type);
+      sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+    }
+    sql.exec("DELETE FROM links WHERE purge_at IS NOT NULL AND purge_at <= ?", now);
     const boundary = dateOffset(
       new Date(now).toISOString().slice(0, 10),
       -ADAPTER.SWEEP_PAST_DAYS,
@@ -1214,6 +1313,11 @@ export class AdapterDelivery extends DurableObject<Env> {
     }
     sql.exec("DELETE FROM links WHERE date < ?", boundary);
     sql.exec("DELETE FROM accepted_events WHERE date < ?", boundary);
+    // A LINE user ID is held only to reach a linked reservation. Once the last
+    // link for a subject is gone, so is the reason to remember the subject.
+    sql.exec(
+      `DELETE FROM subjects WHERE subject NOT IN (SELECT subject FROM links WHERE status = 'final')`,
+    );
   }
 
   /** One bounded send pass: claim, mint, push, settle. Active state only. */
@@ -1247,6 +1351,13 @@ export class AdapterDelivery extends DurableObject<Env> {
           )
           .toArray()[0];
         if (fresh === undefined) return null;
+        // Last check before the message leaves: the parent reservation's
+        // retention deadline is a send boundary, not just a prune boundary.
+        if (fresh.purge_at !== null && fresh.purge_at <= now) {
+          this.#recordTerminal("past-retention", fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return null;
+        }
         const link = sql
           .exec<{ subject: string; status: string; link_version: number }>(
             "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
@@ -1308,8 +1419,10 @@ export class AdapterDelivery extends DurableObject<Env> {
         if (push.ok) outcome = { kind: "sent" };
         else if (push.code === "RETRYABLE") {
           outcome = { kind: "retryable", status: push.status };
-        } else if (push.code === "QUOTA_REFUSED") {
-          outcome = { kind: "terminal", reason: "quota-refused", status: push.status };
+        } else if (push.code === "CONFIG_REJECTED") {
+          // Credentials the operator must fix: park it visibly instead of
+          // spending the retry ladder on the same rejection.
+          outcome = { kind: "awaiting" };
         } else {
           outcome = { kind: "terminal", reason: "rejected", status: push.status };
         }
@@ -1337,15 +1450,28 @@ export class AdapterDelivery extends DurableObject<Env> {
           return;
         }
         if (outcome.kind === "awaiting") {
+          // A rejection of the credentials themselves still counts as an
+          // attempt: without that, the five-minute configuration recheck would
+          // re-push the same doomed message until the retry-key window closed.
+          const configAttempts = fresh.attempt + 1;
+          if (configAttempts >= ADAPTER.RETRY_OFFSETS_S.length) {
+            this.#recordTerminal("configuration-lost", fresh.type);
+            sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+            return;
+          }
           sql.exec(
-            "UPDATE deliveries SET status = 'awaiting-configuration', claimed_at = NULL WHERE delivery_id = ?",
+            `UPDATE deliveries SET status = 'awaiting-configuration', claimed_at = NULL,
+                    attempt = ? WHERE delivery_id = ?`,
+            configAttempts,
             fresh.delivery_id,
           );
           return;
         }
         const attempts = fresh.attempt + 1;
         if (attempts >= ADAPTER.RETRY_OFFSETS_S.length) {
-          this.#recordTerminal("retry-exhausted", fresh.type);
+          // The status of the attempt that used up the ladder is what tells an
+          // operator whether this was the monthly cap (429) or an outage (5xx).
+          this.#recordTerminal("retry-exhausted", fresh.type, outcome.status);
           sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
           return;
         }
@@ -1395,25 +1521,23 @@ export class AdapterDelivery extends DurableObject<Env> {
       const stub = this.env.RESERVATION_DAYS.getByName(`single-location:${date}`);
       try {
         const batch = await withDeadline(
-          Promise.resolve(stub.drainOutbox({ consumer: "line", limit: ADAPTER.OUTBOX_DRAIN_BATCH })),
+          stub.drainOutbox({ consumer: "line", limit: ADAPTER.OUTBOX_DRAIN_BATCH }),
           ADAPTER.SWEEP_RPC_DEADLINE_MS,
         );
         if (batch.events.length > 0) {
           await this.#armAlarm(Date.now());
           this.#acceptBatch(batch.events);
           await withDeadline(
-            Promise.resolve(
-              stub.ackOutbox({
-                consumer: "line",
-                eventIds: batch.events.map(({ eventId }) => eventId),
-              }),
-            ),
+            stub.ackOutbox({
+              consumer: "line",
+              eventIds: batch.events.map(({ eventId }) => eventId),
+            }),
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );
         }
         if (this.#readMeta().state === "deactivating") {
           await withDeadline(
-            Promise.resolve(stub.purgeConsumer({ consumer: "line" })),
+            stub.purgeConsumer({ consumer: "line" }),
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );
         }

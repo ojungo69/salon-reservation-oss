@@ -28,7 +28,7 @@ const readIntent = () => {
       typeof parsed !== "object" ||
       parsed === null ||
       typeof parsed.nonce !== "string" ||
-      !/^[0-9a-f]{32}$/.test(parsed.nonce) ||
+      !/^[0-9a-f]{64}$/.test(parsed.nonce) ||
       !Number.isSafeInteger(parsed.expiresAt)
     ) {
       return null;
@@ -38,23 +38,6 @@ const readIntent = () => {
   } catch {
     return null;
   }
-};
-
-const api = async (path, body) => {
-  const response = await fetch(path, {
-    method: "POST",
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  let parsed = null;
-  try {
-    parsed = await response.json();
-  } catch {
-    // A non-JSON reply is treated as a transient failure below.
-  }
-  return { ok: response.ok, status: response.status, body: parsed };
 };
 
 const run = async () => {
@@ -114,10 +97,20 @@ const run = async () => {
   }
 
   show("連携を確認しています。");
-  const result = await api("/api/adapters/line/link", {
-    nonce: intent.nonce,
-    idToken,
+  const response = await fetch("/api/adapters/line/link", {
+    method: "POST",
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ nonce: intent.nonce, idToken }),
   });
+  let parsed = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    // A non-JSON reply is handled as a transient failure below.
+  }
+  const result = { ok: response.ok, status: response.status, body: parsed };
   try {
     sessionStorage.removeItem(INTENT_STORAGE_KEY);
   } catch {
@@ -142,4 +135,10 @@ const run = async () => {
   show("現在連携を完了できません。しばらく待ってから、予約管理ページよりお試しください。", true);
 };
 
-void run();
+run().catch(() => {
+  // 通信断・応答の破損・LIFF SDK の例外など、想定外の失敗でも操作不能にはしない。
+  show(
+    "連携を完了できませんでした。通信環境を確認して、予約管理ページからもう一度お進みください。",
+    true,
+  );
+});

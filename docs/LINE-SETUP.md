@@ -89,21 +89,25 @@ curl -sS https://<your-host>/api/admin/line/enable \
 the status response. Repeating a command with the same `commandId` replays
 the recorded outcome; changing identifiers requires disable → enable.
 
-The public origin customers use is captured at enable time and appears as
-the management link inside notification messages — run the enable command
-against the customer-facing domain, not a preview URL.
+The management link inside each notification is built from the installation's
+configured public hostname (`allowedHostname`). Enabling fails with
+`ORIGIN_UNCONFIGURED` until that setting has been saved; the URL that carries
+the enable command is not captured or used as the message origin.
 
 ## ⚠️ The free-plan message quota
 
 The Messaging API **free plan sends at most 200 messages per month, and no
-additional messages can be purchased on it — delivery stops at the cap**
-(quota-refused sends are recorded visibly in the delivery diagnostics, never
-silently dropped). A salon with a few hundred bookings a month will exceed
-this. Check the current plans and pricing for your region in the LINE
-Official Account documentation before relying on notifications, and treat
-LINE as a convenience channel rather than the only record: every state
-change remains visible on the customer's booking-management page regardless
-of message delivery.
+additional messages can be purchased on it — delivery stops at the cap**.
+LINE returns HTTP 429 for the monthly cap and temporary rate limits alike,
+so the adapter retries it through the normal retry ladder. If no attempt
+succeeds, the delivery ends as `retry-exhausted`, with the HTTP status attached
+to its entry in the diagnostics ledger rather than recorded as a separate
+quota outcome. A salon with a few hundred bookings a month will exceed this.
+Check the current plans and pricing for your region in the LINE Official
+Account documentation before relying on notifications, and treat LINE as a
+convenience channel rather than the only record: every state change remains
+visible on the customer's booking-management page regardless of message
+delivery.
 
 ## Verifying a live channel (operator-side only)
 

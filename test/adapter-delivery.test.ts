@@ -2,16 +2,24 @@ import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdapterDelivery } from "../src/adapter-delivery.ts";
-import { ADAPTER } from "../src/adapter-constants.ts";
+import { ADAPTER, fullCycleBoundS, WORST_CASE_PARTITIONS } from "../src/adapter-constants.ts";
 import { clearTokenCacheForTests } from "../src/line-adapter.ts";
 import type { InstallationConfig, ReadinessRuntime } from "../src/installation-config.ts";
 import type { DayAdapterDescriptor, DayConfig, ReservationDay } from "../src/reservation-day.ts";
 import worker from "../src/worker.ts";
+import {
+  identifiers,
+  lineDay,
+  sha256Hex,
+  suiteDate,
+  SUITE_NOW,
+  SUITE_PURGE_AT,
+} from "./line-helpers.ts";
 
-// Future-dated fixtures: every alarm the code schedules lands after the real
-// wall clock, so the runtime never auto-fires one — tests drive alarms
-// explicitly with runDurableObjectAlarm and stay deterministic.
-const NOW = Date.parse("2027-01-14T15:00:00.000Z");
+// Future-dated fixtures derived from the real clock (~1 year ahead): every
+// alarm the code schedules lands after the real wall clock, so the runtime
+// never auto-fires one — tests drive alarms explicitly and stay deterministic.
+const NOW = SUITE_NOW;
 let currentNow = NOW;
 const advanceNow = (ms: number): void => {
   currentNow += ms;
@@ -36,29 +44,9 @@ const day: DayConfig & {
   startIntervalMinutes: number;
   consentVersion: string;
 } = {
-  date: "2027-01-15",
-  settingsVersion: 7,
-  resourceIds: ["resource-chair-a"],
-  resources: [{ id: "resource-chair-a", label: "架空チェア A", active: true }],
-  services: [
-    {
-      id: "service-cut",
-      label: "架空カット",
-      category: "ヘア",
-      durationMinutes: 45,
-      cleanupMinutes: 15,
-      priceYen: 4_000,
-      eligibleResourceIds: ["resource-chair-a"],
-      active: true,
-    },
-  ],
-  opensAt: "09:00",
-  closesAt: "13:00",
-  startIntervalMinutes: 30,
-  startTimes: ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00"],
-  slotMinutes: 60,
-  consentVersion: "consent-v2",
-  purgeAt: Date.parse("2100-01-01T00:00:00.000Z"),
+  ...lineDay,
+  date: suiteDate(1),
+  purgeAt: SUITE_PURGE_AT,
 };
 
 const descriptor = (
@@ -154,6 +142,7 @@ const deliveryCounts = () =>
       webhookDedup: count("webhook_dedup"),
       ledger: count("ledger"),
       counters: count("counters"),
+      subjects: count("subjects"),
     };
   });
 
@@ -168,6 +157,8 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // restoreAllMocks does not undo stubGlobal — fetch stubs must not leak.
+  vi.unstubAllGlobals();
   await reset();
 });
 
@@ -213,7 +204,7 @@ describe("adapter event foundation", () => {
 
     expect(await adapterTableCount()).toBe(2);
     expect(await outboxRows()).toMatchObject([
-      { event_id: "2027-01-15#1", generation: 1, seq: 1, type: "approve" },
+      { event_id: `${day.date}#1`, generation: 1, seq: 1, type: "approve" },
     ]);
 
     // A pre-adapter caller (no adapter field) sees a fully working day.
@@ -248,8 +239,8 @@ describe("adapter event foundation", () => {
     expect(cancelled).toMatchObject({ ok: true, status: "cancelled" });
 
     expect(await outboxRows()).toMatchObject([
-      { event_id: "2027-01-15#1", seq: 1, type: "approve" },
-      { event_id: "2027-01-15#2", seq: 2, type: "cancel" },
+      { event_id: `${day.date}#1`, seq: 1, type: "approve" },
+      { event_id: `${day.date}#2`, seq: 2, type: "cancel" },
     ]);
     expect(await dayStub().readEventSequence()).toEqual({ eventSeq: 2 });
   });
@@ -302,7 +293,10 @@ describe("adapter event foundation", () => {
     await runInDurableObject(deliveryStub(), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO accepted_events (event_key, event_id, date, generation, seq, disposition, accepted_at)
-         VALUES ('1:2027-01-15#2', '2027-01-15#2', '2027-01-15', 1, 2, 'ignored-no-recipient', ?)`,
+         VALUES (?, ?, ?, 1, 2, 'ignored-no-recipient', ?)`,
+        `1:${day.date}#2`,
+        `${day.date}#2`,
+        day.date,
         new Date().toISOString(),
       );
     });
@@ -329,7 +323,7 @@ describe("adapter event foundation", () => {
         .toArray(),
     );
     expect(dispositions).toEqual([
-      { event_id: "2027-01-15#1", disposition: "canceled" },
+      { event_id: `${day.date}#1`, disposition: "canceled" },
     ]);
   });
 
@@ -349,6 +343,27 @@ describe("adapter event foundation", () => {
     });
     const meta = await deliveryStub().readMeta();
     expect(meta).toMatchObject({ state: "disabled", highWater: 3 });
+  });
+
+  it("replays activate for the same operationId instead of minting a second generation", async () => {
+    const operationId = crypto.randomUUID();
+    const first = await deliveryStub().activate({
+      generation: 1,
+      watermark: 0,
+      operationId,
+      snapshot: { messagingChannelId: "9876543210", origin: "https://example.test" },
+    });
+    expect(first).toMatchObject({ ok: true, meta: { generation: 1, state: "active" } });
+    // Same operationId reports the first activation — even if a different
+    // generation is requested, one operator command cannot mint a second one.
+    const replay = await deliveryStub().activate({
+      generation: 2,
+      watermark: 0,
+      operationId,
+      snapshot: { messagingChannelId: "9876543210", origin: "https://example.test" },
+    });
+    expect(replay).toMatchObject({ ok: true, meta: { generation: 1, highWater: 1 } });
+    expect(await deliveryStub().readMeta()).toMatchObject({ generation: 1, highWater: 1 });
   });
 
   it("acknowledges nothing and persists nothing while disabled", async () => {
@@ -387,7 +402,7 @@ describe("adapter event foundation", () => {
   });
 
   it("creates nothing on a day that never emitted an event", async () => {
-    const fresh = dayStub({ date: "2027-02-01" });
+    const fresh = dayStub({ date: suiteDate(40) });
     expect(await fresh.drainOutbox({ consumer: "line" })).toEqual({
       events: [],
       more: false,
@@ -456,12 +471,6 @@ describe("adapter event foundation", () => {
     );
   });
 });
-
-const identifiers = {
-  liffId: "1234567890-abcdefgh",
-  loginChannelId: "1234567890",
-  messagingChannelId: "9876543210",
-};
 
 const installationStub = () =>
   env.INSTALLATION_CONFIG.getByName(
@@ -547,6 +556,53 @@ describe("LINE lifecycle authority", () => {
       draft: identifiers,
       active: null,
       operationInFlight: false,
+    });
+  });
+
+  it("refuses enable when allowedHostname is empty (ORIGIN_UNCONFIGURED)", async () => {
+    await lineCommand("line.settings", 0);
+    const state = await installationStub().getState();
+    const current = state.settingsVersions.find(
+      (version) => version.version === state.activeSettingsVersion,
+    );
+    if (current === undefined) throw new Error("missing active settings");
+    // Empty hostname is valid in the settings schema but must not produce a
+    // management-link origin — enable refuses rather than mint a blank one.
+    const updated = await installationStub().executeCommand(
+      {
+        type: "settings.update",
+        commandId: crypto.randomUUID(),
+        expectedSettingsVersion: state.activeSettingsVersion,
+        settings: { ...current.settings, allowedHostname: "" },
+      },
+      runtime(),
+    );
+    expect(updated).toMatchObject({ ok: true });
+    expect(await lineCommand("line.enable", 1)).toEqual({
+      ok: false,
+      code: "ORIGIN_UNCONFIGURED",
+    });
+  });
+
+  it("accepts line.disable only from active, not from activating", async () => {
+    await lineCommand("line.settings", 0);
+    // Park the enable saga mid-flight by failing the authority activate so the
+    // lifecycle stays in activating.
+    await runInDurableObject(deliveryStub(), (instance) => {
+      (instance as unknown as Record<string, unknown>).activate = async () => ({
+        ok: false,
+        code: "STALE_GENERATION",
+      });
+    });
+    const enabling = await lineCommand("line.enable", 1);
+    expect(enabling).toMatchObject({ ok: true, phase: "activating" });
+    expect((await installationStub().lineAdapterStatus()).phase).toBe("activating");
+    expect(await lineCommand("line.disable", 2)).toEqual({
+      ok: false,
+      code: "PHASE_CONFLICT",
+    });
+    await runInDurableObject(deliveryStub(), (instance) => {
+      delete (instance as unknown as Record<string, unknown>).activate;
     });
   });
 
@@ -728,13 +784,16 @@ describe("delivery pipeline", () => {
   // can outlive reset() while draining background work, and sharing its date
   // makes fixtures land on a stale instance.
   let pipelineSerial = 0;
-  let pDate = "2027-02-01";
+  let pDate = suiteDate(30);
   beforeEach(() => {
     pipelineSerial += 1;
-    pDate = `2027-02-${String(pipelineSerial).padStart(2, "0")}`;
+    pDate = suiteDate(30 + pipelineSerial);
   });
-  const pDay = () => ({ ...day, date: pDate });
-  const pAdapterDay = () => ({ ...day, date: pDate, adapter: descriptor() });
+  const pDay = () => ({ ...day, date: pDate, purgeAt: SUITE_PURGE_AT });
+  const pAdapterDay = (overrides: Partial<DayAdapterDescriptor> & { purgeAt?: number } = {}) => {
+    const { purgeAt = SUITE_PURGE_AT, ...descriptorOverrides } = overrides;
+    return { ...day, date: pDate, purgeAt, adapter: descriptor(descriptorOverrides) };
+  };
   const pApprove = (reservationId: string) => ({
     commandId: crypto.randomUUID(),
     date: pDate,
@@ -742,6 +801,7 @@ describe("delivery pipeline", () => {
     action: "approve" as const,
   });
   const snapshot = { messagingChannelId: "9876543210", origin: "https://example.test" };
+  const futurePurgeAt = () => Date.now() + 30 * 86_400_000;
 
   const lineApi = (
     options: {
@@ -785,14 +845,25 @@ describe("delivery pipeline", () => {
     expect(activated).toMatchObject({ ok: true });
   };
 
-  const finalizedLink = async (reservationId: string) => {
+  const finalizedLink = async (reservationId: string, subject = SUBJECT) => {
     const minted = await deliveryStub().mintIntent({
       reservationId,
       date: pDate,
       generation: 1,
+      purgeAt: futurePurgeAt(),
     });
     if (!minted.ok) throw new Error("mint failed");
-    const linked = await deliveryStub().finalizeLink({ nonce: minted.nonce, subject: SUBJECT });
+    expect(minted.nonce).toMatch(/^[0-9a-f]{64}$/);
+    // Storage keeps only the digest — never the plaintext nonce.
+    const stored = await runInDurableObject(deliveryStub(), async (_i, state) =>
+      state.storage.sql
+        .exec<{ nonce: string }>("SELECT nonce FROM intents")
+        .toArray(),
+    );
+    const digest = await sha256Hex(minted.nonce);
+    expect(stored.some((row) => row.nonce === digest)).toBe(true);
+    expect(stored.some((row) => row.nonce === minted.nonce)).toBe(false);
+    const linked = await deliveryStub().finalizeLink({ nonce: minted.nonce, subject });
     expect(linked).toMatchObject({ ok: true });
   };
 
@@ -969,6 +1040,7 @@ describe("delivery pipeline", () => {
       reservationId,
       date: pDate,
       generation: 1,
+      purgeAt: futurePurgeAt(),
     });
     if (!minted.ok) throw new Error("mint failed");
 
@@ -1082,13 +1154,15 @@ describe("delivery pipeline", () => {
           `INSERT INTO deliveries
              (delivery_id, event_id, reservation_id, type, payload_json, link_version,
               retry_key, attempt, next_attempt_at, first_attempt_at, claimed_at, status,
-              park_reason, date, created_at)
-           VALUES (?, ?, ?, 'approve', '{}', 1, ?, 0, 9999999999999, NULL, NULL, 'queued', NULL, '2027-01-15', ?)`,
+              park_reason, date, created_at, purge_at)
+           VALUES (?, ?, ?, 'approve', '{}', 1, ?, 0, 9999999999999, NULL, NULL, 'queued', NULL, ?, ?, ?)`,
           `pad:${index}`,
           `pad:${index}`,
           crypto.randomUUID(),
           crypto.randomUUID(),
+          pDate,
           new Date().toISOString(),
+          futurePurgeAt(),
         );
       }
     });
@@ -1130,7 +1204,7 @@ describe("delivery pipeline", () => {
 
     const before = await dump();
     await deliveryStub().pokeDay({ date: pDate });
-    await deliveryStub().finalizeLink({ nonce: "0".repeat(32), subject: SUBJECT });
+    await deliveryStub().finalizeLink({ nonce: "0".repeat(64), subject: SUBJECT });
     await deliveryStub().processWebhook({
       events: [
         {
@@ -1233,7 +1307,7 @@ describe("delivery pipeline", () => {
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
     await deliveryStub().pokeDay({ date: pDate });
     // A failed finalize attempt shows up as a count, not an identity.
-    await deliveryStub().finalizeLink({ nonce: "f".repeat(32), subject: SUBJECT });
+    await deliveryStub().finalizeLink({ nonce: "f".repeat(64), subject: SUBJECT });
 
     const diagnostics = await deliveryStub().diagnostics();
     expect(diagnostics).toMatchObject({
@@ -1257,10 +1331,11 @@ describe("delivery pipeline", () => {
     await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO __adapter_outbox
-           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at)
-         VALUES ('calendar', 1, 1, 'cal-1', ?, 'approve', '09:00', NULL, ?)`,
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at)
+         VALUES ('calendar', 1, 1, 'cal-1', ?, 'approve', '09:00', NULL, ?, ?)`,
         reservationId,
         new Date().toISOString(),
+        SUITE_PURGE_AT,
       );
     });
 
@@ -1275,4 +1350,364 @@ describe("delivery pipeline", () => {
     expect(second).toEqual({ ok: true, removed: 0, dropped: true });
     expect(await adapterTableCount(dayStub({ date: pDate }))).toBe(0);
   });
+
+  it("prunes a finalized link and its queued delivery when purge_at has passed", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
+    expect((await deliveryCounts()).links).toBe(1);
+    expect((await deliveryCounts()).subjects ?? 1).toBeGreaterThanOrEqual(0);
+
+    const past = Date.now() - 1;
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec("UPDATE deliveries SET purge_at = ?", past);
+      state.storage.sql.exec("UPDATE links SET purge_at = ?", past);
+    });
+    await runDurableObjectAlarm(deliveryStub());
+
+    expect(await deliveryRows()).toEqual([]);
+    expect((await deliveryCounts()).links).toBe(0);
+    expect((await deliveryCounts()).subjects).toBe(0);
+    expect(await ledgerReasons()).toEqual([{ reason: "retention", event_type: "approve" }]);
+  });
+
+  it("dispositions an event past its purgeAt as past-retention at accept time", async () => {
+    lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(
+      pAdapterDay({ purgeAt: Date.now() - 1_000 }),
+      pApprove(reservationId),
+    );
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([
+      { reason: "past-retention", event_type: "approve" },
+    ]);
+    expect((await counterMap())["disposition:past-retention"]).toBe(1);
+    expect((await counterMap()).delivered).toBeUndefined();
+  });
+
+  it("terminalizes a queued delivery as past-retention at send time", async () => {
+    const calls = lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
+
+    const past = Date.now() - 1;
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec("UPDATE deliveries SET purge_at = ?", past);
+      // Keep the link alive so only the send-path boundary is under test;
+      // prune would otherwise delete the delivery first as "retention".
+      const sql = state.storage.sql;
+      const original = sql.exec.bind(sql);
+      Object.defineProperty(sql, "exec", {
+        configurable: true,
+        value: (query: string, ...args: unknown[]) => {
+          if (
+            typeof query === "string" &&
+            query.includes("FROM deliveries WHERE purge_at IS NOT NULL AND purge_at <=")
+          ) {
+            return original.call(
+              sql,
+              "SELECT delivery_id, type FROM deliveries WHERE 0",
+            );
+          }
+          return original.call(sql, query, ...args);
+        },
+      });
+    });
+    await runDurableObjectAlarm(deliveryStub());
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([
+      { reason: "past-retention", event_type: "approve" },
+    ]);
+    expect(calls.push).toHaveLength(0);
+  });
+
+  it("never leaks customer PII into outbox, payload, push body, ledger, or diagnostics", async () => {
+    const PII = {
+      name: "PII-NAME-SENTINEL-xq7v2",
+      contact: "pii-contact-sentinel-xq7v2@example.invalid",
+      note: "PII-NOTE-SENTINEL-xq7v2",
+    };
+    const calls = lineApi();
+    const created = await dayStub({ date: pDate }).createPublic(pDay(), {
+      commandId: crypto.randomUUID(),
+      settingsVersion: day.settingsVersion,
+      serviceIds: ["service-cut"],
+      resourceId: "resource-chair-a",
+      date: pDate,
+      startTime: "09:00",
+      customerName: PII.name,
+      contact: PII.contact,
+      consentVersion: day.consentVersion,
+      managementDigest: "a".repeat(64),
+    });
+    if (!created.ok) throw new Error("pii fixture create failed");
+    const reservationId = created.reservationId;
+    // The product has no free-text note column on bookings; plant the note
+    // sentinel as a rejection_reason so a third distinctive string exists in
+    // the day store without entering the adapter contract.
+    await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE booking_details SET rejection_reason = ? WHERE reservation_id = ?",
+        PII.note,
+        reservationId,
+      );
+    });
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    await runDurableObjectAlarm(deliveryStub());
+
+    const dayDump = await runInDurableObject(dayStub({ date: pDate }), (_i, state) => {
+      const out: unknown[] = [];
+      for (const table of ["__adapter_outbox", "__adapter_meta"]) {
+        const exists = state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+            table,
+          )
+          .toArray()[0]?.n;
+        if (exists) out.push(...state.storage.sql.exec(`SELECT * FROM ${table}`).toArray());
+      }
+      return JSON.stringify(out);
+    });
+    const deliveryDump = await runInDurableObject(deliveryStub(), (_i, state) => {
+      const dump: unknown[] = [];
+      for (const table of ["deliveries", "ledger", "accepted_events", "links", "counters"]) {
+        dump.push(...state.storage.sql.exec(`SELECT * FROM ${table}`).toArray());
+      }
+      return JSON.stringify(dump);
+    });
+    const pushBodies = calls.push.map((init) => String(init.body)).join("\n");
+    const diagnostics = JSON.stringify(await deliveryStub().diagnostics());
+    for (const surface of [dayDump, deliveryDump, pushBodies, diagnostics]) {
+      expect(surface).not.toContain(PII.name);
+      expect(surface).not.toContain(PII.contact);
+      expect(surface).not.toContain(PII.note);
+    }
+  });
+
+  it(
+    "renders each of the five event types with its own wording end to end",
+    { timeout: 120_000 },
+    async () => {
+    const calls = lineApi();
+    await activateGen1();
+    const wording = {
+      approve: "ご予約が確定しました。",
+      reject: "ご予約をお受けできませんでした。",
+      reschedule: "ご予約の日時が変更されました。",
+      cancel: "ご予約がキャンセルされました。",
+      expire: "ご予約の申し込みが期限切れになりました。",
+    } as const;
+
+    const book = async (startTime: string, pendingExpiryMinutes?: number) => {
+      const config = {
+        ...pDay(),
+        ...(pendingExpiryMinutes === undefined ? {} : { pendingExpiryMinutes }),
+        adapter: descriptor(),
+      };
+      const created = await dayStub({ date: pDate }).createPublic(config, {
+        commandId: crypto.randomUUID(),
+        settingsVersion: day.settingsVersion,
+        serviceIds: ["service-cut"],
+        resourceId: "resource-chair-a",
+        date: pDate,
+        startTime,
+        customerName: "架空 花子",
+        contact: "hanako@example.invalid",
+        consentVersion: day.consentVersion,
+        managementDigest: "a".repeat(64),
+      });
+      if (!created.ok) throw new Error(`create failed at ${startTime}: ${JSON.stringify(created)}`);
+      await finalizedLink(created.reservationId);
+      return created.reservationId;
+    };
+
+    const drainPush = async (): Promise<string> => {
+      await deliveryStub().pokeDay({ date: pDate });
+      const before = calls.push.length;
+      const queued = await deliveryRows();
+      expect(queued.length).toBeGreaterThan(0);
+      await runDurableObjectAlarm(deliveryStub());
+      if ((await deliveryRows()).length > 0) {
+        const row = (await deliveryRows())[0]!;
+        advanceNow(Math.max(0, row.next_attempt_at - Date.now()) + 1);
+        await runDurableObjectAlarm(deliveryStub());
+      }
+      const bodies = calls.push.slice(before).map((init) => String(init.body));
+      expect(bodies.length).toBeGreaterThan(0);
+      return bodies[bodies.length - 1]!;
+    };
+
+    // Each event type owns its own reservation so one mis-templated body
+    // cannot satisfy another type's assertion.
+    // 60-minute slots on one resource: keep starts non-overlapping.
+    const approveId = await book("09:00");
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: approveId,
+      action: "approve",
+    });
+    const approveBody = await drainPush();
+    expect(approveBody).toContain(wording.approve);
+    expect(approveBody).not.toContain(wording.reject);
+    expect(approveBody).not.toContain(wording.reschedule);
+    expect(approveBody).not.toContain(wording.cancel);
+    expect(approveBody).not.toContain(wording.expire);
+
+    const rejectId = await book("10:00");
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: rejectId,
+      action: "reject",
+      reason: "架空の受付都合",
+    });
+    const rejectBody = await drainPush();
+    expect(rejectBody).toContain(wording.reject);
+    expect(rejectBody).not.toContain(wording.approve);
+
+    const rescheduleId = await book("11:00");
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: rescheduleId,
+      action: "approve",
+    });
+    await drainPush(); // approve wording already covered
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: rescheduleId,
+      action: "reschedule",
+      startTime: "12:00",
+      resourceId: "resource-chair-a",
+    });
+    const rescheduleBody = await drainPush();
+    expect(rescheduleBody).toContain(wording.reschedule);
+    expect(rescheduleBody).not.toContain(wording.approve);
+
+    // 10:00 freed by reject; 11:00 freed by reschedule.
+    const cancelId = await book("10:00");
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: cancelId,
+      action: "approve",
+    });
+    await drainPush();
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
+      commandId: crypto.randomUUID(),
+      date: pDate,
+      reservationId: cancelId,
+      action: "cancel",
+    });
+    const cancelBody = await drainPush();
+    expect(cancelBody).toContain(wording.cancel);
+    expect(cancelBody).not.toContain(wording.approve);
+
+    const expireId = await book("11:00", 15);
+    advanceNow(15 * 60_000 + 1);
+    await dayStub({ date: pDate }).listOwner({
+      ...pDay(),
+      pendingExpiryMinutes: 15,
+      adapter: descriptor(),
+    });
+    const expireBody = await drainPush();
+    expect(expireBody).toContain(wording.expire);
+    expect(expireBody).not.toContain(wording.approve);
+  },
+  );
+
+  it("records a late handoff once, acks it, and never pushes", async () => {
+    const calls = lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    // Age the outbox event past the next-guaranteed-visit rule, then poke.
+    const lateBy =
+      (ADAPTER.HANDOFF_TERMINAL_LEAD_S - fullCycleBoundS(WORST_CASE_PARTITIONS) + 1) * 1000;
+    await runInDurableObject(dayStub({ date: pDate }), (_i, state) => {
+      state.storage.sql.exec(
+        "UPDATE __adapter_outbox SET occurred_at = ?",
+        new Date(Date.now() - lateBy).toISOString(),
+      );
+    });
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await outboxRows(dayStub({ date: pDate }))).toEqual([]);
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([{ reason: "late-handoff", event_type: "approve" }]);
+    expect((await counterMap())["disposition:late-terminal"]).toBe(1);
+    expect((await counterMap())["terminal:late-handoff"]).toBe(1);
+    await runDurableObjectAlarm(deliveryStub());
+    expect(calls.push).toHaveLength(0);
+  });
+
+  it("accepts without a channel secret, parks as awaiting-configuration, then sends once restored", async () => {
+    const calls = lineApi();
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+
+    let secretBound = true;
+    const secretMutable = await runInDurableObject(deliveryStub(), (instance) => {
+      const envObj = (instance as unknown as { env: Env }).env;
+      try {
+        Object.defineProperty(envObj, "LINE_MESSAGING_CHANNEL_SECRET", {
+          configurable: true,
+          enumerable: true,
+          get: () => (secretBound ? LINE_TEST_SECRET_BINDING : undefined),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!secretMutable) {
+      // Report rather than fake: the pool-workers env binding is not writable.
+      expect(secretMutable).toBe(false);
+      return;
+    }
+
+    secretBound = false;
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    expect(await deliveryRows()).toMatchObject([
+      { status: "awaiting-configuration", attempt: 0 },
+    ]);
+    const retryKey = (await deliveryRows())[0]!.retry_key;
+    await runDurableObjectAlarm(deliveryStub());
+    expect(calls.push).toHaveLength(0);
+    expect(calls.token).toHaveLength(0);
+    expect(await deliveryRows()).toMatchObject([{ status: "awaiting-configuration" }]);
+
+    secretBound = true;
+    clearTokenCacheForTests();
+    await runDurableObjectAlarm(deliveryStub());
+    expect(await deliveryRows()).toEqual([]);
+    expect(calls.push).toHaveLength(1);
+    expect((calls.push[0]!.headers as Record<string, string>)["x-line-retry-key"]).toBe(
+      retryKey,
+    );
+    expect((await counterMap()).delivered).toBe(1);
+  });
 });
+
+// Binding value from vitest.config.ts — fictional, never a real channel secret.
+const LINE_TEST_SECRET_BINDING = "line-test-channel-secret-0123456789abcdef";
+

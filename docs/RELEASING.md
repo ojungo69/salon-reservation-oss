@@ -64,21 +64,24 @@ mistaken release is corrected by publishing the next patch version, never by rew
 
 ## Rolling back a release with the LINE adapter
 
-The `AdapterDelivery` Durable Object is declared in the `exports` field of
-`wrangler.jsonc`. When rolling back to a version without the adapter:
+Adding `AdapterDelivery` is a Durable Object class lifecycle change. A build
+that drops the class from both the Worker exports and `wrangler.jsonc` can
+leave its provisioned namespace orphaned, and Cloudflare does not support a
+Workers rollback across a lifecycle change. See Cloudflare's documentation on
+[Durable Object class lifecycle](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)
+and [Workers rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
-- **Never add a `deleted` tombstone for `AdapterDelivery`.** Deploying a
-  config that omits the export entry entirely preserves the namespace and
-  its stored data (see `specs/003-line-adapter/research.md` R5); a `deleted`
-  tombstone destroys both. The adapter's safety against generation reuse
-  depends on the stored high-water mark surviving rollbacks.
-- Roll back only after the adapter shows `disabled` in
-  `/api/admin/line/status` (or was never enabled): a disabled authority with
-  drained TTL stores keeps no pending alarm, so the old Worker — which no
-  longer exports the class — is never asked to run one.
-- The reservation-day objects need no attention: adapter state lives in
-  `__`-prefixed tables the pre-adapter schema checks ignore, and a completed
-  disable removes even those.
+A compatible rollback therefore keeps the `AdapterDelivery` class exported
+and keeps its binding and live `exports` entry configured. Only the LINE
+feature's routes and customer- or operator-facing surfaces are removed. The
+adapter must show `disabled` in `/api/admin/line/status` before that build is
+deployed, because that is the state in which no adapter alarm remains
+scheduled.
+
+Deleting the `AdapterDelivery` namespace is a separate, irreversible Durable
+Object lifecycle migration that permanently destroys its data. It is not part
+of any rollback; Cloudflare documents the destructive `deleted` tombstone in
+the [Durable Object class lifecycle guide](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/#delete-a-durable-object-class).
 
 ## Scope of `release:audit` and `release:audit:public`
 

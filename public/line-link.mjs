@@ -38,15 +38,24 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
     actions.replaceChildren(...buttons);
   };
 
+  // 1 行につき 1 操作。処理中は同じ行のボタンをすべて無効にするので、
+  // 「連携を続ける」と「手続きを取りやめる」が同時に走って結果が入れ替わることがない。
   const button = (label, className, onClick) => {
     const element = document.createElement("button");
     element.type = "button";
     element.className = className;
     element.textContent = label;
     element.addEventListener("click", () => {
-      element.disabled = true;
+      const row = element.closest("[data-line-link-row]");
+      const actions = row?.querySelector("[data-line-link-actions]") ?? null;
+      const siblings = actions === null ? [element] : [...actions.querySelectorAll("button")];
+      for (const target of siblings) target.disabled = true;
+      if (actions !== null) actions.setAttribute("aria-busy", "true");
       onClick().finally(() => {
-        element.disabled = false;
+        for (const target of siblings) {
+          if (target.isConnected) target.disabled = false;
+        }
+        if (actions !== null && actions.isConnected) actions.removeAttribute("aria-busy");
       });
     });
     return element;
@@ -87,17 +96,30 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
     }
   };
 
+  // 失敗しても操作は残す: 一時的な通信失敗のたびに再試行手段が消えると、
+  // 再読み込みするまで連携も解除もできなくなる。
   const setRowError = (row, error) => {
-    setRow(
-      row,
+    row.querySelector("[data-line-link-status]").textContent =
       error instanceof Error && error.message
         ? error.message
-        : "現在処理できません。しばらく待ってからお試しください。",
-      [],
-    );
+        : "現在処理できません。しばらく待ってからお試しください。";
+  };
+
+  // 行の操作が差し替わる・消えるときは、キーボード利用者の現在位置を必ず引き継ぐ。
+  const keepFocus = (row, card, hadFocus) => {
+    if (!hadFocus) return;
+    const next = row.isConnected
+      ? row.querySelector("[data-line-link-actions] button")
+      : null;
+    if (next !== null) next.focus();
+    else if (card.isConnected) {
+      if (!card.hasAttribute("tabindex")) card.setAttribute("tabindex", "-1");
+      card.focus();
+    }
   };
 
   const renderCard = async (record, card) => {
+    const hadFocus = card.contains(document.activeElement);
     const row = rowFor(card);
     let linked = null;
     try {
@@ -120,6 +142,7 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
       setRow(row, "この予約は LINE と連携済みです。状態が変わるとお知らせします。", [
         button("連携を解除する", "text-button", () => unlink(record, card, row)),
       ]);
+      keepFocus(row, card, hadFocus);
       return;
     }
     if (linked === "provisional") {
@@ -133,16 +156,19 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
             ]
           : [button("手続きを取りやめる", "text-button", () => unlink(record, card, row))],
       );
+      keepFocus(row, card, hadFocus);
       return;
     }
     if (mode === "capability" && (state === "pending" || state === "approved")) {
       setRow(row, "予約の承認や変更を LINE で受け取れます。", [
         button("LINE で通知を受け取る", "secondary-button", () => startLink(record, row)),
       ]);
+      keepFocus(row, card, hadFocus);
       return;
     }
     // 連携がなく、開始もできない状態では何も描画しません。
     row.remove();
+    keepFocus(row, card, hadFocus);
   };
 
   const cards = list.querySelectorAll("[data-booking-card][data-reservation-id]");
@@ -151,5 +177,3 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
     if (record !== undefined) void renderCard(record, card);
   }
 };
-
-export { INTENT_STORAGE_KEY };

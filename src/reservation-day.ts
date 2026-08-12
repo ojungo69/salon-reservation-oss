@@ -168,6 +168,9 @@ export type AdapterOutboxEvent = {
   date: string;
   startTime: string;
   occurredAt: string;
+  // The parent partition's retention deadline, carried so a consumer can hold
+  // derived rows to exactly the same boundary without reading configuration.
+  purgeAt: number;
   resourceLabel?: string;
 };
 
@@ -1005,6 +1008,7 @@ export class ReservationDay extends DurableObject<Env> {
         start_time TEXT NOT NULL,
         resource_label TEXT,
         occurred_at TEXT NOT NULL,
+        purge_at INTEGER NOT NULL,
         PRIMARY KEY (consumer, generation, seq)
       )
     `);
@@ -1040,8 +1044,8 @@ export class ReservationDay extends DurableObject<Env> {
       seq += 1;
       sql.exec(
         `INSERT INTO __adapter_outbox
-           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         adapter.consumer,
         adapter.generation,
         seq,
@@ -1051,6 +1055,7 @@ export class ReservationDay extends DurableObject<Env> {
         event.startTime,
         event.resourceLabel ?? null,
         occurredAt,
+        config.purgeAt,
       );
     }
     sql.exec(
@@ -1109,8 +1114,9 @@ export class ReservationDay extends DurableObject<Env> {
         start_time: string;
         resource_label: string | null;
         occurred_at: string;
+        purge_at: number;
       }>(
-        `SELECT generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at
+        `SELECT generation, seq, event_id, reservation_id, type, start_time, resource_label, occurred_at, purge_at
          FROM __adapter_outbox WHERE consumer = ?
          ORDER BY generation, seq LIMIT ?`,
         input.consumer,
@@ -1131,7 +1137,8 @@ export class ReservationDay extends DurableObject<Env> {
         !UUID.test(row.reservation_id) ||
         !["approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
         !TIME.test(row.start_time) ||
-        !TIMESTAMP.test(row.occurred_at)
+        !TIMESTAMP.test(row.occurred_at) ||
+        !Number.isSafeInteger(row.purge_at)
       ) {
         throw new Error("corrupt outbox row");
       }
@@ -1144,6 +1151,7 @@ export class ReservationDay extends DurableObject<Env> {
         date: meta.date,
         startTime: row.start_time,
         occurredAt: row.occurred_at,
+        purgeAt: row.purge_at,
         ...(row.resource_label === null ? {} : { resourceLabel: row.resource_label }),
       });
     }

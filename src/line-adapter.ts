@@ -76,16 +76,21 @@ const constantTimeEqual = (left: Uint8Array, right: Uint8Array): boolean => {
 
 const decodeStrictBase64 = (value: string): Uint8Array | null => {
   if (value.length === 0 || value.length % 4 !== 0 || !BASE64.test(value)) return null;
+  let decoded: string;
   try {
-    const decoded = atob(value);
-    const bytes = new Uint8Array(decoded.length);
-    for (let index = 0; index < decoded.length; index += 1) {
-      bytes[index] = decoded.charCodeAt(index);
-    }
-    return bytes;
+    decoded = atob(value);
   } catch {
     return null;
   }
+  // atob ignores non-zero padding bits, so two different strings can decode to
+  // the same bytes. Re-encoding and comparing rejects every non-canonical
+  // spelling, leaving exactly one valid representation per signature.
+  if (btoa(decoded) !== value) return null;
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index += 1) {
+    bytes[index] = decoded.charCodeAt(index);
+  }
+  return bytes;
 };
 
 /**
@@ -165,16 +170,28 @@ export const parseWebhookBody = (body: Uint8Array): ParsedWebhook | null => {
     }
     const source = isRecord(entry.source) ? entry.source : null;
     const userId =
-      source !== null && typeof source.userId === "string" ? source.userId : null;
+      source !== null && source.type === "user" && typeof source.userId === "string"
+        ? source.userId
+        : null;
+    const handledType =
+      entry.type === "follow" || entry.type === "unfollow" ? entry.type : null;
+    const handled = handledType !== null && userId !== null && LINE_USER_ID.test(userId);
+    // A handled event must be well formed all the way down: a malformed
+    // deliveryContext on an event we act upon is a protocol violation, not
+    // something to coerce into `false`.
+    if (handled) {
+      if (
+        !isRecord(entry.deliveryContext) ||
+        typeof entry.deliveryContext.isRedelivery !== "boolean"
+      ) {
+        return null;
+      }
+    }
     const isRedelivery =
       isRecord(entry.deliveryContext) && entry.deliveryContext.isRedelivery === true;
-    if (
-      (entry.type === "follow" || entry.type === "unfollow") &&
-      userId !== null &&
-      LINE_USER_ID.test(userId)
-    ) {
+    if (handled && handledType !== null && userId !== null) {
       events.push({
-        type: entry.type,
+        type: handledType,
         webhookEventId: entry.webhookEventId,
         timestamp: entry.timestamp as number,
         userId,
@@ -256,6 +273,20 @@ export const verifyIdToken = async (
       return { ok: false, code: "PROTOCOL_ERROR" };
     }
   }
+  if (
+    payload.auth_time !== undefined &&
+    (!Number.isSafeInteger(payload.auth_time) || (payload.auth_time as number) < 0)
+  ) {
+    return { ok: false, code: "PROTOCOL_ERROR" };
+  }
+  if (
+    payload.amr !== undefined &&
+    (!Array.isArray(payload.amr) ||
+      payload.amr.length > 16 ||
+      payload.amr.some((entry) => typeof entry !== "string" || entry.length > 64))
+  ) {
+    return { ok: false, code: "PROTOCOL_ERROR" };
+  }
   return { ok: true, sub };
 };
 
@@ -294,6 +325,9 @@ export const mintChannelToken = async (
   if (cached !== undefined && cached.expiresAt > Date.now()) {
     return { ok: true, accessToken: cached.accessToken };
   }
+  // Measured before the request: the lifetime LINE reports starts when it
+  // issues the token, not when the response finishes arriving.
+  const requestedAt = Date.now();
   let response: Response;
   try {
     response = await fetcher(TOKEN_URL, {
@@ -324,14 +358,26 @@ export const mintChannelToken = async (
     !isRecord(payload) ||
     typeof payload.access_token !== "string" ||
     payload.access_token.length === 0 ||
-    payload.access_token.length > ADAPTER.ACCESS_TOKEN_MAX_BYTES
+    payload.access_token.length > ADAPTER.ACCESS_TOKEN_MAX_BYTES ||
+    payload.token_type !== "Bearer" ||
+    !Number.isSafeInteger(payload.expires_in) ||
+    (payload.expires_in as number) <= 0
   ) {
     return { ok: false, code: "RETRYABLE" };
   }
-  tokenCache.set(cacheKey, {
-    accessToken: payload.access_token,
-    expiresAt: Date.now() + ADAPTER.TOKEN_CACHE_TTL_S * 1000,
-  });
+  // Never outlive what the provider granted: a short-lived token is cached for
+  // its own lifetime minus the safety margin, or not at all if that is nothing.
+  const grantedMs = (payload.expires_in as number) * 1000;
+  const cacheableMs = Math.min(
+    grantedMs - ADAPTER.TOKEN_CACHE_SAFETY_MS,
+    ADAPTER.TOKEN_CACHE_TTL_S * 1000,
+  );
+  if (cacheableMs > 0) {
+    tokenCache.set(cacheKey, {
+      accessToken: payload.access_token,
+      expiresAt: requestedAt + cacheableMs,
+    });
+  }
   return { ok: true, accessToken: payload.access_token };
 };
 
@@ -395,7 +441,7 @@ export const serializeMessageV1 = (
 
 export type PushOutcome =
   | { ok: true; accepted: boolean }
-  | { ok: false; code: "RETRYABLE" | "QUOTA_REFUSED" | "REJECTED"; status: number | null };
+  | { ok: false; code: "RETRYABLE" | "CONFIG_REJECTED" | "REJECTED"; status: number | null };
 
 /**
  * One push attempt. The caller persists the retry key before the first
@@ -432,11 +478,15 @@ export const pushMessage = async (
   // and headers are never read, so nothing a provider sends can be stored.
   if (response.status === 200) return { ok: true, accepted: false };
   if (response.status === 409) return { ok: true, accepted: true };
-  if (response.status === 429) return { ok: false, code: "QUOTA_REFUSED", status: 429 };
+  // 429 covers a short rate limit, a per-recipient burst, and the monthly
+  // message cap alike, and the status alone cannot tell them apart. Retrying
+  // it lets a rate limit clear on its own; a real cap simply exhausts the
+  // ladder and is recorded as retry-exhausted with this status attached.
+  if (response.status === 429) return { ok: false, code: "RETRYABLE", status: 429 };
   if (response.status >= 500) return { ok: false, code: "RETRYABLE", status: response.status };
-  // 401 means the channel credentials no longer match — a configuration
-  // problem, distinct from a permanently rejected message.
-  if (response.status === 401) return { ok: false, code: "RETRYABLE", status: 401 };
+  // 401 means the channel credentials no longer match: an operator has to fix
+  // the configuration, so retrying the same credentials cannot help.
+  if (response.status === 401) return { ok: false, code: "CONFIG_REJECTED", status: 401 };
   return { ok: false, code: "REJECTED", status: response.status };
 };
 

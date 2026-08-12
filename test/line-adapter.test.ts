@@ -24,10 +24,14 @@ import {
   lineDay,
   MANAGEMENT_KEY,
   signWebhookBody,
+  suiteDate,
+  SUITE_NOW,
   testRuntime,
 } from "./line-helpers.ts";
 
-const NOW = Date.parse("2027-01-14T15:00:00.000Z");
+// Suite clock derived from the real wall clock (~1 year ahead) before fake
+// timers install — alarms stay future-dated and tests drive them explicitly.
+const NOW = SUITE_NOW;
 const SUBJECT = `U${"a".repeat(32)}`;
 const OTHER_SUBJECT = `U${"b".repeat(32)}`;
 
@@ -54,6 +58,7 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // restoreAllMocks does not undo stubGlobal — fetch stubs must not leak.
   vi.unstubAllGlobals();
   await reset();
 });
@@ -73,6 +78,26 @@ describe("webhook signature verification", () => {
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, null, body)).toBe(false);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, "not-base64!!", body)).toBe(false);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, "QUJD", body)).toBe(false);
+    // Non-canonical base64 padding (atob accepts it; re-encode rejects it).
+    if (valid.endsWith("=") && !valid.endsWith("==")) {
+      // Flip to a double-pad spelling of the same payload when single-pad.
+      const stripped = valid.replace(/=+$/, "");
+      const alt = stripped + "==";
+      if (alt !== valid) {
+        expect(await verifyWebhookSignature(LINE_TEST_SECRET, alt, body)).toBe(false);
+      }
+    }
+    // A known non-canonical form: standard alphabet with whitespace is already
+    // refused; padding-bit variants that atob forgives but btoa rewrites.
+    const decoded = atob(valid);
+    // Corrupt the last character before padding so re-encoding diverges while
+    // length/charset stay base64-shaped when possible.
+    const nonCanonical = valid.slice(0, -1) + (valid.endsWith("A") ? "B" : "A");
+    if (nonCanonical !== valid && /^[A-Za-z0-9+/]+={0,2}$/.test(nonCanonical)) {
+      // May fail for different reasons; the property under test is rejection.
+      expect(await verifyWebhookSignature(LINE_TEST_SECRET, nonCanonical, body)).toBe(false);
+    }
+    void decoded;
     const oversized = new Uint8Array(ADAPTER.WEBHOOK_BODY_MAX_BYTES + 1);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, valid, oversized)).toBe(false);
   });
@@ -124,6 +149,58 @@ describe("webhook body parsing", () => {
     expect(
       parseWebhookBody(
         encode(JSON.stringify({ events: [{ type: "follow" }] })),
+      ),
+    ).toBeNull();
+    // Non-user sources on follow/unfollow are ignored (not acted on). A user
+    // follow/unfollow missing a boolean isRedelivery refuses the whole body.
+    expect(
+      parseWebhookBody(
+        encode(
+          JSON.stringify({
+            events: [
+              {
+                type: "follow",
+                webhookEventId: "01H0000000000000000000000D",
+                timestamp: 1,
+                source: { type: "group", groupId: "Cgroup" },
+                deliveryContext: { isRedelivery: false },
+              },
+            ],
+          }),
+        ),
+      ),
+    ).toMatchObject({ events: [], ignoredCount: 1 });
+    expect(
+      parseWebhookBody(
+        encode(
+          JSON.stringify({
+            events: [
+              {
+                type: "follow",
+                webhookEventId: "01H0000000000000000000000E",
+                timestamp: 1,
+                source: { type: "user", userId: SUBJECT },
+                deliveryContext: { isRedelivery: "false" },
+              },
+            ],
+          }),
+        ),
+      ),
+    ).toBeNull();
+    expect(
+      parseWebhookBody(
+        encode(
+          JSON.stringify({
+            events: [
+              {
+                type: "unfollow",
+                webhookEventId: "01H0000000000000000000000F",
+                timestamp: 1,
+                source: { type: "user", userId: SUBJECT },
+              },
+            ],
+          }),
+        ),
       ),
     ).toBeNull();
     const tooMany = Array.from({ length: ADAPTER.WEBHOOK_EVENTS_MAX + 1 }, (_, i) => ({
@@ -215,6 +292,11 @@ describe("ID-token verification", () => {
       { ...validClaims(), exp: Math.floor(NOW / 1000) - 3600 },
       { ...validClaims(), sub: "not-a-user-id" },
       { ...validClaims(), name: "x".repeat(1001) },
+      { ...validClaims(), auth_time: -1 },
+      { ...validClaims(), auth_time: 1.5 },
+      { ...validClaims(), amr: Array.from({ length: 17 }, () => "x") },
+      { ...validClaims(), amr: ["y".repeat(65)] },
+      { ...validClaims(), amr: [1] },
       [1, 2, 3],
     ];
     for (const payload of bad) {
@@ -232,6 +314,20 @@ describe("ID-token verification", () => {
     expect(await verifyIdToken(token, identifiers.loginChannelId, fetcher)).toEqual({
       ok: false,
       code: "PROTOCOL_ERROR",
+    });
+  });
+
+  it("accepts well-formed auth_time and amr then discards them", async () => {
+    const { fetcher } = fetcherReturning(
+      verifyResponse({
+        ...validClaims(),
+        auth_time: Math.floor(NOW / 1000) - 10,
+        amr: ["linesso", "pwd"],
+      }),
+    );
+    expect(await verifyIdToken(token, identifiers.loginChannelId, fetcher)).toEqual({
+      ok: true,
+      sub: SUBJECT,
     });
   });
 });
@@ -256,21 +352,37 @@ describe("constants inequalities (T033)", () => {
 });
 
 describe("privacy page state rule", () => {
+  // Only the canonical /privacy path is worker-handled; /privacy.html is not.
   const fetchPrivacy = async (customEnv: Env = env): Promise<Response> =>
-    worker.fetch(new Request("https://example.test/privacy.html"), customEnv);
+    worker.fetch(new Request("https://example.test/privacy"), customEnv);
 
-  it("serves the asset byte-identically until the adapter exists, then discloses per state", async () => {
+  it("serves the asset unchanged until the adapter exists, then discloses per state", async () => {
     const baselineResponse = await fetchPrivacy();
     expect(baselineResponse.status).toBe(200);
-    expect(baselineResponse.headers.get("cache-control")).toBe("no-store");
+    // Without a LINE disclosure the assets response is returned unchanged —
+    // including whatever cache-control the asset itself carries.
+    const baselineCache = baselineResponse.headers.get("cache-control");
     const baseline = await baselineResponse.text();
     expect(baseline).not.toContain("LINE 連携を利用する場合");
-    // The permanent operational-records paragraph is static, not state-gated.
-    expect(baseline).toContain("個人を特定しない運用記録");
+    // The operational-records wording lives only inside the injected disclosure.
+    expect(baseline).not.toContain("個人を特定しない運用記録");
+    expect(baseline).toContain("<!-- adapter-disclosure-slot -->");
+
+    // /privacy.html is not worker-handled: no disclosure injection there.
+    const htmlPath = await worker.fetch(
+      new Request("https://example.test/privacy.html"),
+      env,
+    );
+    expect(await htmlPath.text()).not.toContain("LINE 連携を利用する場合");
 
     await enableLineAdapter();
-    const active = await (await fetchPrivacy()).text();
+    const activeResponse = await fetchPrivacy();
+    expect(activeResponse.headers.get("cache-control")).toBe("no-store");
+    const active = await activeResponse.text();
     expect(active).toContain("LINE 連携を利用する場合");
+    // Injected disclosure carries the operational-records paragraph.
+    expect(active).toContain("個人を特定しない");
+
 
     // Missing secret (state active, binding absent): still rendered — data
     // may still be held.
@@ -305,7 +417,9 @@ describe("privacy page state rule", () => {
     // Drive the coordinator past its lease wait so the phase flips.
     vi.setSystemTime(Date.now() + 61_000);
     await runDurableObjectAlarm(installationStub());
-    const after = await (await fetchPrivacy()).text();
+    const afterResponse = await fetchPrivacy();
+    expect(afterResponse.headers.get("cache-control")).toBe(baselineCache);
+    const after = await afterResponse.text();
     expect(after).toBe(baseline);
   });
 });
@@ -314,27 +428,37 @@ describe("message templates and the v1 serializer (FR-009)", () => {
   const fragment = (type: MessageFragment["type"]): MessageFragment => ({
     v: 1,
     type,
-    date: "2027-01-15",
+    date: suiteDate(1),
     startTime: "09:00",
   });
 
   it("renders all five events with only time, state, next step, and the management link", () => {
+    const wording = {
+      approve: "ご予約が確定しました。",
+      reject: "ご予約をお受けできませんでした。",
+      reschedule: "ご予約の日時が変更されました。",
+      cancel: "ご予約がキャンセルされました。",
+      expire: "ご予約の申し込みが期限切れになりました。",
+    } as const;
     for (const type of ["approve", "reject", "reschedule", "cancel", "expire"] as const) {
       const messages = serializeMessageV1(fragment(type), "https://example.test");
       expect(messages).toHaveLength(1);
       const message = messages[0]!;
       expect(Object.keys(message).sort()).toEqual(["text", "type"]);
       expect(message.type).toBe("text");
-      expect(message.text).toContain("2027-01-15 09:00");
+      expect(message.text).toContain(`${suiteDate(1)} 09:00`);
       expect(message.text).toContain("https://example.test/bookings.html");
+      // Each type carries its own wording — a shared approve template would fail.
+      expect(message.text).toContain(wording[type]);
+      for (const other of Object.keys(wording) as Array<keyof typeof wording>) {
+        if (other === type) continue;
+        expect(message.text).not.toContain(wording[other]);
+      }
       // FR-009 minimal payload: no customer name, notes, contact, or history
       // can appear — the fragment cannot even carry them.
       expect(message.text).not.toContain("花子");
       expect(message.text).not.toContain("@");
     }
-    expect(serializeMessageV1(fragment("approve"), "https://example.test")[0]!.text).toContain(
-      "確定",
-    );
   });
 
   it("serializes byte-identically across calls (retry-safe by construction)", () => {
@@ -398,14 +522,67 @@ describe("token mint and push client", () => {
     ).toEqual({ ok: false, code: "CONFIG_REJECTED" });
   });
 
-  it("maps push outcomes: 200 sent, 409 accepted, 429 quota, 5xx retryable, 4xx rejected", async () => {
+  it("refuses a token response without Bearer type or a positive expires_in", async () => {
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(200, { access_token: "tok", token_type: "bearer", expires_in: 900 }),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+    clearTokenCacheForTests();
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(200, { access_token: "tok", token_type: "Bearer", expires_in: 0 }),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+    clearTokenCacheForTests();
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(200, { access_token: "tok", token_type: "Bearer", expires_in: 1.5 }),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+  });
+
+  it("caches only up to min(expires_in*1000 - 60s, 840s) from request start", async () => {
+    let calls = 0;
+    const fetcher: LineFetch = () => {
+      calls += 1;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ access_token: "short", token_type: "Bearer", expires_in: 90 }),
+          { status: 200 },
+        ),
+      );
+    };
+    const first = await mintChannelToken(
+      { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(first).toEqual({ ok: true, accessToken: "short" });
+    // 90s grant → cacheable for 30s only (90*1000 - 60000).
+    await mintChannelToken(
+      { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(calls).toBe(1);
+    vi.setSystemTime(Date.now() + 31_000);
+    await mintChannelToken(
+      { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("maps push outcomes: 200 sent, 409 accepted, 429 retryable, 401 config, 5xx retryable, 4xx rejected", async () => {
     const push = (status: number) =>
       pushMessage(
         {
           accessToken: "tok",
           to: SUBJECT,
           messages: serializeMessageV1(
-            { v: 1, type: "approve", date: "2027-01-15", startTime: "09:00" },
+            { v: 1, type: "approve", date: suiteDate(1), startTime: "09:00" },
             "https://example.test",
           ),
           retryKey: crypto.randomUUID(),
@@ -414,7 +591,9 @@ describe("token mint and push client", () => {
       );
     expect(await push(200)).toEqual({ ok: true, accepted: false });
     expect(await push(409)).toEqual({ ok: true, accepted: true });
-    expect(await push(429)).toEqual({ ok: false, code: "QUOTA_REFUSED", status: 429 });
+    // 429 walks the retry ladder (no longer QUOTA_REFUSED).
+    expect(await push(429)).toEqual({ ok: false, code: "RETRYABLE", status: 429 });
+    expect(await push(401)).toEqual({ ok: false, code: "CONFIG_REJECTED", status: 401 });
     expect(await push(500)).toEqual({ ok: false, code: "RETRYABLE", status: 500 });
     expect(await push(400)).toEqual({ ok: false, code: "REJECTED", status: 400 });
   });
@@ -432,7 +611,7 @@ describe("token mint and push client", () => {
       accessToken: "tok",
       to: SUBJECT,
       messages: serializeMessageV1(
-        { v: 1, type: "cancel", date: "2027-01-15", startTime: "09:00" },
+        { v: 1, type: "cancel", date: suiteDate(1), startTime: "09:00" },
         "https://example.test",
       ),
       retryKey: "11111111-2222-4333-8444-555555555555",
@@ -481,17 +660,47 @@ describe("link flow over HTTP", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { nonce: string; liffId: string };
     expect(body.liffId).toBe(identifiers.liffId);
+    expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
     return body.nonce;
   };
 
   it("hides every link surface while the adapter is inactive", async () => {
     const reservationId = await createPendingReservation();
+    // Lifecycle gate runs before method/origin checks: every shape is 404.
+    for (const method of ["GET", "POST", "PUT", "DELETE"] as const) {
+      const response = await worker.fetch(
+        new Request(`https://example.test/api/reservations/${reservationId}/line/link-intent`, {
+          method,
+          headers: { origin: "https://example.test", "content-type": "application/json" },
+          body: method === "GET" || method === "DELETE" ? undefined : "{}",
+        }),
+        env,
+      );
+      expect(response.status, method).toBe(404);
+    }
     const intent = await post(`/api/reservations/${reservationId}/line/link-intent`, {
       date: lineDay.date,
       managementKey: MANAGEMENT_KEY,
     });
     expect(intent.status).toBe(404);
-    const link = await post("/api/adapters/line/link", { nonce: "0".repeat(32), idToken: "a.b.c" });
+    // Unlink/status stay hidden in the draft/disabled state too.
+    expect(
+      (
+        await post(`/api/reservations/${reservationId}/line/unlink`, {
+          date: lineDay.date,
+          managementKey: MANAGEMENT_KEY,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await post(`/api/reservations/${reservationId}/line/status`, {
+          date: lineDay.date,
+          managementKey: MANAGEMENT_KEY,
+        })
+      ).status,
+    ).toBe(404);
+    const link = await post("/api/adapters/line/link", { nonce: "0".repeat(64), idToken: "a.b.c" });
     expect(link.status).toBe(404);
     const webhook = await post("/api/adapters/line/webhook", { events: [] });
     expect(webhook.status).toBe(404);
@@ -512,7 +721,7 @@ describe("link flow over HTTP", () => {
 
     // A captured token without a live intent is useless.
     const noIntent = await post("/api/adapters/line/link", {
-      nonce: "0".repeat(32),
+      nonce: "0".repeat(64),
       idToken: "aaaa.bbbb.cccc",
     });
     expect(noIntent.status).toBe(404);
@@ -593,7 +802,7 @@ describe("link flow over HTTP", () => {
     expect(await status.json()).toEqual({ linked: "provisional" });
   });
 
-  it("verifies, dedups, and orders webhook deliveries", async () => {
+  it("verifies, dedups, and only persists subjects for finally-linked users", async () => {
     await enableLineAdapter();
     const payload = JSON.stringify({
       destination: "U0",
@@ -618,15 +827,18 @@ describe("link flow over HTTP", () => {
         env,
       );
 
+    // Unlinked follower: acknowledged, but only the dedup row is written.
     expect((await send(payload, signature)).status).toBe(200);
-    const subjects = await runInDurableObject(deliveryStub(), (_i, state) =>
-      state.storage.sql
-        .exec<{ subject: string; followed: number }>(
-          "SELECT subject, followed FROM subjects",
-        )
+    const unlinked = await runInDurableObject(deliveryStub(), (_i, state) => ({
+      subjects: state.storage.sql
+        .exec<{ subject: string }>("SELECT subject FROM subjects")
         .toArray(),
-    );
-    expect(subjects).toEqual([{ subject: SUBJECT, followed: 1 }]);
+      dedup: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM webhook_dedup")
+        .toArray()[0],
+    }));
+    expect(unlinked.subjects).toEqual([]);
+    expect(unlinked.dedup).toEqual({ n: 1 });
 
     // Duplicate delivery: acknowledged, not re-applied.
     expect((await send(payload, signature)).status).toBe(200);
@@ -636,6 +848,41 @@ describe("link flow over HTTP", () => {
         .toArray()[0],
     );
     expect(dedup).toEqual({ n: 1 });
+
+    // After a final link exists for the subject, a later follow persists it.
+    const reservationId = await createPendingReservation();
+    interceptVerify(validClaims());
+    const nonce = await mintIntent(reservationId);
+    expect(
+      (
+        await post("/api/adapters/line/link", {
+          nonce,
+          idToken: "aaaa.bbbb.cccc",
+        })
+      ).status,
+    ).toBe(200);
+    const follow2 = JSON.stringify({
+      destination: "U0",
+      events: [
+        {
+          type: "follow",
+          webhookEventId: "01WEBHOOK0000000000000000B",
+          timestamp: 1700000001000,
+          source: { type: "user", userId: SUBJECT },
+          deliveryContext: { isRedelivery: false },
+        },
+      ],
+    });
+    const sig2 = await signWebhookBody(LINE_TEST_SECRET, follow2);
+    expect((await send(follow2, sig2)).status).toBe(200);
+    const subjects = await runInDurableObject(deliveryStub(), (_i, state) =>
+      state.storage.sql
+        .exec<{ subject: string; followed: number }>(
+          "SELECT subject, followed FROM subjects",
+        )
+        .toArray(),
+    );
+    expect(subjects).toEqual([{ subject: SUBJECT, followed: 1 }]);
 
     // Invalid signature: refused and counted.
     expect((await send(payload, "A".repeat(44))).status).toBe(403);
@@ -650,4 +897,127 @@ describe("link flow over HTTP", () => {
     const huge = "x".repeat(ADAPTER.WEBHOOK_BODY_MAX_BYTES + 1);
     expect((await send(huge, signature)).status).toBe(413);
   });
+
+  it("returns 503 and leaves the intent intact when the day watermark RPC fails", async () => {
+    await enableLineAdapter();
+    const reservationId = await createPendingReservation();
+    const nonce = await mintIntent(reservationId);
+    await runInDurableObject(
+      env.RESERVATION_DAYS.getByName(`single-location:${lineDay.date}`) as never,
+      (instance) => {
+        (instance as unknown as Record<string, unknown>).readEventSequence = async () => {
+          throw new Error("day unavailable");
+        };
+      },
+    );
+    interceptVerify(validClaims());
+    const response = await post("/api/adapters/line/link", {
+      nonce,
+      idToken: "aaaa.bbbb.cccc",
+    });
+    expect(response.status).toBe(503);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "TEMPORARILY_UNAVAILABLE",
+    );
+    // Intent and provisional link survive for a retry.
+    const status = await post(`/api/reservations/${reservationId}/line/status`, {
+      date: lineDay.date,
+      managementKey: MANAGEMENT_KEY,
+    });
+    expect(await status.json()).toEqual({ linked: "provisional" });
+    const intentAlive = await deliveryStub().checkIntent({ nonce });
+    expect(intentAlive).toEqual({ ok: true });
+  });
+
+  it("fails finalize and leaves no link when disable races an in-flight ID-token verify", async () => {
+    await enableLineAdapter();
+    const reservationId = await createPendingReservation();
+    const nonce = await mintIntent(reservationId);
+
+    let release!: (value: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", (input: string | URL | Request) => {
+      const target = typeof input === "string" ? input : new URL(String(input)).href;
+      expect(target).toBe("https://api.line.me/oauth2/v2.1/verify");
+      return held;
+    });
+
+    const finalizePromise = post("/api/adapters/line/link", {
+      nonce,
+      idToken: "aaaa.bbbb.cccc",
+    });
+
+    // Disable and re-enable while verification is still in flight.
+    const disable = await installationStub().executeLineCommand(
+      {
+        operation: "line.disable",
+        commandId: crypto.randomUUID(),
+        expectedLifecycleVersion: 2,
+      },
+      testRuntime(),
+    );
+    expect(disable).toMatchObject({ ok: true, phase: "deactivating" });
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE meta SET purge_completed_at = ? WHERE singleton = 1",
+        Date.now(),
+      );
+    });
+    await deliveryStub().completeDisable();
+    vi.setSystemTime(Date.now() + 61_000);
+    await runDurableObjectAlarm(installationStub());
+    // Re-enable under a new generation.
+    const settings = await installationStub().executeLineCommand(
+      {
+        operation: "line.settings",
+        commandId: crypto.randomUUID(),
+        expectedLifecycleVersion: 3,
+        identifiers,
+      },
+      testRuntime(),
+    );
+    expect(settings).toMatchObject({ ok: true });
+    const enabled = await installationStub().executeLineCommand(
+      {
+        operation: "line.enable",
+        commandId: crypto.randomUUID(),
+        expectedLifecycleVersion: settings.ok ? settings.lifecycleVersion : 0,
+        identifiers,
+      },
+      testRuntime(),
+    );
+    expect(enabled).toMatchObject({ ok: true });
+
+    release(
+      new Response(JSON.stringify(validClaims()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const finished = await finalizePromise;
+    expect(finished.status).not.toBe(200);
+
+    const counts = await runInDurableObject(deliveryStub(), (_i, state) => ({
+      links: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM links")
+        .toArray()[0]?.n,
+      subjects: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM subjects")
+        .toArray()[0]?.n,
+      deliveries: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries")
+        .toArray()[0]?.n,
+      intents: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM intents")
+        .toArray()[0]?.n,
+    }));
+    expect(counts.links).toBe(0);
+    expect(counts.subjects).toBe(0);
+    expect(counts.deliveries).toBe(0);
+    // The old generation's intent is gone with the purge; no new link formed.
+    expect(counts.intents).toBe(0);
+  });
 });
+

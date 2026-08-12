@@ -132,16 +132,17 @@
    - `POST /api/reservations/:reservationId/line/link-intent` — reservation ID in the path,
      `{date, managementKey}` in the JSON body only (the existing public-route convention; the
      management key never appears in a URL, access log, `Referer`, or response URL — negative
-     tests) — mints a 256-bit single-use nonce: stored as a **digest** with reservation
-     reference, parent `purgeAt`, adapter generation, 10-minute TTL, consumed flag.
+     tests) — mints a **256-bit single-use nonce**. The clear nonce is returned once and never
+     persisted; only its **SHA-256 digest** is stored with the reservation reference, date,
+     adapter generation, and 10-minute TTL. The same transaction creates or refreshes the
+     provisional link and stamps it with the parent `purgeAt`.
    - `POST /api/adapters/line/link` (active-gated) takes nonce + ID token, verifies the token
-     against the LINE Platform (fixed URL, configured login channel ID as `client_id`), then
-     **consumes the nonce and creates the provisional link atomically in the first
-     `AdapterDelivery` transaction**; promotion to the final link (the finalize step below) is a
-     separate transaction, idempotent per operation/nonce. Same-subject replay is a no-op; a
-     different subject over a live link — or a concurrent provisional for a different subject —
-     is a 409 conflict; a consumed intent replays successfully only for the identical existing
-     link; unlink then replaying an old intent does not recreate the link.
+     against the LINE Platform (fixed URL, configured login channel ID as `client_id`). The
+     completing `AdapterDelivery` transaction re-checks the nonce digest, TTL, and generation,
+     deletes the digest, and promotes the provisional link to final with the verified subject and
+     sequence watermark. The same clear nonce cannot be used again. A new intent for an identical
+     final subject is a no-op; a different subject over a live link is a 409 conflict, and unlink
+     followed by replay of the old nonce cannot recreate the link.
    - Links live in `AdapterDelivery` keyed by reservation **and** indexed by subject (webhooks
      carry only the subject). Links carry parent `purgeAt` for the retention sweep. Deliveries
      never duplicate the subject: a delivery stores the **canonical message fragment**, the link
@@ -189,9 +190,10 @@
    restarts, config edits, and deploys (tested by simulating a default-serializer change).
    Absolute attempt schedule — attempt 1 at t=0, then t+1 m, t+6 m, t+21 m, t+1 h 21 m,
    t+4 h 21 m, t+10 h 21 m (**7 attempts total**; terminal parking at the 7th failure, ≈10.4 h,
-   comfortably < 24 h). Retry only on 5xx/timeout; `409` = accepted; other 4xx = terminal
-   immediately. Token-endpoint calls follow the same rule (5xx/timeout retryable, 4xx terminal)
-   and are distinct from push outcomes — a token failure never marks the delivery accepted.
+   comfortably < 24 h). Push retries on 5xx, `429`, and timeout; `409` means accepted; `401` is a
+   configuration rejection that parks the delivery as `awaiting-configuration`; other 4xx are
+   terminal immediately. Token-endpoint calls remain distinct from push outcomes — a token
+   failure never marks the delivery accepted.
    Outbound timeouts fixed at 10 s each for verify, token, and push calls.
 8. **Lifecycle and cleanup are first-class**:
    - A **LINE-specific, server-managed, monotonically increasing generation** (not
@@ -258,7 +260,7 @@
      bounded partition-window date range (implemented as the fixed worst-case window
      `[today − 366, today + 90]` — a deliberate superset of every configurable
      retention/horizon window, so the authority needs no config read and the cycle bound's
-     456-partition worst case is the actual window), a fixed batch of day objects per run, calling `drainOutbox`
+     457-partition worst case is the actual window), a fixed batch of day objects per run, calling `drainOutbox`
      on each — an explicit **pull protocol**: the day RPC returns a bounded event batch and
      deletes nothing; `AdapterDelivery` accepts/terminalizes in its own local transaction; a
      separate idempotent `ackOutbox(eventIds)` RPC then deletes from the day; the cursor
@@ -387,14 +389,23 @@
      evicted first), reflected in the privacy documentation. Tests: cap/TTL boundaries,
      idempotent re-recording, and a full-table negative assertion that no identifier survives
      `purgeAt`.
-   - **Every reservation-scoped row carries the parent `purgeAt`** — links, nonces, pending
-     deliveries (canonical fragments, retry keys), and reservation **event** dedup rows — and
-     the automatic retention sweep runs the same cascade as the manual purge by that deadline;
-     identifiable terminal data never outlives the parent retention (the redacted reason+time ledger alone persists past it, under its own TTL/cap). **Webhook dedup rows are the
+   - **Every reservation-scoped adapter row carries the parent partition's `purgeAt`.** The
+     retention prune deletes those rows on that boundary, and the send path re-checks the
+     delivery's boundary immediately before a push can start. When the last final link for a
+     subject is removed, the subject row is removed as well. The fixed 366-day date window
+     remains only as a backstop for rows that predate the `purgeAt` stamp or unexpectedly lack
+     one; it is not the primary retention boundary. The redacted reason+time ledger alone may
+     persist past parent retention under its own TTL/cap. **Webhook dedup rows are the
      exception**: they are installation-scoped, subject-free `{webhookEventId, receivedAt}`
      records (an unlinked subject's webhook has no parent reservation; a multi-linked subject
      has no single one) pruned by their own TTL and size cap. Negative assertions cover all
      tables; TTL/cap boundaries and unlinked/multi-linked cases are tested.
+
+   The outbound message origin is derived from the installation's configured public hostname,
+   `allowedHostname`, and is never taken from the enable request. Enable fails with
+   `ORIGIN_UNCONFIGURED` until that hostname is saved; activation then snapshots its HTTPS origin
+   for the message serializer.
+
    - Operator documentation states the order once (disable performs everything; remove the
      secret after `disabled` is shown).
 9. **Notified events**: approve / reject / reschedule / cancel / expire (spec FR-003).

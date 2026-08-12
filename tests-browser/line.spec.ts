@@ -12,9 +12,9 @@ import {
 } from "./harness.ts";
 
 // Fictional identifiers only — the shape the Worker validates, never a real
-// channel. The whole suite runs with zero requests leaving for LINE: every
-// LINE origin is intercepted and aborted, and the interception log is
-// asserted at the end of each scenario that could have triggered one.
+// channel. page.route intercepts browser-initiated requests only (SDK loads,
+// LIFF navigation). The Worker's own outbound fetches to LINE are covered at
+// the Workers-test level, not here.
 const LINE_IDENTIFIERS = {
   liffId: "1234567890-abcdefgh",
   loginChannelId: "1234567890",
@@ -107,7 +107,15 @@ test.describe("state 1: never configured", () => {
     expect("lineAdapter" in (JSON.parse(await configText(page)) as object)).toBe(false);
 
     // The LINE-only paths do not exist: they return the site's 404 page.
-    for (const path of ["/line", "/line/", "/line.html", "/line-liff.mjs", "/line-link.mjs"]) {
+    for (const path of [
+      "/line",
+      "/line/",
+      "/line.html",
+      "/line/index",
+      "/line/index.html",
+      "/line-liff.mjs",
+      "/line-link.mjs",
+    ]) {
       expect(await pageStatus(page, path), path).toBe(404);
     }
 
@@ -175,7 +183,9 @@ test.describe("state 2: active", () => {
       sessionStorage.getItem("salon-reservation:line-link-intent:v1"),
     );
     expect(intent).not.toBeNull();
-    expect(JSON.parse(intent as string)).toMatchObject({ nonce: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(JSON.parse(intent as string)).toMatchObject({
+      nonce: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
 
     // The pinned SDK request was attempted against LINE's CDN and aborted by
     // the suite; the page degrades to its polite failure message with a way
