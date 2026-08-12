@@ -51,7 +51,7 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
       const actions = row?.querySelector("[data-line-link-actions]") ?? null;
       const siblings = actions === null ? [element] : [...actions.querySelectorAll("button")];
       // 無効化した瞬間にフォーカスは <body> へ移るので、先に現在位置を覚える。
-      const hadFocus = row !== null && row.contains(document.activeElement);
+      const focusedRow = row?.contains(document.activeElement) ? row : null;
       for (const target of siblings) target.disabled = true;
       if (actions !== null) actions.setAttribute("aria-busy", "true");
       onClick().finally(() => {
@@ -59,9 +59,9 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
           if (target.isConnected) target.disabled = false;
         }
         if (actions !== null && actions.isConnected) actions.removeAttribute("aria-busy");
-        if (hadFocus && row !== null && card !== null) {
+        if (focusedRow !== null && card !== null) {
           if (element.isConnected && !element.disabled) element.focus();
-          else keepFocus(row, card, true);
+          else keepFocus(focusedRow, card, true);
         }
       });
     });
