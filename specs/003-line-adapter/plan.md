@@ -255,7 +255,10 @@
      same event, both routes, same disposition; disable-vs-push race; held-then-finalize).
    - **Traffic-independent handoff recovery — the durable sweep**: while the adapter is active
      **or deactivating**, the `AdapterDelivery` alarm runs a **cursor-based sweep** over the
-     bounded partition-window date range, a fixed batch of day objects per run, calling `drainOutbox`
+     bounded partition-window date range (implemented as the fixed worst-case window
+     `[today − 366, today + 90]` — a deliberate superset of every configurable
+     retention/horizon window, so the authority needs no config read and the cycle bound's
+     456-partition worst case is the actual window), a fixed batch of day objects per run, calling `drainOutbox`
      on each — an explicit **pull protocol**: the day RPC returns a bounded event batch and
      deletes nothing; `AdapterDelivery` accepts/terminalizes in its own local transaction; a
      separate idempotent `ackOutbox(eventIds)` RPC then deletes from the day; the cursor

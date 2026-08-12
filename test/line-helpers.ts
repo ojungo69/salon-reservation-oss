@@ -31,7 +31,7 @@ export const lineDay: DayConfig & {
   startIntervalMinutes: number;
   consentVersion: string;
 } = {
-  date: "2025-01-15",
+  date: "2027-01-15",
   settingsVersion: 7,
   resourceIds: ["resource-chair-a"],
   resources: [{ id: "resource-chair-a", label: "架空チェア A", active: true }],

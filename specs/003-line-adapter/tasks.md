@@ -46,6 +46,11 @@ and tests import it — no literal re-statements elsewhere.
 | `WEBHOOK_DEDUP_TTL_S` / `WEBHOOK_DEDUP_CAP` | 259200 (72 h) / 5000 | installation-scoped `webhookEventId` dedup; cap evicts into aggregate counter |
 | `LEDGER_TTL_S` / `LEDGER_CAP` | 2592000 (30 d) / 500 | redacted terminal ledger; cap evicts into aggregate counter |
 | `DELIVERY_QUEUE_CAP` | 2000 | pending deliveries per installation; overflow terminalizes oldest with reason `overflow` |
+| `SWEEP_PAST_DAYS` / `SWEEP_FUTURE_DAYS` | 366 / 90 | Fixed sweep window `[today−366, today+90]` — a deliberate superset of every configurable retention/horizon window (365+1 and 90 at their caps), so the authority needs no config read; out-of-window days simply hold no outbox. `fullCycleBoundS` was already computed against these 456 worst-case partitions. |
+| `SEND_BATCH` | 8 | Deliveries attempted per alarm run (each ≤ 1 token mint + 1 push at 10 s timeouts — bounded well inside the alarm invocation budget). |
+| `SEND_CLAIM_LEASE_S` | 30 | In-flight send claim lease; a claim older than this recovers to `queued` with the same retry key (byte-identical rebuild makes the repeat safe). |
+| `CONFIG_RECHECK_S` | 300 | Re-check cadence for `awaiting-configuration` recovery while the secret is absent. |
+| `RETRY_KEY_SAFETY_MARGIN_S` | 3600 | First-pushed `awaiting-configuration` deliveries terminalize (`configuration-lost`) this margin before the 24 h retry-key window ends. |
 | `RECEIPT_CAP` / `RECEIPT_TTL_S` | 50 / 7776000 (90 d) | lifecycle command receipts |
 | `SIGFAIL_WINDOW_S` | 86400 | bounded webhook signature-failure counter window |
 

@@ -1024,6 +1024,9 @@ type LineSagaOperation = {
   step: "activate" | "begin-disable" | "final-wait" | "complete";
   startedAt: string;
   identifiers: LineIdentifiers | null;
+  // Request origin captured at enable time; becomes the authority's snapshot
+  // origin for management links in messages. Null for disable operations.
+  origin: string | null;
   finalPassAt: number | null;
 };
 
@@ -1106,6 +1109,7 @@ const LINE_OPERATION_KEYS = [
   "step",
   "startedAt",
   "identifiers",
+  "origin",
   "finalPassAt",
 ] as const;
 const LINE_RECEIPT_KEYS = [
@@ -1193,6 +1197,7 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
         candidate.step as string,
       ) ||
       typeof candidate.startedAt !== "string" ||
+      (candidate.origin !== null && typeof candidate.origin !== "string") ||
       (candidate.finalPassAt !== null &&
         !Number.isSafeInteger(candidate.finalPassAt))
     ) {
@@ -1207,6 +1212,7 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
         candidate.identifiers === null
           ? null
           : parseLineIdentifiers(candidate.identifiers),
+      origin: candidate.origin as string | null,
       finalPassAt: candidate.finalPassAt as number | null,
     };
   }
@@ -1666,6 +1672,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeLineCommand(
     input: unknown,
     runtime: ReadinessRuntime,
+    context?: { origin?: string },
   ): Promise<LineCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const command = parseLineCommand(input);
@@ -1717,6 +1724,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             // Enable's identifiers are authoritative; the draft is a setup
             // convenience they supersede.
             identifiers: command.identifiers,
+            origin: typeof context?.origin === "string" ? context.origin : null,
             finalPassAt: null,
           },
           lifecycleVersion: lifecycle.lifecycleVersion + 1,
@@ -1735,6 +1743,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             step: "begin-disable",
             startedAt: now,
             identifiers: null,
+            origin: null,
             finalPassAt: null,
           },
           lifecycleVersion: lifecycle.lifecycleVersion + 1,
@@ -1784,7 +1793,15 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           if (operation.identifiers === null) throw new Error("corrupt enable operation");
           const meta = await authority.readMeta();
           const generation = (meta?.highWater ?? 0) + 1;
-          const activated = await authority.activate({ generation, watermark: 0 });
+          const activated = await authority.activate({
+            generation,
+            watermark: 0,
+            snapshot: {
+              messagingChannelId: (operation.identifiers as LineIdentifiers)
+                .messagingChannelId,
+              origin: operation.origin ?? "",
+            },
+          });
           if (!activated.ok) continue; // raced a concurrent mint; re-read and retry
           this.ctx.storage.transactionSync(() => {
             const current = this.#readLineLifecycle();
@@ -1828,7 +1845,19 @@ export class InstallationConfig extends DurableObjectBase<Env> {
             );
             return;
           }
-          await authority.completeDisable();
+          // The idempotent beginDisable re-call reports purge progress; the
+          // authority refuses completion until a post-lease full purge pass
+          // finished, so keep polling until it flips to disabled.
+          const progress = await authority.beginDisable();
+          if (!progress.purgeComplete) {
+            await this.ctx.storage.setAlarm(Date.now() + 60_000);
+            return;
+          }
+          const completed = await authority.completeDisable();
+          if (completed.meta.state !== "disabled") {
+            await this.ctx.storage.setAlarm(Date.now() + 60_000);
+            return;
+          }
           this.ctx.storage.transactionSync(() => {
             const current = this.#readLineLifecycle();
             if (current?.operation?.operationId !== operation.operationId) return;

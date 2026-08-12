@@ -3,10 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ADAPTER, fullCycleBoundS, WORST_CASE_PARTITIONS } from "../src/adapter-constants.ts";
 import {
+  clearTokenCacheForTests,
+  mintChannelToken,
   parseWebhookBody,
+  pushMessage,
+  serializeMessageV1,
   verifyIdToken,
   verifyWebhookSignature,
   type LineFetch,
+  type MessageFragment,
 } from "../src/line-adapter.ts";
 import worker from "../src/worker.ts";
 import {
@@ -20,7 +25,7 @@ import {
   signWebhookBody,
 } from "./line-helpers.ts";
 
-const NOW = Date.parse("2025-01-14T15:00:00.000Z");
+const NOW = Date.parse("2027-01-14T15:00:00.000Z");
 const SUBJECT = `U${"a".repeat(32)}`;
 const OTHER_SUBJECT = `U${"b".repeat(32)}`;
 
@@ -41,10 +46,11 @@ const validClaims = (sub = SUBJECT) => ({
 });
 
 beforeEach(() => {
-  vi.spyOn(Date, "now").mockReturnValue(NOW);
+  vi.useFakeTimers({ toFake: ["Date"], now: NOW });
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await reset();
@@ -244,6 +250,140 @@ describe("constants inequalities (T033)", () => {
         expect(value, name).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("message templates and the v1 serializer (FR-009)", () => {
+  const fragment = (type: MessageFragment["type"]): MessageFragment => ({
+    v: 1,
+    type,
+    date: "2027-01-15",
+    startTime: "09:00",
+  });
+
+  it("renders all five events with only time, state, next step, and the management link", () => {
+    for (const type of ["approve", "reject", "reschedule", "cancel", "expire"] as const) {
+      const messages = serializeMessageV1(fragment(type), "https://example.test");
+      expect(messages).toHaveLength(1);
+      const message = messages[0]!;
+      expect(Object.keys(message).sort()).toEqual(["text", "type"]);
+      expect(message.type).toBe("text");
+      expect(message.text).toContain("2027-01-15 09:00");
+      expect(message.text).toContain("https://example.test/bookings.html");
+      // FR-009 minimal payload: no customer name, notes, contact, or history
+      // can appear — the fragment cannot even carry them.
+      expect(message.text).not.toContain("花子");
+      expect(message.text).not.toContain("@");
+    }
+    expect(serializeMessageV1(fragment("approve"), "https://example.test")[0]!.text).toContain(
+      "確定",
+    );
+  });
+
+  it("serializes byte-identically across calls (retry-safe by construction)", () => {
+    const first = JSON.stringify(serializeMessageV1(fragment("cancel"), "https://example.test"));
+    const second = JSON.stringify(serializeMessageV1(fragment("cancel"), "https://example.test"));
+    expect(first).toBe(second);
+  });
+});
+
+describe("token mint and push client", () => {
+  beforeEach(() => {
+    clearTokenCacheForTests();
+  });
+
+  const tokenFetch = (status: number, body?: unknown): LineFetch =>
+    (() =>
+      Promise.resolve(
+        new Response(JSON.stringify(body ?? { access_token: "tok", token_type: "Bearer", expires_in: 900 }), {
+          status,
+        }),
+      )) as LineFetch;
+
+  it("mints and caches a stateless token, keyed by generation and secret digest", async () => {
+    let calls = 0;
+    const fetcher: LineFetch = (input, init) => {
+      calls += 1;
+      expect(String(input)).toBe("https://api.line.me/oauth2/v3/token");
+      expect(String(init.body)).toContain("grant_type=client_credentials");
+      return tokenFetch(200)(input, init);
+    };
+    const first = await mintChannelToken(
+      { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(first).toEqual({ ok: true, accessToken: "tok" });
+    await mintChannelToken(
+      { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(calls).toBe(1);
+    // A different generation misses the cache.
+    await mintChannelToken(
+      { generation: 2, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+      fetcher,
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("maps token endpoint failures: 5xx retryable, 4xx configuration-rejected", async () => {
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(500),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(401, { error: "invalid_client" }),
+      ),
+    ).toEqual({ ok: false, code: "CONFIG_REJECTED" });
+  });
+
+  it("maps push outcomes: 200 sent, 409 accepted, 429 quota, 5xx retryable, 4xx rejected", async () => {
+    const push = (status: number) =>
+      pushMessage(
+        {
+          accessToken: "tok",
+          to: SUBJECT,
+          messages: serializeMessageV1(
+            { v: 1, type: "approve", date: "2027-01-15", startTime: "09:00" },
+            "https://example.test",
+          ),
+          retryKey: crypto.randomUUID(),
+        },
+        (() => Promise.resolve(new Response("{}", { status }))) as LineFetch,
+      );
+    expect(await push(200)).toEqual({ ok: true, accepted: false });
+    expect(await push(409)).toEqual({ ok: true, accepted: true });
+    expect(await push(429)).toEqual({ ok: false, code: "QUOTA_REFUSED" });
+    expect(await push(500)).toEqual({ ok: false, code: "RETRYABLE" });
+    expect(await push(400)).toEqual({ ok: false, code: "REJECTED" });
+  });
+
+  it("sends the persisted retry key and a byte-identical body on every attempt", async () => {
+    const bodies: string[] = [];
+    const keys: string[] = [];
+    const fetcher: LineFetch = (input, init) => {
+      expect(String(input)).toBe("https://api.line.me/v2/bot/message/push");
+      bodies.push(String(init.body));
+      keys.push((init.headers as Record<string, string>)["x-line-retry-key"]);
+      return Promise.resolve(new Response("{}", { status: 500 }));
+    };
+    const request = {
+      accessToken: "tok",
+      to: SUBJECT,
+      messages: serializeMessageV1(
+        { v: 1, type: "cancel", date: "2027-01-15", startTime: "09:00" },
+        "https://example.test",
+      ),
+      retryKey: "11111111-2222-4333-8444-555555555555",
+    };
+    await pushMessage(request, fetcher);
+    await pushMessage(request, fetcher);
+    expect(bodies[0]).toBe(bodies[1]);
+    expect(keys).toEqual([request.retryKey, request.retryKey]);
   });
 });
 

@@ -1380,6 +1380,7 @@ const handleLineLifecycle = async (
   const result = await installationStub(env).executeLineCommand(
     { operation, ...parsed.value },
     runtimeFor(env, url, true),
+    { origin: url.origin },
   );
   return lineCommandResponse(result);
 };
@@ -1398,9 +1399,9 @@ const handleLineStatus = async (
   const lifecycle = await installationStub(env).lineAdapterStatus();
   // The authority read is diagnostic; a stalled delivery object must not take
   // the setup surface down with it.
-  let authority: Awaited<ReturnType<AdapterDelivery["readMeta"]>> | "unavailable" = null;
+  let authority: Awaited<ReturnType<AdapterDelivery["diagnostics"]>> | "unavailable" = null;
   try {
-    authority = await adapterDeliveryStub(env).readMeta();
+    authority = await adapterDeliveryStub(env).diagnostics();
   } catch {
     authority = "unavailable";
   }

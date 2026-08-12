@@ -1176,6 +1176,37 @@ export class ReservationDay extends DurableObject<Env> {
     return { ok: true };
   }
 
+  /**
+   * Disable-saga purge: remove one consumer's outbox rows, and drop the
+   * adapter tables entirely when no consumer's rows remain — returning the day
+   * to the exact pre-adapter storage shape. On a day that never emitted an
+   * event this is a no-op that creates nothing.
+   */
+  async purgeConsumer(input: { consumer: "line" }): Promise<{
+    ok: true;
+    removed: number;
+    dropped: boolean;
+  }> {
+    if (typeof input !== "object" || input === null || input.consumer !== "line") {
+      throw new Error("bad purge input");
+    }
+    if (!this.#adapterOutboxExists()) return { ok: true, removed: 0, dropped: false };
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const removed = sql.exec(
+        "DELETE FROM __adapter_outbox WHERE consumer = ?",
+        input.consumer,
+      ).rowsWritten;
+      const remaining =
+        sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox").toArray()[0]
+          ?.n ?? 0;
+      if (remaining > 0) return { ok: true as const, removed, dropped: false };
+      sql.exec("DROP TABLE __adapter_outbox");
+      sql.exec("DROP TABLE __adapter_meta");
+      return { ok: true as const, removed, dropped: true };
+    });
+  }
+
   // The enable saga's watermark read: events at or below this sequence predate
   // the link and are never delivered retroactively.
   async readEventSequence(): Promise<{ eventSeq: number }> {

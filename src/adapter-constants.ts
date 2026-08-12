@@ -69,8 +69,21 @@ export const ADAPTER = Object.freeze({
   /** Redacted terminal-failure ledger retention. */
   LEDGER_TTL_S: 2592000,
   LEDGER_CAP: 500,
-  /** Pending deliveries per installation; overflow terminalizes the oldest with reason "overflow". */
+  /** Pending deliveries per installation; overflow terminalizes the incoming event with reason "overflow" (evicting an in-flight claim would break its invariants). */
   DELIVERY_QUEUE_CAP: 2000,
+  /** Fixed sweep window: [today − SWEEP_PAST_DAYS, today + SWEEP_FUTURE_DAYS]. A deliberate
+   * superset of every configurable retention/horizon window (365 + 1 and 90 at their caps), so
+   * the authority never needs a config read; days outside the real window simply hold no outbox. */
+  SWEEP_PAST_DAYS: 366,
+  SWEEP_FUTURE_DAYS: 90,
+  /** Deliveries attempted per alarm run (each is one outbound push + possibly one token mint). */
+  SEND_BATCH: 8,
+  /** In-flight send claim lease; a claim older than this recovers to queued (same retry key). */
+  SEND_CLAIM_LEASE_S: 30,
+  /** Cadence for re-checking whether a missing secret has been restored. */
+  CONFIG_RECHECK_S: 300,
+  /** First-pushed awaiting-configuration deliveries terminalize this margin before the retry-key window ends. */
+  RETRY_KEY_SAFETY_MARGIN_S: 3600,
   /** Lifecycle command receipts. */
   RECEIPT_CAP: 50,
   RECEIPT_TTL_S: 7776000,

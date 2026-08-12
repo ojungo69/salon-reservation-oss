@@ -1,6 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 
-import { ADAPTER } from "./adapter-constants.ts";
+import { ADAPTER, WORST_CASE_PARTITIONS, fullCycleBoundS } from "./adapter-constants.ts";
+import {
+  mintChannelToken,
+  pushMessage,
+  serializeMessageV1,
+  type MessageFragment,
+} from "./line-adapter.ts";
+import type { AdapterOutboxEvent } from "./reservation-day.ts";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID =
@@ -9,9 +16,11 @@ const NONCE = /^[0-9a-f]{32}$/;
 const LINE_SUBJECT = /^U[0-9a-f]{32}$/;
 const NONCE_FREE_ID = /^[0-9A-Za-z-]{1,64}$/;
 
-// Delivery states a row in `deliveries` can hold. Terminal rows move their
-// reason into the redacted ledger and keep no payload.
+const EVENT_TYPES = ["approve", "reject", "reschedule", "cancel", "expire"] as const;
+
 export type AdapterState = "never" | "active" | "deactivating" | "disabled";
+
+export type AdapterSnapshot = { messagingChannelId: string; origin: string };
 
 export type AdapterDeliveryMeta = {
   state: AdapterState;
@@ -24,10 +33,66 @@ export type AdapterDeliveryMeta = {
   // the installation's links and are never delivered retroactively.
   watermark: number;
   updatedAt: string;
+  // Non-secret channel snapshot captured at activation so alarms can send
+  // without any config read. Null outside `active`/`deactivating`.
+  snapshot: AdapterSnapshot | null;
+  beginDisableAt: number | null;
+  purgeCompletedAt: number | null;
+  sweepCursor: string | null;
 };
 
 export type PokeDayInput = { date: string };
 export type PokeDayResult = { ok: true; drained: number };
+
+export type AdapterDiagnostics = {
+  state: AdapterState;
+  generation: number;
+  pending: number;
+  oldestPendingAt: string | null;
+  sweepCursor: string | null;
+  purgeCompletedAt: number | null;
+  counters: Record<string, number>;
+  // Redacted terminal ledger tail: reason + event type + time only.
+  ledger: Array<{ reason: string; eventType: string; occurredAt: string }>;
+};
+
+type DeliveryRow = {
+  delivery_id: string;
+  event_id: string;
+  reservation_id: string;
+  type: string;
+  payload_json: string;
+  link_version: number;
+  retry_key: string;
+  attempt: number;
+  next_attempt_at: number;
+  first_attempt_at: number | null;
+  claimed_at: number | null;
+  status: string;
+  park_reason: string | null;
+  date: string;
+  created_at: string;
+};
+
+const dateOffset = (date: string, days: number): string => {
+  const [y, m, d] = date.split("-").map(Number);
+  const shifted = new Date(Date.UTC(y as number, (m as number) - 1, (d as number) + days));
+  return shifted.toISOString().slice(0, 10);
+};
+
+const withDeadline = async <T>(work: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("rpc deadline")), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 /**
  * Installation-singleton delivery and lifecycle authority for the LINE
@@ -53,7 +118,9 @@ export class AdapterDelivery extends DurableObject<Env> {
   }
 
   // Idempotent on every call: CREATE IF NOT EXISTS per table, so a later
-  // release adding a table needs no migration machinery.
+  // release adding a table needs no migration machinery. Status/disposition
+  // vocabularies are validated in code, not CHECK constraints — SQLite CHECKs
+  // cannot be widened after release.
   #ensureSchema(): void {
     const hadMeta = this.#hasSchema();
     const sql = this.ctx.storage.sql;
@@ -65,12 +132,18 @@ export class AdapterDelivery extends DurableObject<Env> {
           generation INTEGER NOT NULL CHECK (generation >= 0),
           high_water INTEGER NOT NULL CHECK (high_water >= 0),
           watermark INTEGER NOT NULL CHECK (watermark >= 0),
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          snapshot_json TEXT,
+          begin_disable_at INTEGER,
+          purge_completed_at INTEGER,
+          sweep_cursor TEXT,
+          cycle_started_at INTEGER
         )
       `);
       sql.exec(`
         CREATE TABLE IF NOT EXISTS accepted_events (
-          event_id TEXT PRIMARY KEY,
+          event_key TEXT PRIMARY KEY,
+          event_id TEXT NOT NULL,
           date TEXT NOT NULL,
           generation INTEGER NOT NULL,
           seq INTEGER NOT NULL,
@@ -103,7 +176,11 @@ export class AdapterDelivery extends DurableObject<Env> {
           retry_key TEXT NOT NULL,
           attempt INTEGER NOT NULL CHECK (attempt >= 0),
           next_attempt_at INTEGER NOT NULL,
-          status TEXT NOT NULL CHECK (status IN ('queued', 'awaiting-configuration')),
+          first_attempt_at INTEGER,
+          claimed_at INTEGER,
+          status TEXT NOT NULL,
+          park_reason TEXT,
+          date TEXT NOT NULL,
           created_at TEXT NOT NULL
         )
       `);
@@ -161,8 +238,14 @@ export class AdapterDelivery extends DurableObject<Env> {
         high_water: number;
         watermark: number;
         updated_at: string;
+        snapshot_json: string | null;
+        begin_disable_at: number | null;
+        purge_completed_at: number | null;
+        sweep_cursor: string | null;
       }>(
-        "SELECT state, generation, high_water, watermark, updated_at FROM meta WHERE singleton = 1",
+        `SELECT state, generation, high_water, watermark, updated_at, snapshot_json,
+                begin_disable_at, purge_completed_at, sweep_cursor
+         FROM meta WHERE singleton = 1`,
       )
       .toArray()[0];
     if (
@@ -174,12 +257,29 @@ export class AdapterDelivery extends DurableObject<Env> {
     ) {
       throw new Error("corrupt adapter meta");
     }
+    let snapshot: AdapterSnapshot | null = null;
+    if (row.snapshot_json !== null) {
+      const parsed: unknown = JSON.parse(row.snapshot_json);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        typeof (parsed as AdapterSnapshot).messagingChannelId !== "string" ||
+        typeof (parsed as AdapterSnapshot).origin !== "string"
+      ) {
+        throw new Error("corrupt adapter snapshot");
+      }
+      snapshot = parsed as AdapterSnapshot;
+    }
     return {
       state: row.state as AdapterState,
       generation: row.generation,
       highWater: row.high_water,
       watermark: row.watermark,
       updatedAt: row.updated_at,
+      snapshot,
+      beginDisableAt: row.begin_disable_at,
+      purgeCompletedAt: row.purge_completed_at,
+      sweepCursor: row.sweep_cursor,
     };
   }
 
@@ -190,6 +290,152 @@ export class AdapterDelivery extends DurableObject<Env> {
       name,
       by,
     );
+  }
+
+  /** Redacted terminal record: reason + event type + time, nothing else. */
+  #recordTerminal(reason: string, eventType: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO ledger (reason, event_type, occurred_at) VALUES (?, ?, ?)",
+      reason,
+      eventType,
+      new Date().toISOString(),
+    );
+    this.#bumpCounter(`terminal:${reason}`, 1);
+  }
+
+  #secretPresent(): boolean {
+    const secret = this.env.LINE_MESSAGING_CHANNEL_SECRET;
+    return typeof secret === "string" && secret.length >= 16 && secret.length <= 128;
+  }
+
+  /**
+   * Pre-arm helper: awaited BEFORE the transaction that creates the work, so
+   * a crash between the two leaves at worst a spurious wake-up (the handler
+   * reconstructs every piece of work from storage alone).
+   */
+  async #armAlarm(dueAtMs: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > dueAtMs) {
+      await this.ctx.storage.setAlarm(dueAtMs);
+    }
+  }
+
+  // ---- the single disposition function (plan decision 8, priorities 0–6) ----
+
+  /**
+   * Dispose one pulled day event inside the caller's transaction. Priority 0
+   * (`never`/`disabled` → zero persistence) is enforced by the callers before
+   * any write; this function covers priorities 1–6 and records the outcome in
+   * `accepted_events`. Every ingress (waitUntil poke, sweep pull, finalize's
+   * re-disposition of held rows) routes through here, so one event can never
+   * resolve differently by route.
+   */
+  #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number): string {
+    const sql = this.ctx.storage.sql;
+    let disposition: string;
+    const occurredAtMs = Date.parse(event.occurredAt);
+    if (event.generation !== meta.generation) {
+      disposition = "canceled";
+    } else if (
+      now + fullCycleBoundS(WORST_CASE_PARTITIONS) * 1000 >
+      occurredAtMs + ADAPTER.HANDOFF_TERMINAL_LEAD_S * 1000
+    ) {
+      // Next-guaranteed-visit rule: if the lead would expire before the sweep
+      // provably returns, this visit is the last safe one — terminalize now.
+      disposition = "late-terminal";
+    } else {
+      const link = sql
+        .exec<{ subject: string; status: string; watermark_seq: number; link_version: number; expires_at: number | null }>(
+          "SELECT subject, status, watermark_seq, link_version, expires_at FROM links WHERE reservation_id = ?",
+          event.reservationId,
+        )
+        .toArray()[0];
+      const liveProvisional =
+        link !== undefined &&
+        link.status === "provisional" &&
+        (link.expires_at === null || link.expires_at >= now);
+      if (liveProvisional) {
+        disposition = "held";
+      } else if (link === undefined || link.status !== "final") {
+        disposition = "ignored-no-recipient";
+      } else if (event.seq <= link.watermark_seq) {
+        disposition = "ignored-prelink";
+      } else {
+        const pending =
+          sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries").toArray()[0]?.n ??
+          0;
+        if (pending >= ADAPTER.DELIVERY_QUEUE_CAP) {
+          disposition = "overflow";
+        } else {
+          disposition = this.#secretPresent() ? "queued" : "awaiting-configuration";
+        }
+      }
+      if (disposition === "held" || disposition === "queued" || disposition === "awaiting-configuration") {
+        const fragment: MessageFragment = {
+          v: 1,
+          type: event.type,
+          date: event.date,
+          startTime: event.startTime,
+        };
+        const linkVersion = link?.link_version ?? 0;
+        sql.exec(
+          `INSERT INTO deliveries
+             (delivery_id, event_id, reservation_id, type, payload_json, link_version,
+              retry_key, attempt, next_attempt_at, first_attempt_at, claimed_at, status,
+              park_reason, date, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, NULL, ?, ?)
+           ON CONFLICT(delivery_id) DO NOTHING`,
+          `${event.generation}:${event.eventId}`,
+          event.eventId,
+          event.reservationId,
+          event.type,
+          JSON.stringify(fragment),
+          linkVersion,
+          crypto.randomUUID(),
+          now,
+          disposition === "held" ? "held" : disposition,
+          event.date,
+          new Date().toISOString(),
+        );
+      }
+    }
+    if (disposition === "late-terminal") this.#recordTerminal("late-handoff", event.type);
+    if (disposition === "overflow") this.#recordTerminal("overflow", event.type);
+    sql.exec(
+      `INSERT INTO accepted_events (event_key, event_id, date, generation, seq, disposition, accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `${event.generation}:${event.eventId}`,
+      event.eventId,
+      event.date,
+      event.generation,
+      event.seq,
+      disposition,
+      new Date().toISOString(),
+    );
+    this.#bumpCounter(`disposition:${disposition}`, 1);
+    return disposition;
+  }
+
+  /** Accept a pulled batch in one local transaction; returns accepted count. */
+  #acceptBatch(events: AdapterOutboxEvent[]): number {
+    let accepted = 0;
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      const meta = this.#readMeta();
+      if (meta.state !== "active" && meta.state !== "deactivating") return;
+      for (const event of events) {
+        const seen = this.ctx.storage.sql
+          .exec<{ event_key: string }>(
+            "SELECT event_key FROM accepted_events WHERE event_key = ?",
+            `${event.generation}:${event.eventId}`,
+          )
+          .toArray();
+        if (seen.length > 0) continue;
+        this.#disposeEvent(event, meta, now);
+        accepted += 1;
+      }
+    });
+    return accepted;
   }
 
   /**
@@ -218,33 +464,8 @@ export class AdapterDelivery extends DurableObject<Env> {
         limit: ADAPTER.OUTBOX_DRAIN_BATCH,
       });
       if (batch.events.length > 0) {
-        this.ctx.storage.transactionSync(() => {
-          for (const event of batch.events) {
-            const seen = this.ctx.storage.sql
-              .exec<{ event_id: string }>(
-                "SELECT event_id FROM accepted_events WHERE event_id = ?",
-                event.eventId,
-              )
-              .toArray();
-            if (seen.length > 0) continue;
-            // Disposition skeleton: the full priority order lands with the
-            // delivery pipeline; the foundation only distinguishes stale
-            // generations from acceptable events and records the outcome.
-            const disposition =
-              event.generation !== meta.generation ? "canceled" : "accepted";
-            this.ctx.storage.sql.exec(
-              `INSERT INTO accepted_events (event_id, date, generation, seq, disposition, accepted_at)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-              event.eventId,
-              event.date,
-              event.generation,
-              event.seq,
-              disposition,
-              new Date().toISOString(),
-            );
-            this.#bumpCounter(`disposition:${disposition}`, 1);
-          }
-        });
+        await this.#armAlarm(Date.now());
+        this.#acceptBatch(batch.events);
         await stub.ackOutbox({
           consumer: "line",
           eventIds: batch.events.map(({ eventId }) => eventId),
@@ -260,6 +481,44 @@ export class AdapterDelivery extends DurableObject<Env> {
   async readMeta(): Promise<AdapterDeliveryMeta | null> {
     if (!this.#hasSchema()) return null;
     return this.#readMeta();
+  }
+
+  /** Operator diagnostics: counts and the redacted ledger tail. Secret-free. */
+  async diagnostics(): Promise<AdapterDiagnostics | null> {
+    if (!this.#hasSchema()) return null;
+    const meta = this.#readMeta();
+    const sql = this.ctx.storage.sql;
+    const pendingRow = sql
+      .exec<{ n: number; oldest: string | null }>(
+        "SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM deliveries",
+      )
+      .toArray()[0];
+    const counters: Record<string, number> = {};
+    for (const row of sql
+      .exec<{ name: string; value: number }>("SELECT name, value FROM counters")
+      .toArray()) {
+      counters[row.name] = row.value;
+    }
+    const ledger = sql
+      .exec<{ reason: string; event_type: string; occurred_at: string }>(
+        "SELECT reason, event_type, occurred_at FROM ledger ORDER BY entry_id DESC LIMIT 20",
+      )
+      .toArray()
+      .map((row) => ({
+        reason: row.reason,
+        eventType: row.event_type,
+        occurredAt: row.occurred_at,
+      }));
+    return {
+      state: meta.state,
+      generation: meta.generation,
+      pending: pendingRow?.n ?? 0,
+      oldestPendingAt: pendingRow?.oldest ?? null,
+      sweepCursor: meta.sweepCursor,
+      purgeCompletedAt: meta.purgeCompletedAt,
+      counters,
+      ledger,
+    };
   }
 
   // ---- Reservation-scoped link surface (specs plan, decision 6) ----
@@ -290,6 +549,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     crypto.getRandomValues(bytes);
     const nonce = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
     const expiresAt = Date.now() + ADAPTER.INTENT_NONCE_TTL_S * 1000;
+    await this.#armAlarm(Date.now() + ADAPTER.PROVISIONAL_LINK_TTL_S * 1000);
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (meta.state !== "active" || meta.generation !== input.generation) {
@@ -356,7 +616,9 @@ export class AdapterDelivery extends DurableObject<Env> {
    * intent inside the transaction; the watermark (the day's event sequence at
    * this moment) separates never-delivered prelink events from deliverable
    * ones. Same-subject repeat → no-op; different subject over a final link →
-   * surfaced conflict, never an overwrite.
+   * surfaced conflict, never an overwrite. Held events for the reservation
+   * are re-disposed here through the same disposition rules: at or below the
+   * watermark → `ignored-prelink`; above it → queued for delivery.
    */
   async finalizeLink(input: {
     nonce: string;
@@ -391,6 +653,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     } catch {
       // A day that cannot answer has no adapter rows to fence; zero is safe.
     }
+    await this.#armAlarm(Date.now());
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       const sql = this.ctx.storage.sql;
@@ -426,6 +689,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         return { ok: false as const, code: "LINK_CONFLICT" as const };
       }
       const now = new Date().toISOString();
+      const linkVersion = (existing?.link_version ?? 0) + 1;
       sql.exec(
         `INSERT INTO links
            (reservation_id, date, subject, status, generation, watermark_seq, link_version, created_at, finalized_at, expires_at)
@@ -439,21 +703,51 @@ export class AdapterDelivery extends DurableObject<Env> {
            finalized_at = excluded.finalized_at,
            expires_at = NULL`,
         intent.reservation_id, intent.date, input.subject, intent.generation,
-        watermark, (existing?.link_version ?? 0) + 1, now, now,
+        watermark, linkVersion, now, now,
       );
       sql.exec(
         `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, 1, ?)
          ON CONFLICT(subject) DO NOTHING`,
         input.subject, Date.now(),
       );
+      // Re-dispose held events now that the watermark exists.
+      const held = sql
+        .exec<{ delivery_id: string; event_id: string; type: string }>(
+          "SELECT delivery_id, event_id, type FROM deliveries WHERE reservation_id = ? AND status = 'held'",
+          intent.reservation_id,
+        )
+        .toArray();
+      for (const row of held) {
+        const acceptedSeq = sql
+          .exec<{ seq: number }>(
+            "SELECT seq FROM accepted_events WHERE event_key = ?",
+            row.delivery_id,
+          )
+          .toArray()[0];
+        if (acceptedSeq === undefined || acceptedSeq.seq <= watermark) {
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+          this.#bumpCounter("disposition:ignored-prelink", 1);
+          continue;
+        }
+        sql.exec(
+          `UPDATE deliveries SET status = ?, link_version = ?, next_attempt_at = ?
+           WHERE delivery_id = ?`,
+          this.#secretPresent() ? "queued" : "awaiting-configuration",
+          linkVersion,
+          Date.now(),
+          row.delivery_id,
+        );
+      }
       this.#bumpCounter("links_finalized", 1);
       return { ok: true as const, reservationId: intent.reservation_id, replayed: false };
     });
   }
 
   /** Management-proof unlink: works in every degraded state, needs nothing
-   * from LINE. Queued deliveries resolve their subject at send time, so
-   * removing the link is sufficient. */
+   * from LINE. Pending deliveries for the reservation are discarded in the
+   * same transaction (recorded in the redacted ledger), so no push can start
+   * after the unlink commit — an in-flight claim finds its row gone and drops
+   * the outcome. */
   async unlink(input: { reservationId: string }): Promise<{ ok: true; existed: boolean }> {
     if (typeof input !== "object" || input === null || !UUID.test(input.reservationId)) {
       throw new Error("bad unlink input");
@@ -468,6 +762,14 @@ export class AdapterDelivery extends DurableObject<Env> {
             input.reservationId,
           )
           .toArray().length > 0;
+      const pending = sql
+        .exec<{ type: string }>(
+          "SELECT type FROM deliveries WHERE reservation_id = ?",
+          input.reservationId,
+        )
+        .toArray();
+      for (const row of pending) this.#recordTerminal("unlinked", row.type);
+      sql.exec("DELETE FROM deliveries WHERE reservation_id = ?", input.reservationId);
       sql.exec("DELETE FROM links WHERE reservation_id = ?", input.reservationId);
       sql.exec("DELETE FROM intents WHERE reservation_id = ?", input.reservationId);
       return { ok: true as const, existed };
@@ -501,8 +803,10 @@ export class AdapterDelivery extends DurableObject<Env> {
 
   /**
    * Signature-verified webhook events: dedup by webhookEventId, apply
-   * follow/unfollow ordered by timestamp. Anything while not active is
-   * acknowledged with zero persistence (disposition priority 0).
+   * follow/unfollow ordered by timestamp (equal timestamps: unfollow wins —
+   * the safe side). An unfollow parks the subject's pending deliveries; a
+   * follow re-queues parked ones. Anything while not active is acknowledged
+   * with zero persistence (disposition priority 0).
    */
   async processWebhook(input: {
     events: Array<{
@@ -522,6 +826,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       throw new Error("bad webhook input");
     }
     if (!this.#hasSchema()) return { ok: true, applied: 0, duplicates: 0 };
+    await this.#armAlarm(Date.now());
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (meta.state !== "active") return { ok: true as const, applied: 0, duplicates: 0 };
@@ -529,7 +834,11 @@ export class AdapterDelivery extends DurableObject<Env> {
       const now = Date.now();
       let applied = 0;
       let duplicates = 0;
-      const ordered = [...input.events].sort((a, b) => a.timestamp - b.timestamp);
+      const ordered = [...input.events].sort((a, b) =>
+        a.timestamp !== b.timestamp
+          ? a.timestamp - b.timestamp
+          : (a.type === "unfollow" ? 1 : 0) - (b.type === "unfollow" ? 1 : 0),
+      );
       for (const event of ordered) {
         if (
           !NONCE_FREE_ID.test(event.webhookEventId) ||
@@ -548,6 +857,18 @@ export class AdapterDelivery extends DurableObject<Env> {
           duplicates += 1;
           continue;
         }
+        const current = sql
+          .exec<{ followed: number; updated_at: number }>(
+            "SELECT followed, updated_at FROM subjects WHERE subject = ?",
+            event.userId,
+          )
+          .toArray()[0];
+        // Ordered by event timestamp: an older follow can never resurrect a
+        // newer unfollow (ties break toward unfollow above).
+        if (current !== undefined && current.updated_at > event.timestamp) {
+          applied += 1;
+          continue;
+        }
         sql.exec(
           `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, ?, ?)
            ON CONFLICT(subject) DO UPDATE SET
@@ -557,6 +878,27 @@ export class AdapterDelivery extends DurableObject<Env> {
           event.type === "follow" ? 1 : 0,
           event.timestamp,
         );
+        if (event.type === "unfollow") {
+          sql.exec(
+            `UPDATE deliveries SET status = 'parked', park_reason = 'unfollow'
+             WHERE status IN ('queued', 'awaiting-configuration')
+               AND reservation_id IN (
+                 SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+               )`,
+            event.userId,
+          );
+        } else {
+          sql.exec(
+            `UPDATE deliveries SET status = ?, park_reason = NULL, next_attempt_at = ?
+             WHERE status = 'parked' AND park_reason = 'unfollow'
+               AND reservation_id IN (
+                 SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+               )`,
+            this.#secretPresent() ? "queued" : "awaiting-configuration",
+            now,
+            event.userId,
+          );
+        }
         applied += 1;
       }
       // Retention: TTL prune plus cap eviction folded into a counter so
@@ -618,11 +960,14 @@ export class AdapterDelivery extends DurableObject<Env> {
   /**
    * Activate a generation. Strictly-above-high-water is enforced here, at the
    * authority, so no saga replay or delayed RPC can ever re-activate or reuse
-   * a generation — the property the persistent high-water exists for.
+   * a generation — the property the persistent high-water exists for. The
+   * snapshot (messaging channel + origin, no secret) lets alarms send without
+   * any config read.
    */
   async activate(input: {
     generation: number;
     watermark: number;
+    snapshot?: AdapterSnapshot;
   }): Promise<{ ok: true; meta: AdapterDeliveryMeta } | { ok: false; code: "STALE_GENERATION" }> {
     if (
       typeof input !== "object" ||
@@ -630,67 +975,511 @@ export class AdapterDelivery extends DurableObject<Env> {
       !Number.isSafeInteger(input.generation) ||
       input.generation < 1 ||
       !Number.isSafeInteger(input.watermark) ||
-      input.watermark < 0
+      input.watermark < 0 ||
+      (input.snapshot !== undefined &&
+        (typeof input.snapshot !== "object" ||
+          input.snapshot === null ||
+          typeof input.snapshot.messagingChannelId !== "string" ||
+          typeof input.snapshot.origin !== "string"))
     ) {
       throw new Error("bad activate input");
     }
     this.#ensureSchema();
+    await this.#armAlarm(Date.now() + ADAPTER.SWEEP_REARM_DELAY_S * 1000);
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (input.generation <= meta.highWater) return { ok: false as const, code: "STALE_GENERATION" as const };
       this.ctx.storage.sql.exec(
-        `UPDATE meta SET state = 'active', generation = ?, high_water = ?, watermark = ?, updated_at = ?
+        `UPDATE meta SET state = 'active', generation = ?, high_water = ?, watermark = ?,
+                updated_at = ?, snapshot_json = ?, begin_disable_at = NULL,
+                purge_completed_at = NULL, sweep_cursor = NULL, cycle_started_at = NULL
          WHERE singleton = 1`,
         input.generation,
         input.generation,
         input.watermark,
         new Date().toISOString(),
+        input.snapshot === undefined ? null : JSON.stringify(input.snapshot),
       );
       return { ok: true as const, meta: this.#readMeta() };
     });
   }
 
-  /** Disable saga entry: stop accepting the current generation's new work. */
-  async beginDisable(): Promise<{ ok: true; meta: AdapterDeliveryMeta }> {
+  /**
+   * Disable saga entry: stop accepting the current generation's new work and
+   * start the purge pass. Idempotent — a re-call reports purge progress; the
+   * saga polls it until `purgeComplete`.
+   */
+  async beginDisable(): Promise<{
+    ok: true;
+    meta: AdapterDeliveryMeta;
+    purgeComplete: boolean;
+  }> {
     this.#ensureSchema();
+    await this.#armAlarm(Date.now());
     this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (meta.state === "active") {
         this.ctx.storage.sql.exec(
-          "UPDATE meta SET state = 'deactivating', updated_at = ? WHERE singleton = 1",
+          `UPDATE meta SET state = 'deactivating', updated_at = ?, begin_disable_at = ?,
+                  purge_completed_at = NULL, sweep_cursor = NULL, cycle_started_at = NULL
+           WHERE singleton = 1`,
           new Date().toISOString(),
+          Date.now(),
         );
       }
     });
-    return { ok: true, meta: this.#readMeta() };
+    const meta = this.#readMeta();
+    return { ok: true, meta, purgeComplete: meta.purgeCompletedAt !== null };
   }
 
   /**
-   * Disable saga completion — called only after the purge passes finish.
-   * Clears every personal/event row; the meta row (with its high-water) and
-   * the TTL-bounded non-identifying stores are what remains.
+   * Disable saga completion. Refused (state stays `deactivating`) until a full
+   * sweep purge pass that started after `beginDisableAt + FINAL_PASS_LEASE_WAIT_S`
+   * has finished — every issued descriptor lease has then provably expired and
+   * every day partition has been visited and purged. Clears every
+   * personal/event row; the meta row (with its high-water) and the
+   * TTL-bounded non-identifying stores are what remains.
    */
   async completeDisable(): Promise<{ ok: true; meta: AdapterDeliveryMeta }> {
     this.#ensureSchema();
     this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
-      if (meta.state !== "deactivating") return;
-      this.ctx.storage.sql.exec("DELETE FROM links");
-      this.ctx.storage.sql.exec("DELETE FROM deliveries");
-      this.ctx.storage.sql.exec("DELETE FROM accepted_events");
-      this.ctx.storage.sql.exec(
-        "UPDATE meta SET state = 'disabled', updated_at = ? WHERE singleton = 1",
+      if (meta.state !== "deactivating" || meta.purgeCompletedAt === null) return;
+      const sql = this.ctx.storage.sql;
+      const pending = sql
+        .exec<{ type: string }>("SELECT type FROM deliveries")
+        .toArray();
+      for (const row of pending) this.#recordTerminal("disabled", row.type);
+      sql.exec("DELETE FROM links");
+      sql.exec("DELETE FROM deliveries");
+      sql.exec("DELETE FROM accepted_events");
+      sql.exec("DELETE FROM intents");
+      sql.exec("DELETE FROM subjects");
+      sql.exec(
+        `UPDATE meta SET state = 'disabled', updated_at = ?, snapshot_json = NULL,
+                sweep_cursor = NULL, cycle_started_at = NULL
+         WHERE singleton = 1`,
         new Date().toISOString(),
       );
     });
-    return { ok: true, meta: this.#readMeta() };
+    const meta = this.#readMeta();
+    if (meta.state === "disabled") {
+      // Re-derive the alarm from the remaining TTL stores so a completed
+      // disable with drained stores immediately satisfies the disarm
+      // invariant instead of waiting for a leftover wake-up to clear it.
+      const due = this.#nextDue(Date.now());
+      if (due === null) await this.ctx.storage.deleteAlarm();
+      else await this.ctx.storage.setAlarm(due);
+    }
+    return { ok: true, meta };
   }
 
+  // ---- the alarm engine: sends, recovery, sweep, purge, retention ----
+
+  /** Recover expired send claims; the same retry key makes the repeat safe. */
+  #recoverExpiredClaims(now: number): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE deliveries SET status = 'queued', claimed_at = NULL
+       WHERE status = 'sending' AND claimed_at < ?`,
+      now - ADAPTER.SEND_CLAIM_LEASE_S * 1000,
+    );
+  }
+
+  /** Move awaiting-configuration rows toward recovery or their deadline. */
+  #reconcileAwaitingConfiguration(now: number): void {
+    const sql = this.ctx.storage.sql;
+    if (this.#secretPresent()) {
+      sql.exec(
+        `UPDATE deliveries SET status = 'queued', next_attempt_at = ?
+         WHERE status = 'awaiting-configuration'`,
+        now,
+      );
+      return;
+    }
+    // First-pushed rows terminalize before their retry-key window closes; a
+    // never-pushed row waits (bounded by the retention prune).
+    const expired = sql
+      .exec<{ delivery_id: string; type: string }>(
+        `SELECT delivery_id, type FROM deliveries
+         WHERE status = 'awaiting-configuration' AND first_attempt_at IS NOT NULL
+           AND first_attempt_at < ?`,
+        now - (ADAPTER.RETRY_KEY_VALIDITY_S - ADAPTER.RETRY_KEY_SAFETY_MARGIN_S) * 1000,
+      )
+      .toArray();
+    for (const row of expired) {
+      this.#recordTerminal("configuration-lost", row.type);
+      sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+    }
+  }
+
+  /** Expire provisional links; their held events resolve to a defined,
+   * non-identifying outcome (`ignored-unfinalized`) before deletion. */
+  #expireProvisionalLinks(now: number): void {
+    const sql = this.ctx.storage.sql;
+    const expired = sql
+      .exec<{ reservation_id: string }>(
+        "SELECT reservation_id FROM links WHERE status = 'provisional' AND expires_at IS NOT NULL AND expires_at < ?",
+        now,
+      )
+      .toArray();
+    for (const link of expired) {
+      const held = sql.exec(
+        "DELETE FROM deliveries WHERE reservation_id = ? AND status = 'held'",
+        link.reservation_id,
+      ).rowsWritten;
+      if (held > 0) this.#bumpCounter("disposition:ignored-unfinalized", held);
+      sql.exec("DELETE FROM links WHERE reservation_id = ?", link.reservation_id);
+    }
+  }
+
+  /** TTL and cap pruning for the non-identifying stores, plus the ultra-bound
+   * retention cascade for anything older than the largest possible window. */
+  #pruneRetention(now: number): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM intents WHERE expires_at < ?", now);
+    sql.exec(
+      "DELETE FROM ledger WHERE occurred_at < ?",
+      new Date(now - ADAPTER.LEDGER_TTL_S * 1000).toISOString(),
+    );
+    const ledgerCount =
+      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM ledger").toArray()[0]?.n ?? 0;
+    if (ledgerCount > ADAPTER.LEDGER_CAP) {
+      const excess = ledgerCount - ADAPTER.LEDGER_CAP;
+      sql.exec(
+        `DELETE FROM ledger WHERE entry_id IN (
+           SELECT entry_id FROM ledger ORDER BY entry_id ASC LIMIT ?
+         )`,
+        excess,
+      );
+      this.#bumpCounter("ledger_evicted", excess);
+    }
+    sql.exec(
+      "DELETE FROM webhook_dedup WHERE seen_at < ?",
+      now - ADAPTER.WEBHOOK_DEDUP_TTL_S * 1000,
+    );
+    // No reservation-scoped row may outlive the largest configurable
+    // retention window; the real purge boundary is enforced day-side.
+    const boundary = dateOffset(
+      new Date(now).toISOString().slice(0, 10),
+      -ADAPTER.SWEEP_PAST_DAYS,
+    );
+    const stale = sql
+      .exec<{ delivery_id: string; type: string }>(
+        "SELECT delivery_id, type FROM deliveries WHERE date < ?",
+        boundary,
+      )
+      .toArray();
+    for (const row of stale) {
+      this.#recordTerminal("retention", row.type);
+      sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+    }
+    sql.exec("DELETE FROM links WHERE date < ?", boundary);
+    sql.exec("DELETE FROM accepted_events WHERE date < ?", boundary);
+  }
+
+  /** One bounded send pass: claim, mint, push, settle. Active state only. */
+  async #sendDue(now: number): Promise<void> {
+    const meta = this.#readMeta();
+    if (meta.state !== "active" || meta.snapshot === null || !this.#secretPresent()) {
+      return;
+    }
+    const secret = this.env.LINE_MESSAGING_CHANNEL_SECRET as string;
+    const due = this.ctx.storage.sql
+      .exec<DeliveryRow>(
+        `SELECT * FROM deliveries WHERE status = 'queued' AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC LIMIT ?`,
+        now,
+        ADAPTER.SEND_BATCH,
+      )
+      .toArray();
+    for (const row of due) {
+      // Claim transaction: linearizes push-start against unlink, disable and
+      // unfollow — after any of those commit, no new push can start.
+      const claim = this.ctx.storage.transactionSync(():
+        | { subject: string; fragment: MessageFragment; firstAttemptAt: number }
+        | null => {
+        const sql = this.ctx.storage.sql;
+        const current = this.#readMeta();
+        if (current.state !== "active") return null;
+        const fresh = sql
+          .exec<DeliveryRow>(
+            "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'queued'",
+            row.delivery_id,
+          )
+          .toArray()[0];
+        if (fresh === undefined) return null;
+        const link = sql
+          .exec<{ subject: string; status: string; link_version: number }>(
+            "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
+            fresh.reservation_id,
+          )
+          .toArray()[0];
+        if (link === undefined || link.status !== "final" || link.link_version !== fresh.link_version) {
+          this.#recordTerminal("unlinked", fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return null;
+        }
+        const subjectRow = sql
+          .exec<{ followed: number }>(
+            "SELECT followed FROM subjects WHERE subject = ?",
+            link.subject,
+          )
+          .toArray()[0];
+        if (subjectRow !== undefined && subjectRow.followed === 0) {
+          sql.exec(
+            "UPDATE deliveries SET status = 'parked', park_reason = 'unfollow' WHERE delivery_id = ?",
+            fresh.delivery_id,
+          );
+          return null;
+        }
+        const firstAttemptAt = fresh.first_attempt_at ?? now;
+        sql.exec(
+          "UPDATE deliveries SET status = 'sending', claimed_at = ?, first_attempt_at = ? WHERE delivery_id = ?",
+          now,
+          firstAttemptAt,
+          fresh.delivery_id,
+        );
+        const fragment = JSON.parse(fresh.payload_json) as MessageFragment;
+        return { subject: link.subject, fragment, firstAttemptAt };
+      });
+      if (claim === null) continue;
+
+      const token = await mintChannelToken({
+        generation: meta.generation,
+        channelId: meta.snapshot.messagingChannelId,
+        channelSecret: secret,
+      });
+      let outcome:
+        | { kind: "sent" }
+        | { kind: "retryable" }
+        | { kind: "terminal"; reason: string }
+        | { kind: "awaiting" };
+      if (!token.ok) {
+        outcome = token.code === "RETRYABLE" ? { kind: "retryable" } : { kind: "awaiting" };
+      } else {
+        const push = await pushMessage({
+          accessToken: token.accessToken,
+          to: claim.subject,
+          messages: serializeMessageV1(claim.fragment, meta.snapshot.origin),
+          retryKey: row.retry_key,
+        });
+        if (push.ok) outcome = { kind: "sent" };
+        else if (push.code === "RETRYABLE") outcome = { kind: "retryable" };
+        else if (push.code === "QUOTA_REFUSED") outcome = { kind: "terminal", reason: "quota-refused" };
+        else outcome = { kind: "terminal", reason: "rejected" };
+      }
+
+      // Outcome transaction: if the row is no longer ours (unlink or disable
+      // raced the fetch), drop the outcome — the send was retry-key safe.
+      this.ctx.storage.transactionSync(() => {
+        const sql = this.ctx.storage.sql;
+        const fresh = sql
+          .exec<DeliveryRow>(
+            "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'sending'",
+            row.delivery_id,
+          )
+          .toArray()[0];
+        if (fresh === undefined) return;
+        if (outcome.kind === "sent") {
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          this.#bumpCounter("delivered", 1);
+          return;
+        }
+        if (outcome.kind === "terminal") {
+          this.#recordTerminal(outcome.reason, fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return;
+        }
+        if (outcome.kind === "awaiting") {
+          sql.exec(
+            "UPDATE deliveries SET status = 'awaiting-configuration', claimed_at = NULL WHERE delivery_id = ?",
+            fresh.delivery_id,
+          );
+          return;
+        }
+        const attempts = fresh.attempt + 1;
+        if (attempts >= ADAPTER.RETRY_OFFSETS_S.length) {
+          this.#recordTerminal("retry-exhausted", fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return;
+        }
+        // Absolute ladder from the first attempt, not now+delta — the whole
+        // schedule stays inside the 24 h retry-key window by construction.
+        const nextAt =
+          claim.firstAttemptAt + (ADAPTER.RETRY_OFFSETS_S[attempts] as number) * 1000;
+        sql.exec(
+          `UPDATE deliveries SET status = 'queued', claimed_at = NULL, attempt = ?,
+                  next_attempt_at = ? WHERE delivery_id = ?`,
+          attempts,
+          Math.max(nextAt, now + 1000),
+          fresh.delivery_id,
+        );
+      });
+    }
+  }
+
+  /**
+   * One sweep batch over the fixed worst-case window
+   * [today − SWEEP_PAST_DAYS, today + SWEEP_FUTURE_DAYS] — a deliberate
+   * superset of every configurable retention/horizon window, so the authority
+   * needs no config read; days that never emitted return immediately from
+   * `drainOutbox` without creating anything. During `deactivating` each visit
+   * also purges the day's LINE consumer rows; a cycle that both started after
+   * the lease-expiry wait and finished marks the purge complete.
+   */
+  async #sweepStep(now: number): Promise<void> {
+    const meta = this.#readMeta();
+    if (meta.state !== "active" && meta.state !== "deactivating") return;
+    const today = new Date(now).toISOString().slice(0, 10);
+    const windowStart = dateOffset(today, -ADAPTER.SWEEP_PAST_DAYS);
+    const windowEnd = dateOffset(today, ADAPTER.SWEEP_FUTURE_DAYS);
+    let cursor = meta.sweepCursor;
+    if (cursor === null || cursor < windowStart || cursor > windowEnd) {
+      cursor = windowStart;
+      this.ctx.storage.sql.exec(
+        "UPDATE meta SET sweep_cursor = ?, cycle_started_at = ? WHERE singleton = 1",
+        cursor,
+        now,
+      );
+    }
+    let faulted = false;
+    for (let visited = 0; visited < ADAPTER.SWEEP_DAY_BATCH; visited += 1) {
+      if (cursor > windowEnd) break;
+      const date = cursor;
+      const stub = this.env.RESERVATION_DAYS.getByName(`single-location:${date}`);
+      try {
+        const batch = await withDeadline(
+          Promise.resolve(stub.drainOutbox({ consumer: "line", limit: ADAPTER.OUTBOX_DRAIN_BATCH })),
+          ADAPTER.SWEEP_RPC_DEADLINE_MS,
+        );
+        if (batch.events.length > 0) {
+          await this.#armAlarm(Date.now());
+          this.#acceptBatch(batch.events);
+          await withDeadline(
+            Promise.resolve(
+              stub.ackOutbox({
+                consumer: "line",
+                eventIds: batch.events.map(({ eventId }) => eventId),
+              }),
+            ),
+            ADAPTER.SWEEP_RPC_DEADLINE_MS,
+          );
+        }
+        if (this.#readMeta().state === "deactivating") {
+          await withDeadline(
+            Promise.resolve(stub.purgeConsumer({ consumer: "line" })),
+            ADAPTER.SWEEP_RPC_DEADLINE_MS,
+          );
+        }
+      } catch {
+        // Deadline or transient failure: leave the cursor on this day (one
+        // fault-budget failure); the next run re-drives the batch.
+        this.#bumpCounter("sweep_faults", 1);
+        faulted = true;
+        break;
+      }
+      cursor = dateOffset(cursor, 1);
+    }
+    this.ctx.storage.transactionSync(() => {
+      const current = this.#readMeta();
+      if (current.state !== "active" && current.state !== "deactivating") return;
+      const sql = this.ctx.storage.sql;
+      if (!faulted && cursor > windowEnd) {
+        const cycleStartRow = sql
+          .exec<{ cycle_started_at: number | null }>(
+            "SELECT cycle_started_at FROM meta WHERE singleton = 1",
+          )
+          .toArray()[0];
+        const cycleStartedAt = cycleStartRow?.cycle_started_at ?? null;
+        const leaseWaitOver =
+          current.beginDisableAt !== null &&
+          cycleStartedAt !== null &&
+          cycleStartedAt >= current.beginDisableAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
+        sql.exec(
+          "UPDATE meta SET sweep_cursor = NULL, cycle_started_at = NULL WHERE singleton = 1",
+        );
+        if (current.state === "deactivating" && leaseWaitOver) {
+          sql.exec("UPDATE meta SET purge_completed_at = ? WHERE singleton = 1", now);
+        }
+      } else {
+        sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", cursor);
+      }
+    });
+  }
+
+  /** Earliest moment any stored work becomes due, or null when none exists. */
+  #nextDue(now: number): number | null {
+    const sql = this.ctx.storage.sql;
+    const meta = this.#readMeta();
+    const candidates: number[] = [];
+    if (meta.state === "active" || meta.state === "deactivating") {
+      candidates.push(now + ADAPTER.SWEEP_REARM_DELAY_S * 1000);
+    }
+    if (meta.state === "active") {
+      const queued = sql
+        .exec<{ due: number | null }>(
+          "SELECT MIN(next_attempt_at) AS due FROM deliveries WHERE status = 'queued'",
+        )
+        .toArray()[0];
+      if (queued?.due != null) candidates.push(Math.max(queued.due, now + 1000));
+      const awaiting = sql
+        .exec<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM deliveries WHERE status = 'awaiting-configuration'",
+        )
+        .toArray()[0];
+      if ((awaiting?.n ?? 0) > 0) candidates.push(now + ADAPTER.CONFIG_RECHECK_S * 1000);
+    }
+    const sending = sql
+      .exec<{ due: number | null }>(
+        "SELECT MIN(claimed_at) AS due FROM deliveries WHERE status = 'sending'",
+      )
+      .toArray()[0];
+    if (sending?.due != null) {
+      candidates.push(sending.due + ADAPTER.SEND_CLAIM_LEASE_S * 1000);
+    }
+    const provisional = sql
+      .exec<{ due: number | null }>(
+        "SELECT MIN(expires_at) AS due FROM links WHERE status = 'provisional' AND expires_at IS NOT NULL",
+      )
+      .toArray()[0];
+    if (provisional?.due != null) candidates.push(provisional.due);
+    // TTL stores: while anything remains, wake at least by its expiry so the
+    // disabled-and-drained state truly ends with no alarm scheduled.
+    const oldestLedger = sql
+      .exec<{ oldest: string | null }>("SELECT MIN(occurred_at) AS oldest FROM ledger")
+      .toArray()[0];
+    if (oldestLedger?.oldest != null) {
+      candidates.push(Date.parse(oldestLedger.oldest) + ADAPTER.LEDGER_TTL_S * 1000);
+    }
+    const oldestDedup = sql
+      .exec<{ oldest: number | null }>("SELECT MIN(seen_at) AS oldest FROM webhook_dedup")
+      .toArray()[0];
+    if (oldestDedup?.oldest != null) {
+      candidates.push(oldestDedup.oldest + ADAPTER.WEBHOOK_DEDUP_TTL_S * 1000);
+    }
+    if (candidates.length === 0) return null;
+    return Math.max(Math.min(...candidates), now + 1000);
+  }
+
+  /**
+   * All timed behavior, reconstructed from storage alone: claim recovery,
+   * configuration reconciliation, provisional expiry, retention pruning, due
+   * sends, and one sweep batch — then re-arm at the earliest remaining work.
+   * `disabled` with drained TTL stores schedules nothing (the disarm
+   * invariant a rollback relies on).
+   */
   override async alarm(): Promise<void> {
-    // Timed work (retry schedule, durable sweep, retention pruning) arrives
-    // with the delivery pipeline. The handler already follows the contract:
-    // reconstruct all work from storage, re-arm only while work remains — so
-    // `disabled` with drained stores keeps no alarm scheduled.
     if (!this.#hasSchema()) return;
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.#recoverExpiredClaims(now);
+      this.#reconcileAwaitingConfiguration(now);
+      this.#expireProvisionalLinks(now);
+      this.#pruneRetention(now);
+    });
+    await this.#sendDue(now);
+    await this.#sweepStep(now);
+    const due = this.#nextDue(Date.now());
+    if (due !== null) await this.ctx.storage.setAlarm(due);
   }
 }

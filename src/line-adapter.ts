@@ -259,4 +259,183 @@ export const verifyIdToken = async (
   return { ok: true, sub };
 };
 
+// ---- stateless channel access token (v3, client_credentials) ----
+
+export type TokenResult =
+  | { ok: true; accessToken: string }
+  | { ok: false; code: "RETRYABLE" | "CONFIG_REJECTED" };
+
+// Isolate-local cache. Stateless v3 tokens live 900 s and are unlimited to
+// mint, so losing this cache costs one extra HTTP call, never correctness.
+// The key never contains the secret itself — only a digest discriminator, so
+// a rotated secret misses the cache instead of reusing the old token.
+const tokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
+
+export const clearTokenCacheForTests = (): void => {
+  tokenCache.clear();
+};
+
+const secretDiscriminator = async (secret: string): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(secret),
+  );
+  return [...new Uint8Array(digest).slice(0, 8)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+export const mintChannelToken = async (
+  input: { generation: number; channelId: string; channelSecret: string },
+  fetcher: LineFetch = fetch,
+): Promise<TokenResult> => {
+  const cacheKey = `${input.generation}:${input.channelId}:${await secretDiscriminator(input.channelSecret)}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached !== undefined && cached.expiresAt > Date.now()) {
+    return { ok: true, accessToken: cached.accessToken };
+  }
+  let response: Response;
+  try {
+    response = await fetcher(TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: input.channelId,
+        client_secret: input.channelSecret,
+      }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(ADAPTER.OUTBOUND_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, code: "RETRYABLE" };
+  }
+  if (response.status >= 500) return { ok: false, code: "RETRYABLE" };
+  if (response.status !== 200) return { ok: false, code: "CONFIG_REJECTED" };
+  const text = await readBoundedText(response, ADAPTER.VERIFY_RESPONSE_MAX_BYTES);
+  if (text === null) return { ok: false, code: "RETRYABLE" };
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { ok: false, code: "RETRYABLE" };
+  }
+  if (
+    !isRecord(payload) ||
+    typeof payload.access_token !== "string" ||
+    payload.access_token.length === 0 ||
+    payload.access_token.length > ADAPTER.ACCESS_TOKEN_MAX_BYTES
+  ) {
+    return { ok: false, code: "RETRYABLE" };
+  }
+  tokenCache.set(cacheKey, {
+    accessToken: payload.access_token,
+    expiresAt: Date.now() + ADAPTER.TOKEN_CACHE_TTL_S * 1000,
+  });
+  return { ok: true, accessToken: payload.access_token };
+};
+
+// ---- canonical message fragments and the v1 wire serializer ----
+
+export type MessageFragment = {
+  v: 1;
+  type: "approve" | "reject" | "reschedule" | "cancel" | "expire";
+  date: string;
+  startTime: string;
+};
+
+const EVENT_LINES: Record<MessageFragment["type"], { state: string; next: string }> = {
+  approve: {
+    state: "ご予約が確定しました。",
+    next: "当日のご来店をお待ちしております。",
+  },
+  reject: {
+    state: "ご予約をお受けできませんでした。",
+    next: "別の日時で改めてご予約いただけます。",
+  },
+  reschedule: {
+    state: "ご予約の日時が変更されました。",
+    next: "新しい日時をご確認ください。",
+  },
+  cancel: {
+    state: "ご予約がキャンセルされました。",
+    next: "必要な場合は改めてご予約ください。",
+  },
+  expire: {
+    state: "ご予約の申し込みが期限切れになりました。",
+    next: "改めてご予約いただけます。",
+  },
+};
+
+/**
+ * Wire-format v1: one text message, minimal payload (time, state, next step,
+ * management link — spec FR-009; no notes, names, or history). v1 is never
+ * removed or changed once shipped — retries must stay byte-identical across
+ * deploys, and an independent installation can hold a v1 delivery until the
+ * retention bound.
+ */
+export const serializeMessageV1 = (
+  fragment: MessageFragment,
+  origin: string,
+): { type: "text"; text: string }[] => {
+  const lines = EVENT_LINES[fragment.type];
+  return [
+    {
+      type: "text",
+      text:
+        `${lines.state}\n` +
+        `日時: ${fragment.date} ${fragment.startTime}\n` +
+        `${lines.next}\n` +
+        `ご予約の確認・変更はこちら: ${origin}/bookings.html`,
+    },
+  ];
+};
+
+// ---- push client (retry-key idempotent) ----
+
+export type PushOutcome =
+  | { ok: true; accepted: boolean }
+  | { ok: false; code: "RETRYABLE" | "QUOTA_REFUSED" | "REJECTED" };
+
+/**
+ * One push attempt. The caller persists the retry key before the first
+ * attempt and rebuilds the body from the canonical fragment each time, so a
+ * repeat of an uncertain send is byte-identical and deduplicated by LINE.
+ * 409 means a previous attempt already landed (x-line-accepted-request-id).
+ */
+export const pushMessage = async (
+  input: {
+    accessToken: string;
+    to: string;
+    messages: { type: "text"; text: string }[];
+    retryKey: string;
+  },
+  fetcher: LineFetch = fetch,
+): Promise<PushOutcome> => {
+  let response: Response;
+  try {
+    response = await fetcher(PUSH_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${input.accessToken}`,
+        "content-type": "application/json",
+        "x-line-retry-key": input.retryKey,
+      },
+      body: JSON.stringify({ to: input.to, messages: input.messages }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(ADAPTER.OUTBOUND_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, code: "RETRYABLE" };
+  }
+  if (response.status === 200) return { ok: true, accepted: false };
+  if (response.status === 409) return { ok: true, accepted: true };
+  if (response.status === 429) return { ok: false, code: "QUOTA_REFUSED" };
+  if (response.status >= 500) return { ok: false, code: "RETRYABLE" };
+  // 401 means the channel credentials no longer match — a configuration
+  // problem, distinct from a permanently rejected message.
+  if (response.status === 401) return { ok: false, code: "RETRYABLE" };
+  return { ok: false, code: "REJECTED" };
+};
+
 export { PUSH_URL, TOKEN_URL, VERIFY_URL };
