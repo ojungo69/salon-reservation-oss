@@ -747,6 +747,8 @@ describe("delivery pipeline", () => {
     options: {
       token?: () => number;
       push?: (init: RequestInit) => number | "throw";
+      pushBody?: string;
+      pushHeaders?: Record<string, string>;
     } = {},
   ) => {
     const calls = { token: [] as RequestInit[], push: [] as RequestInit[] };
@@ -765,7 +767,12 @@ describe("delivery pipeline", () => {
         calls.push.push(init);
         const outcome = options.push?.(init) ?? 200;
         if (outcome === "throw") return Promise.reject(new Error("network down"));
-        return Promise.resolve(new Response("{}", { status: outcome }));
+        return Promise.resolve(
+          new Response(options.pushBody ?? "{}", {
+            status: outcome,
+            headers: options.pushHeaders,
+          }),
+        );
       }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
@@ -817,6 +824,15 @@ describe("delivery pipeline", () => {
       return map;
     });
 
+  const ledgerEntries = () =>
+    runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ reason: string; event_type: string; http_status: number | null }>(
+          "SELECT reason, event_type, http_status FROM ledger ORDER BY entry_id",
+        )
+        .toArray(),
+    );
+
   const ledgerReasons = () =>
     runInDurableObject(deliveryStub(), (_instance, state) =>
       state.storage.sql
@@ -849,6 +865,42 @@ describe("delivery pipeline", () => {
     expect(body.to).toBe(SUBJECT);
     expect(body.messages[0].text).toContain(`${pDate} 09:00`);
     expect(body.messages[0].text).toContain("https://example.test/bookings.html");
+  });
+
+  it("stores nothing a malicious provider sends — only the status class survives", async () => {
+    const marker = "EVIL-PROVIDER-MARKER-7f3a";
+    lineApi({
+      push: () => 400,
+      pushBody: JSON.stringify({ message: marker, details: [marker] }),
+      pushHeaders: { "x-evil-header": marker, "www-authenticate": marker },
+    });
+    const reservationId = await createPending(pDate);
+    await activateGen1();
+    await finalizedLink(reservationId);
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await deliveryStub().pokeDay({ date: pDate });
+    await runDurableObjectAlarm(deliveryStub());
+
+    // The rejection is terminal, recorded as an allowlisted reason plus the
+    // bare HTTP status — and nothing from the response ever lands anywhere.
+    expect(await ledgerEntries()).toEqual([
+      { reason: "rejected", event_type: "approve", http_status: 400 },
+    ]);
+    const everything = await runInDurableObject(deliveryStub(), (_instance, state) => {
+      const dump: Record<string, unknown[]> = {};
+      for (const table of state.storage.sql
+        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'")
+        .toArray()) {
+        dump[table.name] = state.storage.sql
+          .exec(`SELECT * FROM ${table.name}`)
+          .toArray();
+      }
+      return JSON.stringify(dump);
+    });
+    expect(everything).not.toContain(marker);
+    // The minted access token lives only in the in-memory cache, never storage.
+    expect(everything).not.toContain('"tok"');
+    expect(JSON.stringify(await deliveryStub().diagnostics())).not.toContain(marker);
   });
 
   it(

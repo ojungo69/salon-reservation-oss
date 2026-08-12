@@ -414,9 +414,9 @@ describe("token mint and push client", () => {
       );
     expect(await push(200)).toEqual({ ok: true, accepted: false });
     expect(await push(409)).toEqual({ ok: true, accepted: true });
-    expect(await push(429)).toEqual({ ok: false, code: "QUOTA_REFUSED" });
-    expect(await push(500)).toEqual({ ok: false, code: "RETRYABLE" });
-    expect(await push(400)).toEqual({ ok: false, code: "REJECTED" });
+    expect(await push(429)).toEqual({ ok: false, code: "QUOTA_REFUSED", status: 429 });
+    expect(await push(500)).toEqual({ ok: false, code: "RETRYABLE", status: 500 });
+    expect(await push(400)).toEqual({ ok: false, code: "REJECTED", status: 400 });
   });
 
   it("sends the persisted retry key and a byte-identical body on every attempt", async () => {

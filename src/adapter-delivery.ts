@@ -16,8 +16,6 @@ const NONCE = /^[0-9a-f]{32}$/;
 const LINE_SUBJECT = /^U[0-9a-f]{32}$/;
 const NONCE_FREE_ID = /^[0-9A-Za-z-]{1,64}$/;
 
-const EVENT_TYPES = ["approve", "reject", "reschedule", "cancel", "expire"] as const;
-
 export type AdapterState = "never" | "active" | "deactivating" | "disabled";
 
 export type AdapterSnapshot = { messagingChannelId: string; origin: string };
@@ -55,8 +53,9 @@ export type AdapterDiagnostics = {
   sweepCursor: string | null;
   purgeCompletedAt: number | null;
   counters: Record<string, number>;
-  // Redacted terminal ledger tail: reason + event type + time only.
-  ledger: Array<{ reason: string; eventType: string; occurredAt: string }>;
+  // Redacted terminal ledger tail: reason + event type + provider HTTP
+  // status (where one exists) + time only.
+  ledger: Array<{ reason: string; eventType: string; httpStatus: number | null; occurredAt: string }>;
 };
 
 type DeliveryRow = {
@@ -198,6 +197,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
           reason TEXT NOT NULL,
           event_type TEXT NOT NULL,
+          http_status INTEGER,
           occurred_at TEXT NOT NULL
         )
       `);
@@ -295,12 +295,15 @@ export class AdapterDelivery extends DurableObject<Env> {
     );
   }
 
-  /** Redacted terminal record: reason + event type + time, nothing else. */
-  #recordTerminal(reason: string, eventType: string): void {
+  /** Redacted terminal record: allowlisted internal reason code, event type,
+   * the provider HTTP status where one exists, and the time — never a
+   * provider response body, header, or token. */
+  #recordTerminal(reason: string, eventType: string, httpStatus: number | null = null): void {
     this.ctx.storage.sql.exec(
-      "INSERT INTO ledger (reason, event_type, occurred_at) VALUES (?, ?, ?)",
+      "INSERT INTO ledger (reason, event_type, http_status, occurred_at) VALUES (?, ?, ?, ?)",
       reason,
       eventType,
+      httpStatus,
       new Date().toISOString(),
     );
     this.#bumpCounter(`terminal:${reason}`, 1);
@@ -523,13 +526,14 @@ export class AdapterDelivery extends DurableObject<Env> {
       counters[row.name] = row.value;
     }
     const ledger = sql
-      .exec<{ reason: string; event_type: string; occurred_at: string }>(
-        "SELECT reason, event_type, occurred_at FROM ledger ORDER BY entry_id DESC LIMIT 20",
+      .exec<{ reason: string; event_type: string; http_status: number | null; occurred_at: string }>(
+        "SELECT reason, event_type, http_status, occurred_at FROM ledger ORDER BY entry_id DESC LIMIT 20",
       )
       .toArray()
       .map((row) => ({
         reason: row.reason,
         eventType: row.event_type,
+        httpStatus: row.http_status,
         occurredAt: row.occurred_at,
       }));
     return {
@@ -1286,11 +1290,14 @@ export class AdapterDelivery extends DurableObject<Env> {
       });
       let outcome:
         | { kind: "sent" }
-        | { kind: "retryable" }
-        | { kind: "terminal"; reason: string }
+        | { kind: "retryable"; status: number | null }
+        | { kind: "terminal"; reason: string; status: number | null }
         | { kind: "awaiting" };
       if (!token.ok) {
-        outcome = token.code === "RETRYABLE" ? { kind: "retryable" } : { kind: "awaiting" };
+        outcome =
+          token.code === "RETRYABLE"
+            ? { kind: "retryable", status: null }
+            : { kind: "awaiting" };
       } else {
         const push = await pushMessage({
           accessToken: token.accessToken,
@@ -1299,9 +1306,13 @@ export class AdapterDelivery extends DurableObject<Env> {
           retryKey: row.retry_key,
         });
         if (push.ok) outcome = { kind: "sent" };
-        else if (push.code === "RETRYABLE") outcome = { kind: "retryable" };
-        else if (push.code === "QUOTA_REFUSED") outcome = { kind: "terminal", reason: "quota-refused" };
-        else outcome = { kind: "terminal", reason: "rejected" };
+        else if (push.code === "RETRYABLE") {
+          outcome = { kind: "retryable", status: push.status };
+        } else if (push.code === "QUOTA_REFUSED") {
+          outcome = { kind: "terminal", reason: "quota-refused", status: push.status };
+        } else {
+          outcome = { kind: "terminal", reason: "rejected", status: push.status };
+        }
       }
 
       // Outcome transaction: if the row is no longer ours (unlink or disable
@@ -1321,7 +1332,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           return;
         }
         if (outcome.kind === "terminal") {
-          this.#recordTerminal(outcome.reason, fresh.type);
+          this.#recordTerminal(outcome.reason, fresh.type, outcome.status);
           sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
           return;
         }

@@ -395,7 +395,7 @@ export const serializeMessageV1 = (
 
 export type PushOutcome =
   | { ok: true; accepted: boolean }
-  | { ok: false; code: "RETRYABLE" | "QUOTA_REFUSED" | "REJECTED" };
+  | { ok: false; code: "RETRYABLE" | "QUOTA_REFUSED" | "REJECTED"; status: number | null };
 
 /**
  * One push attempt. The caller persists the retry key before the first
@@ -426,16 +426,18 @@ export const pushMessage = async (
       signal: AbortSignal.timeout(ADAPTER.OUTBOUND_TIMEOUT_MS),
     });
   } catch {
-    return { ok: false, code: "RETRYABLE" };
+    return { ok: false, code: "RETRYABLE", status: null };
   }
+  // Only the status class is ever inspected or recorded — the response body
+  // and headers are never read, so nothing a provider sends can be stored.
   if (response.status === 200) return { ok: true, accepted: false };
   if (response.status === 409) return { ok: true, accepted: true };
-  if (response.status === 429) return { ok: false, code: "QUOTA_REFUSED" };
-  if (response.status >= 500) return { ok: false, code: "RETRYABLE" };
+  if (response.status === 429) return { ok: false, code: "QUOTA_REFUSED", status: 429 };
+  if (response.status >= 500) return { ok: false, code: "RETRYABLE", status: response.status };
   // 401 means the channel credentials no longer match — a configuration
   // problem, distinct from a permanently rejected message.
-  if (response.status === 401) return { ok: false, code: "RETRYABLE" };
-  return { ok: false, code: "REJECTED" };
+  if (response.status === 401) return { ok: false, code: "RETRYABLE", status: 401 };
+  return { ok: false, code: "REJECTED", status: response.status };
 };
 
 export { PUSH_URL, TOKEN_URL, VERIFY_URL };
