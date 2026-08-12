@@ -1194,9 +1194,10 @@ const startBookings = async () => {
     list.append(fragment);
   };
 
+  let publicConfig = null;
   try {
-    const config = await api("/api/config");
-    applyPublicConfig(config);
+    publicConfig = await api("/api/config");
+    applyPublicConfig(publicConfig);
   } catch {
     // The owned records can still show a uniform per-record error below.
   }
@@ -1236,6 +1237,27 @@ const startBookings = async () => {
     records.length ? `${records.length}件の保存情報を確認しました。` : "このブラウザに保存した予約はありません。",
     records.length ? "success" : "",
   );
+
+  // Inert unless the served configuration names the LINE adapter: without the
+  // property this never fetches, imports, or renders anything LINE-shaped.
+  const lineAdapter = publicConfig?.lineAdapter;
+  if (
+    records.length > 0 &&
+    lineAdapter &&
+    (typeof lineAdapter.liffId === "string" || lineAdapter.cleanup === true)
+  ) {
+    try {
+      const module = await import("/line-link.mjs");
+      module.enhanceBookingCards({
+        mode: typeof lineAdapter.liffId === "string" ? "capability" : "cleanup",
+        list,
+        records,
+        api,
+      });
+    } catch {
+      // 連携表示は任意機能: 読み込めなくても予約管理はそのまま使えます。
+    }
+  }
 
   dialogForm.addEventListener("submit", async (event) => {
     event.preventDefault();

@@ -24,6 +24,13 @@ import {
 } from "./reservation-day.ts";
 
 import { AdapterDelivery } from "./adapter-delivery.ts";
+import {
+  parseWebhookBody,
+  readBoundedBytes,
+  verifyIdToken,
+  verifyWebhookSignature,
+} from "./line-adapter.ts";
+import { ADAPTER } from "./adapter-constants.ts";
 
 export { AdapterDelivery, InstallationConfig, ReservationDay };
 
@@ -71,6 +78,8 @@ const ERROR_MESSAGES = {
   TEMPORARILY_UNAVAILABLE: "現在処理できません。しばらく待ってからお試しください。",
   UNAUTHORIZED: "認証情報を確認できませんでした。",
   VERSION_CONFLICT: "設定が更新されています。最新の状態を読み込み直してください。",
+  LINE_LINK_CONFLICT:
+    "この予約には別の LINE アカウントが連携されています。現在の連携を解除してからやり直してください。",
   PHASE_CONFLICT: "現在の連携状態ではこの操作を実行できません。",
   SECRET_MISSING:
     "LINE のチャネルシークレットが設定されていません。シークレットを登録してから有効化してください。",
@@ -276,6 +285,9 @@ const ownerGate = async (
 
 const installationStub = (env: AppEnv): DurableObjectStub<InstallationConfig> =>
   env.INSTALLATION_CONFIG.getByName("installation");
+
+const adapterDeliveryStub = (env: AppEnv): DurableObjectStub<AdapterDelivery> =>
+  env.ADAPTER_DELIVERY.getByName("installation");
 
 const dayStub = (env: AppEnv, date: string): DurableObjectStub<ReservationDay> =>
   env.RESERVATION_DAYS.getByName(`single-location:${date}`);
@@ -1388,7 +1400,7 @@ const handleLineStatus = async (
   // the setup surface down with it.
   let authority: Awaited<ReturnType<AdapterDelivery["readMeta"]>> | "unavailable" = null;
   try {
-    authority = await env.ADAPTER_DELIVERY.getByName("installation").readMeta();
+    authority = await adapterDeliveryStub(env).readMeta();
   } catch {
     authority = "unavailable";
   }
@@ -1646,6 +1658,290 @@ const handleClosureRemove = async (
   );
 };
 
+// Effectively active: lifecycle phase active with the messaging secret bound.
+// This is the gate for every customer-facing LINE surface; without it the
+// routes 404 like they never existed.
+const lineEffectivelyActive = (
+  context: InstallationContext,
+): context is InstallationContext & {
+  line: LineContext & { generation: number; liffId: string; loginChannelId: string };
+} =>
+  context.line !== undefined &&
+  context.line.phase === "active" &&
+  context.line.generation !== undefined &&
+  context.line.liffId !== undefined &&
+  context.line.loginChannelId !== undefined &&
+  context.runtime.lineSecretPresent;
+
+// Management proof: the same body shape and day check the public status route
+// uses; holding the management key is what authorizes link operations.
+const lineManagementProof = async (
+  env: AppEnv,
+  url: URL,
+  context: InstallationContext,
+  reservationId: string,
+  body: unknown,
+): Promise<
+  | { ok: true; date: string; status: string }
+  | { ok: false; response: Response }
+> => {
+  if (
+    !isObject(body) ||
+    !hasExactKeys(body, ["date", "managementKey"]) ||
+    !validDate(body.date) ||
+    typeof body.managementKey !== "string" ||
+    !withinPartitionWindow(body.date, Date.now())
+  ) {
+    return { ok: false, response: errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED") };
+  }
+  const date = body.date;
+  const managementKey = body.managementKey;
+  const result = await dayCallWithRetry(env, url, false, date, context, async (config) =>
+    dayStub(env, date).statusPublic(config, { date, reservationId, managementKey }),
+  );
+  if (!result.ok) {
+    return {
+      ok: false,
+      response:
+        result.code === "TEMPORARILY_UNAVAILABLE" || result.code === "RETRY_CONFIG"
+          ? errorResponse(503, "TEMPORARILY_UNAVAILABLE")
+          : errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED"),
+    };
+  }
+  return { ok: true, date, status: result.status };
+};
+
+const handleLineLinkIntent = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  reservationId: string,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-intent")) {
+    return rateLimited();
+  }
+  if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const context = await installationContext(env, url, false);
+  if (!lineEffectivelyActive(context)) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
+  if (!proof.ok) return proof.response;
+  if (proof.status !== "pending" && proof.status !== "approved") {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const minted = await adapterDeliveryStub(env).mintIntent({
+    reservationId,
+    date: proof.date,
+    generation: context.line.generation,
+  });
+  if (!minted.ok) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  return json({
+    nonce: minted.nonce,
+    liffId: context.line.liffId,
+    expiresAt: minted.expiresAt,
+  });
+};
+
+const handleLineLinkComplete = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-link")) {
+    return rateLimited();
+  }
+  const context = await installationContext(env, url, false);
+  if (!lineEffectivelyActive(context)) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (
+    !isObject(parsed.value) ||
+    !hasExactKeys(parsed.value, ["nonce", "idToken"]) ||
+    typeof parsed.value.nonce !== "string" ||
+    typeof parsed.value.idToken !== "string"
+  ) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  const { nonce, idToken } = parsed.value;
+  // Nonce checked before any LINE fetch, and again inside the completing
+  // transaction — a captured token alone can never attach a link.
+  const pre = await adapterDeliveryStub(env).checkIntent({ nonce });
+  if (!pre.ok) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const verified = await verifyIdToken(idToken, context.line.loginChannelId);
+  if (!verified.ok) {
+    return verified.code === "INVALID_TOKEN"
+      ? errorResponse(401, "UNAUTHORIZED")
+      : errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+  }
+  const finalized = await adapterDeliveryStub(env).finalizeLink({
+    nonce,
+    subject: verified.sub,
+  });
+  if (!finalized.ok) {
+    return finalized.code === "LINK_CONFLICT"
+      ? errorResponse(409, "LINE_LINK_CONFLICT")
+      : errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  return json({ ok: true, linked: true, replayed: finalized.replayed });
+};
+
+const handleLineUnlink = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  reservationId: string,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-unlink")) {
+    return rateLimited();
+  }
+  if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const context = await installationContext(env, url, false);
+  // Unlink stays reachable in every degraded state; only a never-configured
+  // installation (no lifecycle at all) hides it.
+  if (context.line === undefined) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
+  if (!proof.ok) return proof.response;
+  const result = await adapterDeliveryStub(env).unlink({ reservationId });
+  return json({ ok: true, unlinked: result.existed });
+};
+
+const handleLineLinkStatus = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  reservationId: string,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-link-status")) {
+    return rateLimited();
+  }
+  if (!UUID.test(reservationId)) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const context = await installationContext(env, url, false);
+  if (context.line === undefined) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
+  if (!proof.ok) return proof.response;
+  const status = await adapterDeliveryStub(env).linkStatus({ reservationId });
+  if (status.linked === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  return json({ linked: status.linked });
+};
+
+const handleLineWebhook = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  // LINE posts cross-origin; the signature is the only authentication, and
+  // while the adapter is not effectively active the endpoint does not exist.
+  const context = await installationContext(env, url, false);
+  if (!lineEffectivelyActive(context)) {
+    return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const channelSecret = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
+  if (channelSecret === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const body = await readBoundedBytes(request.body, ADAPTER.WEBHOOK_BODY_MAX_BYTES);
+  if (body === null) return errorResponse(413, "BAD_REQUEST");
+  const signatureValid = await verifyWebhookSignature(
+    channelSecret,
+    request.headers.get("x-line-signature"),
+    body,
+  );
+  if (!signatureValid) {
+    await adapterDeliveryStub(env).noteSignatureFailure();
+    return errorResponse(403, "PROTECTION_REFUSED");
+  }
+  const parsedBody = parseWebhookBody(body);
+  if (parsedBody === null) return errorResponse(400, "BAD_REQUEST");
+  await adapterDeliveryStub(env).processWebhook({ events: parsedBody.events });
+  return json({});
+};
+
+// The LIFF page needs LINE's SDK origin, so it gets its own tightened CSP
+// instead of the site-wide one from _headers. connect-src covers liff.init's
+// API calls; everything else stays same-origin.
+const LINE_PAGE_CSP =
+  "default-src 'self'; script-src 'self' https://static.line-scdn.net; " +
+  "connect-src 'self' https://api.line.me https://liff.line.me; " +
+  "img-src 'self' data:; style-src 'self'; font-src 'self'; base-uri 'none'; " +
+  "form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+
+const notFoundPage = async (env: AppEnv, url: URL): Promise<Response> => {
+  const asset = await env.ASSETS.fetch(new Request(new URL("/404.html", url.origin)));
+  return new Response(asset.body, {
+    status: 404,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+};
+
+// Worker-first LINE assets (run_worker_first routes /line* here): served only
+// in the states the adapter state table allows, 404 otherwise — a
+// never-configured installation shows no LINE trace at any of these paths.
+const handleLineAsset = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET, HEAD" });
+  }
+  const context = await installationContext(env, url, false);
+  const line = linePublicConfig(context);
+  const isOptInModule = url.pathname === "/line-link.mjs";
+  // The opt-in module also serves cleanup mode; the LIFF page and its script
+  // require the full capability.
+  const allowed =
+    line !== null && (isOptInModule || !("cleanup" in line));
+  if (!allowed) return notFoundPage(env, url);
+  const assetPath = url.pathname === "/line" || url.pathname === "/line/"
+    ? "/line.html"
+    : url.pathname;
+  const asset = await env.ASSETS.fetch(new Request(new URL(assetPath, url.origin), request));
+  if (!asset.ok) return notFoundPage(env, url);
+  const headers = new Headers(asset.headers);
+  headers.set("cache-control", "no-store");
+  if (assetPath === "/line.html") {
+    headers.set("content-security-policy", LINE_PAGE_CSP);
+  }
+  return new Response(asset.body, { status: asset.status, headers });
+};
+
 const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   const url = new URL(request.url);
   if (url.pathname === "/api/config") return handleConfig(request, env, url);
@@ -1659,6 +1955,27 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   const publicCancel = url.pathname.match(/^\/api\/reservations\/([^/]+)\/cancel$/);
   if (publicCancel?.[1] !== undefined) {
     return handlePublicCancel(request, env, url, publicCancel[1]);
+  }
+
+  const lineIntent = url.pathname.match(
+    /^\/api\/reservations\/([^/]+)\/line\/link-intent$/,
+  );
+  if (lineIntent?.[1] !== undefined) {
+    return handleLineLinkIntent(request, env, url, lineIntent[1]);
+  }
+  const lineUnlink = url.pathname.match(/^\/api\/reservations\/([^/]+)\/line\/unlink$/);
+  if (lineUnlink?.[1] !== undefined) {
+    return handleLineUnlink(request, env, url, lineUnlink[1]);
+  }
+  const lineStatus = url.pathname.match(/^\/api\/reservations\/([^/]+)\/line\/status$/);
+  if (lineStatus?.[1] !== undefined) {
+    return handleLineLinkStatus(request, env, url, lineStatus[1]);
+  }
+  if (url.pathname === "/api/adapters/line/link") {
+    return handleLineLinkComplete(request, env, url);
+  }
+  if (url.pathname === "/api/adapters/line/webhook") {
+    return handleLineWebhook(request, env, url);
   }
 
   if (url.pathname === "/api/admin/setup") return handleSetup(request, env, url);
@@ -1700,6 +2017,16 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   );
   if (closureRemove?.[1] !== undefined) {
     return handleClosureRemove(request, env, url, closureRemove[1]);
+  }
+
+  if (
+    url.pathname === "/line" ||
+    url.pathname === "/line/" ||
+    url.pathname === "/line.html" ||
+    url.pathname === "/line-link.mjs" ||
+    url.pathname === "/line-liff.mjs"
+  ) {
+    return handleLineAsset(request, env, url);
   }
 
   if (url.pathname.startsWith("/api/")) return errorResponse(404, "BAD_REQUEST");
