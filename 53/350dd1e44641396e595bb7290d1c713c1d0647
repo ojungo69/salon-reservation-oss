@@ -1,0 +1,31 @@
+specs/003-line-adapter/plan.md
+  s_8e0d83f8ec0799::t_0066afd9a684da 74-84
+src/adapter-delivery.ts
+  s_060647be569238::t_3c2a2094215293 764-779,1034-1037
+test/adapter-delivery.test.ts
+  s_060647be569238::t_306486fdec1868 1378-1422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "53350dd1e44641396e595bb7290d1c713c1d0647",
+  "prompts": {},
+  "sessions": {
+    "s_060647be569238": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff643-828a-7111-93a8-254db90f7c7c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_8e0d83f8ec0799": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff64c-71a5-7561-a5af-d810a5630557",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
