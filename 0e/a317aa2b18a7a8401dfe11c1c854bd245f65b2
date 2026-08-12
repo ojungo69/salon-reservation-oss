@@ -1,0 +1,40 @@
+src/adapter-constants.ts
+  s_7c8b13bff90366::t_3dc63ad44def7c 72,74-86
+src/reservation-day.ts
+  s_7c8b13bff90366::t_e59ecc6738e38b 1179-1209
+src/line-adapter.ts
+  s_7c8b13bff90366::t_87e66ee97ab887 262-440
+src/adapter-delivery.ts
+  s_7c8b13bff90366::t_3a676a066e1960 3-10,19-20,23-24,36-41,47-96,121-123,135-140,145-146,179-183,241-244,246-248,260-272,279-282,295-440,467-468,486-523,552,619-621,656,692,706,713-740,747-750,765-772,806-809,829,837-841,860-871,881-901,963-965,970,978-983,988,993-995,1001,1007-1016,1018,1023-1025,1027,1031-1032,1036-1041,1047-1061,1075-1461,1464-1470,1473-1483
+  s_7c8b13bff90366::t_794306a143491e 1065-1074
+specs/003-line-adapter/plan.md
+  s_7c8b13bff90366::t_e0717a6bfbc8ac 258-261
+specs/003-line-adapter/tasks.md
+  s_7c8b13bff90366::t_cbf32cb76343b5 49-53
+src/installation-config.ts
+  s_7c8b13bff90366::t_1e7a8c23437ab0 1027-1029,1112,1200,1215,1675,1727,1746,1796-1804,1848-1860
+src/worker.ts
+  s_7c8b13bff90366::t_7f81b13871d973 1383,1402,1404
+test/adapter-delivery.test.ts
+  s_7c8b13bff90366::t_b08a52d4456a69 5-6,11-19,39,70-73,112-121,161-165,169,174-207,216,251-252,304-305,332,339,357,381,390,410-436,616-620,623-629,724-1201
+test/line-adapter.test.ts
+  s_7c8b13bff90366::t_e2bd0441b39963 6-7,9-10,14,28,49,53,256-389
+test/line-helpers.ts
+  s_7c8b13bff90366::t_9e8b0ddf232d87 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0ea317aa2b18a7a8401dfe11c1c854bd245f65b2",
+  "prompts": {},
+  "sessions": {
+    "s_7c8b13bff90366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84a1e10a-e8f0-4ddf-9e11-e3f239e3f5ff",
+        "model": "unknown"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
