@@ -1310,6 +1310,7 @@ describe("S2 calendar outbox substrate", () => {
       ok: true,
       date: day.date,
       purgeAt: day.purgeAt,
+      watermark: { generation: 1, seq: 1 },
       events: [
         {
           reservationId: reservationIdOf(created),

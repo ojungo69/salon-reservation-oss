@@ -190,7 +190,9 @@ redacted diagnostics.
 - **FR-010 (reconciliation)**: The operator MUST be able to reconcile the adapter's projection and
   provider state against current committed reservations after duplicate delivery, missed handoff,
   outage, or configuration gap. Current committed state wins; reconciliation MUST NOT mutate a
-  reservation or import provider busy time.
+  reservation or import provider busy time. An outbox event captured before the authoritative day
+  projection MUST NOT overwrite that reconciliation if its delivery completes later, and a
+  reconciliation snapshot MUST NOT overwrite an event accepted after that snapshot was read.
 - **FR-011 (observability)**: Owner-only diagnostics MUST show each mode's configured/active state,
   last successful reconciliation, pending/failed counts, feed authentication-failure count, and a
   bounded redacted terminal ledger. Customer identifiers, reservation identifiers, credential

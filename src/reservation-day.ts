@@ -205,6 +205,7 @@ export type DayCalendarProjectionResult =
       ok: true;
       date: string;
       purgeAt: number;
+      watermark: { generation: number; seq: number };
       events: Array<{
         reservationId: string;
         stampAt: string;
@@ -1030,6 +1031,19 @@ export class ReservationDay extends DurableObject<Env> {
         )
         .toArray().length > 0
     );
+  }
+
+  #calendarWatermark(config: DayConfig): { generation: number; seq: number } {
+    const generation = config.calendarAdapter?.generation ?? 0;
+    if (generation === 0 || !this.#adapterOutboxExists()) return { generation, seq: 0 };
+    const seq = this.ctx.storage.sql
+      .exec<{ event_seq: number }>(
+        `SELECT event_seq FROM __adapter_meta
+         WHERE consumer = 'calendar' AND generation = ?`,
+        generation,
+      )
+      .toArray()[0]?.event_seq;
+    return { generation, seq: seq ?? 0 };
   }
 
   // Called only inside an already-open storage transaction. Event commits
@@ -2921,7 +2935,13 @@ export class ReservationDay extends DurableObject<Env> {
     }
     try {
       if (!this.#hasSchema()) {
-        return { ok: true, date: config.date, purgeAt: config.purgeAt, events: [] };
+        return {
+          ok: true,
+          date: config.date,
+          purgeAt: config.purgeAt,
+          watermark: this.#calendarWatermark(config),
+          events: [],
+        };
       }
       this.ctx.storage.transactionSync(() => this.#expire(config));
       const meta = this.#readMeta();
@@ -2930,7 +2950,13 @@ export class ReservationDay extends DurableObject<Env> {
       if ("ok" in effective) return effective;
       if (!isTargetDayConfig(effective)) return failure("CONFIGURATION_CONFLICT");
       if (meta === null) {
-        return { ok: true, date: effective.date, purgeAt: config.purgeAt, events: [] };
+        return {
+          ok: true,
+          date: effective.date,
+          purgeAt: config.purgeAt,
+          watermark: this.#calendarWatermark(config),
+          events: [],
+        };
       }
       const details = this.#readAllDetails();
       const events = state.reservations
@@ -2962,7 +2988,13 @@ export class ReservationDay extends DurableObject<Env> {
             left.startTime.localeCompare(right.startTime) ||
             left.reservationId.localeCompare(right.reservationId),
         );
-      return { ok: true, date: effective.date, purgeAt: meta.purgeAt, events };
+      return {
+        ok: true,
+        date: effective.date,
+        purgeAt: meta.purgeAt,
+        watermark: this.#calendarWatermark(config),
+        events,
+      };
     } catch (error) {
       if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");

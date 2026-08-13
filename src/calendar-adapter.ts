@@ -21,6 +21,14 @@ const JST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const CALENDAR_ROW_CAP = 2_000;
 const ACCEPTED_EVENT_CAP = ADAPTER.WEBHOOK_DEDUP_CAP;
+const PROJECTION_WATERMARKS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS projection_watermarks (
+    date TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0),
+    purge_at INTEGER NOT NULL
+  )
+`;
 
 declare global {
   interface Env {
@@ -496,9 +504,12 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   #ensureSchema(): void {
-    if (this.#hasSchema()) return;
+    const sql = this.ctx.storage.sql;
+    if (this.#hasSchema()) {
+      sql.exec(PROJECTION_WATERMARKS_SCHEMA);
+      return;
+    }
     this.ctx.storage.transactionSync(() => {
-      const sql = this.ctx.storage.sql;
       sql.exec(`
         CREATE TABLE meta (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -572,6 +583,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           value INTEGER NOT NULL CHECK (value >= 0)
         )
       `);
+      sql.exec(PROJECTION_WATERMARKS_SCHEMA);
     });
   }
 
@@ -686,6 +698,26 @@ export class CalendarAdapter extends DurableObject<Env> {
     sql.exec("DELETE FROM google_mutations WHERE purge_at <= ?", now);
     sql.exec("DELETE FROM projections WHERE purge_at <= ?", now);
     sql.exec("DELETE FROM accepted_events WHERE purge_at <= ?", now);
+    sql.exec("DELETE FROM projection_watermarks WHERE purge_at <= ?", now);
+  }
+
+  #advanceProjectionWatermark(date: string, generation: number, seq: number, purgeAt: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO projection_watermarks (date, generation, seq, purge_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET
+         generation = excluded.generation,
+         seq = CASE
+           WHEN projection_watermarks.generation = excluded.generation
+           THEN MAX(projection_watermarks.seq, excluded.seq)
+           ELSE excluded.seq
+         END,
+         purge_at = excluded.purge_at`,
+      date,
+      generation,
+      seq,
+      purgeAt,
+    );
   }
 
   #queueMutation(
@@ -867,9 +899,19 @@ export class CalendarAdapter extends DurableObject<Env> {
             event.generation,
           )
           .toArray()[0]?.seq;
+        const projectedSeq = sql
+          .exec<{ seq: number }>(
+            `SELECT seq FROM projection_watermarks
+             WHERE date = ? AND generation = ?`,
+            event.date,
+            event.generation,
+          )
+          .toArray()[0]?.seq;
         if (event.generation !== meta.generation) disposition = "stale-generation";
         else if (event.purgeAt <= Date.now()) disposition = "past-retention";
-        else if (latest !== undefined && latest !== null && event.seq <= latest) {
+        else if (projectedSeq !== undefined && event.seq <= projectedSeq) {
+          disposition = "reconciled";
+        } else if (latest !== undefined && latest !== null && event.seq <= latest) {
           disposition = "duplicate";
         } else if (event.endTime === null || event.reservationStatus === null) {
           disposition = "invalid";
@@ -945,6 +987,14 @@ export class CalendarAdapter extends DurableObject<Env> {
           new Date().toISOString(),
           event.purgeAt,
         );
+        if (event.generation === meta.generation && event.purgeAt > Date.now()) {
+          this.#advanceProjectionWatermark(
+            event.date,
+            event.generation,
+            event.seq,
+            event.purgeAt,
+          );
+        }
         this.#bump(`disposition:${disposition}`);
         accepted += 1;
       }
@@ -1012,7 +1062,15 @@ export class CalendarAdapter extends DurableObject<Env> {
     projected: number;
     removed: number;
   }> {
-    if (!input.ok) throw new Error("bad projection");
+    if (
+      !input.ok ||
+      !Number.isSafeInteger(input.watermark.generation) ||
+      input.watermark.generation < 1 ||
+      !Number.isSafeInteger(input.watermark.seq) ||
+      input.watermark.seq < 0
+    ) {
+      throw new Error("bad projection");
+    }
     const descriptor = await this.descriptor();
     if (descriptor === null) throw new Error("calendar not configured");
     const now = Date.now();
@@ -1024,7 +1082,19 @@ export class CalendarAdapter extends DurableObject<Env> {
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (meta?.state !== "active") throw new Error("calendar not active");
+      if (input.watermark.generation !== meta.generation) {
+        throw new Error("stale reconciliation generation");
+      }
       const sql = this.ctx.storage.sql;
+      const prior = sql
+        .exec<{ generation: number; seq: number }>(
+          "SELECT generation, seq FROM projection_watermarks WHERE date = ?",
+          input.date,
+        )
+        .toArray()[0];
+      if (prior?.generation === meta.generation && prior.seq > input.watermark.seq) {
+        return { ok: true as const, projected: 0, removed: 0 };
+      }
       const wanted = new Set(prepared.map(({ event }) => event.reservationId));
       const removedRows = sql
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
@@ -1094,6 +1164,14 @@ export class CalendarAdapter extends DurableObject<Env> {
         }
         if (existing === undefined) projectionCount += 1;
         projected += 1;
+      }
+      if (input.purgeAt > now) {
+        this.#advanceProjectionWatermark(
+          input.date,
+          input.watermark.generation,
+          input.watermark.seq,
+          input.purgeAt,
+        );
       }
       return { ok: true as const, projected, removed: removedRows.length };
     });
@@ -1385,6 +1463,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         sql.exec("DELETE FROM accepted_events");
         sql.exec("DELETE FROM projections");
         sql.exec("DELETE FROM google_mutations");
+        sql.exec("DELETE FROM projection_watermarks");
         sql.exec("DELETE FROM ledger");
         sql.exec("DELETE FROM counters");
         sql.exec(

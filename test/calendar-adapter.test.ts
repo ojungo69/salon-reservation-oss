@@ -434,6 +434,120 @@ describe("calendar projection and feed authority", () => {
     expect(await adapter.diagnostics()).toMatchObject({ projectionCount: 1 });
   });
 
+  it("keeps authoritative reconciliation ahead of a delayed older event", async () => {
+    const config = await configFor(suiteDate(19));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+
+    const created = await day.createPublic(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "pending" });
+    if (!created.ok) throw new Error("fixture create failed");
+    const delayed = await day.drainOutbox({ consumer: "calendar", limit: 1 });
+    expect(delayed).toMatchObject({ events: [{ seq: 1, type: "create" }], more: false });
+    const stale = delayed.events[0];
+    if (stale === undefined) throw new Error("fixture stale event missing");
+    await day.ackOutbox({
+      consumer: "calendar",
+      events: delayed.events.map(({ generation, eventId }) => ({ generation, eventId })),
+    });
+
+    expect(
+      await day.transitionOwner(config, {
+        commandId: crypto.randomUUID(),
+        date: config.date,
+        reservationId: created.reservationId,
+        action: "reject",
+        reason: "架空の受付都合",
+      }),
+    ).toMatchObject({ ok: true, status: "rejected" });
+    const rejected = await day.drainOutbox({ consumer: "calendar", limit: 1 });
+    expect(rejected).toMatchObject({ events: [{ seq: 2, type: "reject" }], more: false });
+    await day.ackOutbox({
+      consumer: "calendar",
+      events: rejected.events.map(({ generation, eventId }) => ({ generation, eventId })),
+    });
+
+    const authoritative = await day.calendarProjection(config);
+    expect(authoritative).toMatchObject({ ok: true, events: [] });
+    await adapter.reconcileDay(authoritative);
+    await runInDurableObject(day, (instance, state) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, end_time,
+            service_label, reservation_status, occurred_at, purge_at)
+         VALUES ('calendar', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        stale.generation,
+        stale.seq,
+        stale.eventId,
+        stale.reservationId,
+        stale.type,
+        stale.startTime,
+        stale.endTime,
+        stale.serviceLabel,
+        stale.reservationStatus,
+        stale.occurredAt,
+        stale.purgeAt,
+      );
+    });
+
+    await adapter.pokeDay({ date: config.date });
+    expect(await adapter.diagnostics()).toMatchObject({ projectionCount: 0 });
+  });
+
+  it("keeps a newer accepted event ahead of an older reconciliation", async () => {
+    const config = await configFor(suiteDate(20));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+
+    const created = await day.createPublic(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "pending" });
+    if (!created.ok) throw new Error("fixture create failed");
+    const stale = await day.calendarProjection(config);
+    expect(stale).toMatchObject({
+      ok: true,
+      watermark: { generation: 1, seq: 1 },
+      events: [{ reservationId: created.reservationId, status: "pending" }],
+    });
+    expect(
+      await day.transitionOwner(config, {
+        commandId: crypto.randomUUID(),
+        date: config.date,
+        reservationId: created.reservationId,
+        action: "reject",
+        reason: "架空の受付都合",
+      }),
+    ).toMatchObject({ ok: true, status: "rejected" });
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+    });
+
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({ ok: true, drained: 2 });
+    expect(await adapter.diagnostics()).toMatchObject({ projectionCount: 0 });
+    await adapter.reconcileDay(stale);
+    expect(await adapter.diagnostics()).toMatchObject({ projectionCount: 0 });
+  });
+
   it("rejects past-retention events and caps new projections", async () => {
     const config = await configFor(suiteDate(3));
     const calendarNamespace = env.CALENDAR_ADAPTER;
@@ -504,6 +618,7 @@ describe("calendar projection and feed authority", () => {
       ok: true,
       date: suiteDate(5),
       purgeAt: SUITE_PURGE_AT,
+      watermark: { generation: config.calendarAdapter?.generation ?? 1, seq: 0 },
       events: [
         {
           reservationId: "00000000-0000-4000-8000-999999999999",
@@ -529,10 +644,14 @@ describe("calendar projection and feed authority", () => {
       await dayStub(config.date).createPublic(config, createInput(config.date)),
     ).toMatchObject({ ok: true });
     await adapter.pokeDay({ date: config.date });
+    const authoritative = await dayStub(config.date).calendarProjection(config);
+    expect(authoritative).toMatchObject({ ok: true });
+    await adapter.reconcileDay(authoritative);
     await runInDurableObject(adapter, (_instance, state) => {
       state.storage.sql.exec("UPDATE accepted_events SET purge_at = ?", SUITE_NOW);
       state.storage.sql.exec("UPDATE projections SET purge_at = ?", SUITE_NOW);
       state.storage.sql.exec("UPDATE google_mutations SET purge_at = ?", SUITE_NOW);
+      state.storage.sql.exec("UPDATE projection_watermarks SET purge_at = ?", SUITE_NOW);
       state.storage.sql.exec(
         "INSERT INTO ledger (reason, operation, http_status, occurred_at) VALUES ('old', 'lifecycle', NULL, ?)",
         new Date(SUITE_NOW - ADAPTER.LEDGER_TTL_S * 1_000 - 1).toISOString(),
@@ -552,10 +671,15 @@ describe("calendar projection and feed authority", () => {
         { reason: "past-retention", operation: "upsert" },
       ],
     });
-    const accepted = await runInDurableObject(adapter, (_instance, state) =>
-      state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM accepted_events").one().n,
-    );
-    expect(accepted).toBe(0);
+    const retained = await runInDurableObject(adapter, (_instance, state) => ({
+      accepted: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM accepted_events")
+        .one().n,
+      watermarks: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM projection_watermarks")
+        .one().n,
+    }));
+    expect(retained).toEqual({ accepted: 0, watermarks: 0 });
   });
 
   it("preserves live dedup evidence and leaves new adapter work pending at the cap", async () => {

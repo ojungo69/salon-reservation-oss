@@ -63,8 +63,10 @@ pending/approved events and a separate Google desired-state queue.
   reject/cancel/expire remove it. Completion/no-show do not alter schedule representation.
 - A bounded owner-only reconciliation route reads each day through a new safe projection method.
   That read applies the existing lazy-expiry rule before returning only schedule facts, then hands
-  those facts to the calendar authority. This is used after initial configuration or a credential
-  gap; routine recovery remains the automatic outbox sweep.
+  those facts and the observed calendar generation/sequence watermark to the calendar authority.
+  The authority advances the same watermark for event delivery and replacement, so neither an
+  older handoff nor an older replacement can undo current committed state. This is used after
+  initial configuration or a credential gap; routine recovery remains the automatic outbox sweep.
 - Reconciliation is cursor-based in batches of seven days. It stays far below the Workers Free
   external subrequest limit (50) and the separate internal-service allowance, and avoids one
   90-day request that is slow even if technically allowed.

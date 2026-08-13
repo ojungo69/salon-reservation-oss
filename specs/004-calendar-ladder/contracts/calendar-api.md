@@ -123,6 +123,7 @@ receives `create`. Ack/purge remain consumer-scoped.
   "ok": true,
   "date": "2026-08-13",
   "purgeAt": 1800000000000,
+  "watermark": { "generation": 1, "seq": 17 },
   "events": [
     {
       "reservationId": "00000000-0000-4000-8000-000000000001",
@@ -136,10 +137,13 @@ receives `create`. Ack/purge remain consumer-scoped.
 }
 ```
 
-This internal response contains the reservation ID only to match authoritative rows and the
-reservation creation timestamp only to keep `DTSTAMP` stable. Completion/no-show rows retain
-`status: "approved"`; schedule-removing states are absent. Worker maps the response directly into
-the calendar authority and never returns it from calendar HTTP routes.
+This internal response contains the reservation ID only to match authoritative rows, the
+reservation creation timestamp only to keep `DTSTAMP` stable, and the current calendar outbox
+generation/sequence as an ordering watermark. Completion/no-show rows retain `status: "approved"`;
+schedule-removing states are absent. Worker maps the response directly into the calendar authority
+and never returns it from calendar HTTP routes. The calendar authority advances the watermark for
+both event delivery and replacement: a delayed event at or below it cannot rewrite a reconciled
+day, and an older replacement cannot overwrite a newer event.
 
 ## Google fixed HTTP contract
 

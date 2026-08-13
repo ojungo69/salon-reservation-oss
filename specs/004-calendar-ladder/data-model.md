@@ -34,6 +34,9 @@ unchanged.
 ```text
 date
 purgeAt
+watermark:
+  generation           current calendar generation
+  seq                  emitted outbox high-water
 events[]:
   reservationId       internal transfer only
   startTime            HH:mm
@@ -100,6 +103,19 @@ There is at most one row per reservation. ICS serializes only these rows ordered
 Rejection, cancellation, expiry, or retention purge deletes this row after desired Google absence
 is recorded. Completion/no-show bookkeeping keeps the confirmed schedule row.
 
+### `projection_watermarks`
+
+| Field | Rule |
+|---|---|
+| `date` | canonical reservation date; one row per touched day |
+| `generation` / `seq` | calendar outbox high-water captured with the authoritative day projection |
+| `purge_at` | parent retention deadline |
+
+The calendar authority advances this ordering watermark whenever it accepts an event or replaces a
+day from reconciliation. A delayed event at or below the watermark is recorded and acknowledged
+without rewriting that date, and an older reconciliation cannot overwrite a newer event. Rows are
+bounded by touched dates and removed at the parent deadline or adapter purge.
+
 ### `google_mutations`
 
 | Field | Rule |
@@ -163,7 +179,8 @@ object exists only in request/alarm memory. Only a digest discriminator may be p
 
 ## Retention and bounds
 
-- Projection, accepted event, and mutation rows carry the day partition's frozen `purgeAt`.
+- Projection, accepted event, projection-watermark, and mutation rows carry the day
+  partition's frozen `purgeAt`.
 - No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
 - `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
   visible in counters/ledger.

@@ -223,8 +223,11 @@ an optional canonical cursor date; absent starts today. One call covers at most 
 the existing `toDayConfig` and new `ReservationDay.calendarProjection(config)`, which applies lazy
 expiry transactionally and returns only schedule facts. The calendar authority replaces those
 dates' projection and Google desired state, including deletion of previously projected rows no
-longer present. Response returns only `processedDates`, `nextCursor | null`, and aggregate counts.
-Repeated calls are idempotent. Status exposes last completed reconciliation and next cursor.
+longer present. The projection carries the calendar outbox generation/sequence observed by the day;
+the authority advances that watermark for both event delivery and replacement, so neither a
+delayed older handoff nor an older replacement can undo newer committed calendar state. Response
+returns only `processedDates`, `nextCursor | null`, and aggregate counts. Repeated calls are
+idempotent. Status exposes last completed reconciliation and next cursor.
 
 ### 7. Owner and public routes
 
