@@ -118,7 +118,9 @@ export const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise
     return await Promise.race([
       work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("rpc deadline")), ms);
+        timer = setTimeout(() => {
+          reject(new Error("rpc deadline"));
+        }, ms);
       }),
     ]);
   } finally {
