@@ -483,7 +483,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         this.#acceptBatch(batch.events);
         await stub.ackOutbox({
           consumer: "line",
-          eventIds: batch.events.map(({ eventId }) => eventId),
+          events: batch.events.map(({ generation, eventId }) => ({ generation, eventId })),
         });
         drained += batch.events.length;
       }
@@ -1569,7 +1569,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           await withDeadline(
             stub.ackOutbox({
               consumer: "line",
-              eventIds: batch.events.map(({ eventId }) => eventId),
+              events: batch.events.map(({ generation, eventId }) => ({ generation, eventId })),
             }),
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );

@@ -272,7 +272,7 @@
      457-partition worst case is the actual window), a fixed batch of day objects per run, calling `drainOutbox`
      on each — an explicit **pull protocol**: the day RPC returns a bounded event batch and
      deletes nothing; `AdapterDelivery` accepts/terminalizes in its own local transaction; a
-     separate idempotent `ackOutbox(eventIds)` RPC then deletes from the day; the cursor
+     separate idempotent, generation-scoped `ackOutbox(event identities)` RPC then deletes from the day; the cursor
      advances only after the local outcome is durable. (No reentrant
      `AdapterDelivery → day → AdapterDelivery` call chain exists; the `waitUntil` handoff keeps
      its push shape — both converge on idempotent accept + ack.) Death points tested:

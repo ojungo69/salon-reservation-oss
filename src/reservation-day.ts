@@ -176,7 +176,10 @@ export type AdapterOutboxEvent = {
 
 export type DayDrainInput = { consumer: "line"; limit?: number };
 export type DayDrainResult = { events: AdapterOutboxEvent[]; more: boolean };
-export type DayAckInput = { consumer: "line"; eventIds: string[] };
+export type DayAckInput = {
+  consumer: "line";
+  events: Array<{ generation: number; eventId: string }>;
+};
 
 export type DayFailureCode =
   | "BAD_REQUEST"
@@ -1180,21 +1183,29 @@ export class ReservationDay extends DurableObject<Env> {
       typeof input !== "object" ||
       input === null ||
       input.consumer !== "line" ||
-      !Array.isArray(input.eventIds) ||
-      input.eventIds.length > ADAPTER.OUTBOX_DRAIN_BATCH ||
-      !input.eventIds.every(
-        (id) => typeof id === "string" && /^\d{4}-\d{2}-\d{2}#\d{1,9}$/.test(id),
+      !Array.isArray(input.events) ||
+      input.events.length > ADAPTER.OUTBOX_DRAIN_BATCH ||
+      !input.events.every(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          Number.isSafeInteger(event.generation) &&
+          event.generation >= 1 &&
+          typeof event.eventId === "string" &&
+          /^\d{4}-\d{2}-\d{2}#\d{1,9}$/.test(event.eventId),
       )
     ) {
       throw new Error("bad ack input");
     }
-    if (!this.#adapterOutboxExists() || input.eventIds.length === 0) return { ok: true };
+    if (!this.#adapterOutboxExists() || input.events.length === 0) return { ok: true };
     this.ctx.storage.transactionSync(() => {
-      for (const eventId of input.eventIds) {
+      for (const event of input.events) {
         this.ctx.storage.sql.exec(
-          "DELETE FROM __adapter_outbox WHERE consumer = ? AND event_id = ?",
+          `DELETE FROM __adapter_outbox
+           WHERE consumer = ? AND generation = ? AND event_id = ?`,
           input.consumer,
-          eventId,
+          event.generation,
+          event.eventId,
         );
       }
     });

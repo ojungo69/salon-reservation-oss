@@ -176,9 +176,13 @@ test.describe("state 2: active", () => {
   });
 
   test("the privacy page discloses the integration only now", async ({ page }) => {
-    await page.goto("/privacy");
-    await expect(page.locator("main")).toContainText("LINE 連携を利用する場合");
-    await expect(page.locator("main")).toContainText("連携はお客様が予約ごとに自分で選んだ場合");
+    for (const path of ["/privacy", "/privacy.html"]) {
+      await page.goto(path);
+      await expect(page.locator("main")).toContainText("LINE 連携を利用する場合");
+      await expect(page.locator("main")).toContainText(
+        "連携はお客様が予約ごとに自分で選んだ場合",
+      );
+    }
     await expectNoAxeViolations(page);
   });
 

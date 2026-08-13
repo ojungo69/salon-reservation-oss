@@ -284,6 +284,27 @@ describe("adapter event foundation", () => {
     ).rejects.toThrow("corrupt outbox row");
   });
 
+  it("acknowledges only the returned generation when event ids repeat", async () => {
+    const reservationId = await createPending();
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await runInDurableObject(dayStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time,
+            service_label, occurred_at, purge_at)
+         SELECT consumer, 2, seq, event_id, reservation_id, type, start_time,
+                service_label, occurred_at, purge_at
+         FROM __adapter_outbox WHERE consumer = 'line' AND generation = 1`,
+      );
+    });
+
+    await dayStub().ackOutbox({
+      consumer: "line",
+      events: [{ generation: 1, eventId: `${day.date}#1` }],
+    });
+    expect(await outboxRows()).toMatchObject([{ generation: 2, event_id: `${day.date}#1` }]);
+  });
+
   it("keeps the partition's frozen retention boundary on later adapter events", async () => {
     const reservationId = await createPending();
     await dayStub().transitionOwner(
