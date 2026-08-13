@@ -447,6 +447,7 @@ type ProjectionRow = {
   end_at: string;
   service_label: string;
   status: "tentative" | "confirmed";
+  google_deleted: number;
   purge_at: number;
 };
 
@@ -578,6 +579,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           end_at TEXT NOT NULL,
           service_label TEXT NOT NULL,
           status TEXT NOT NULL,
+          google_deleted INTEGER NOT NULL DEFAULT 0 CHECK (google_deleted IN (0, 1)),
           purge_at INTEGER NOT NULL
         )
       `);
@@ -711,6 +713,31 @@ export class CalendarAdapter extends DurableObject<Env> {
       "DELETE FROM ledger WHERE occurred_at < ?",
       new Date(now - ADAPTER.LEDGER_TTL_S * 1_000).toISOString(),
     );
+    const meta = this.#readMeta();
+    if (meta?.state === "active" && meta.googleSeen) {
+      const cleanup = sql
+        .exec<ProjectionRow>(
+          `SELECT projections.* FROM projections
+           LEFT JOIN google_mutations USING (reservation_id)
+           WHERE projections.google_deleted = 0
+             AND projections.purge_at > ? AND projections.purge_at <= ?
+             AND (google_mutations.operation IS NULL OR google_mutations.operation != 'delete')`,
+          now,
+          now + ADAPTER.HANDOFF_TERMINAL_LEAD_S * 1_000,
+        )
+        .toArray();
+      for (const row of cleanup) {
+        this.#queueMutation(
+          row.reservation_id,
+          row.external_id,
+          "delete",
+          null,
+          meta.generation,
+          row.purge_at,
+          googleReady(meta),
+        );
+      }
+    }
     const expired = sql
       .exec<{ operation: "upsert" | "delete"; n: number }>(
         `SELECT operation, COUNT(*) AS n FROM google_mutations
@@ -723,9 +750,12 @@ export class CalendarAdapter extends DurableObject<Env> {
       this.#bump("retention_discarded", n);
     }
     const expiredProjections =
-      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections WHERE purge_at <= ?", now)
+      sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM projections WHERE purge_at <= ? AND google_deleted = 0",
+        now,
+      )
         .toArray()[0]?.n ?? 0;
-    if (expiredProjections > 0 && this.#readMeta()?.googleSeen) {
+    if (expiredProjections > 0 && meta?.googleSeen) {
       this.#record("past-retention", "delete");
       this.#bump("retention_cleanup_unresolved", expiredProjections);
     }
@@ -815,7 +845,9 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   #requeueProjections(meta: CalendarMeta): void {
-    for (const row of this.ctx.storage.sql.exec<ProjectionRow>("SELECT * FROM projections")) {
+    for (const row of this.ctx.storage.sql.exec<ProjectionRow>(
+      "SELECT * FROM projections WHERE google_deleted = 0",
+    )) {
       this.#queueMutation(
         row.reservation_id,
         row.external_id,
@@ -1497,6 +1529,12 @@ export class CalendarAdapter extends DurableObject<Env> {
         return;
       }
       if (outcome.kind === "success") {
+        if (fresh.operation === "delete") {
+          sql.exec(
+            "UPDATE projections SET google_deleted = 1 WHERE reservation_id = ?",
+            row.reservation_id,
+          );
+        }
         sql.exec("DELETE FROM google_mutations WHERE reservation_id = ?", row.reservation_id);
         this.#bump("delivery:success");
         return;

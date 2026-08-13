@@ -66,7 +66,7 @@ export const ADAPTER = Object.freeze({
   FAULT_BUDGET_F: 3,
   /** Additive margin in the cycle bound. */
   SWEEP_RPC_MARGIN_S: 300,
-  /** Undelivered-event terminalization lead; strictly above the worst full sweep cycle. */
+  /** Undelivered-event/calendar-cleanup lead; above the worst sweep and provider retry cycles. */
   HANDOFF_TERMINAL_LEAD_S: 43200,
   /** webhookEventId dedup retention. */
   WEBHOOK_DEDUP_TTL_S: 259200,

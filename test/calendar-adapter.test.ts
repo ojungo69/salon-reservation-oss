@@ -911,6 +911,71 @@ describe("calendar projection and feed authority", () => {
     expect(retained).toEqual({ accepted: 0, watermarks: 0 });
   });
 
+  it("deletes Google events before pruning retained projections", async () => {
+    const calendarMethods: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init = {}) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return mockGoogleAuthSuccess();
+        }
+        calendarMethods.push(init.method ?? "GET");
+        return new Response(null, { status: 200 });
+      }),
+    );
+    const config = await configFor(suiteDate(6));
+    const adapter = adapterStub();
+    expect(
+      await dayStub(config.date).createPublic(config, createInput(config.date)),
+    ).toMatchObject({ ok: true });
+    await adapter.pokeDay({ date: config.date });
+    await runDurableObjectAlarm(adapter);
+    expect(calendarMethods).toEqual(["PUT"]);
+
+    const purgeAt = SUITE_NOW + ADAPTER.HANDOFF_TERMINAL_LEAD_S * 1_000;
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE accepted_events SET purge_at = ?", purgeAt);
+      state.storage.sql.exec("UPDATE projections SET purge_at = ?", purgeAt);
+      state.storage.sql.exec("UPDATE projection_watermarks SET purge_at = ?", purgeAt);
+    });
+    await runDurableObjectAlarm(adapter);
+
+    expect(calendarMethods).toEqual(["PUT", "DELETE"]);
+    const beforePurge = await adapter.feed({ token: feedToken });
+    expect(beforePurge.ok && beforePurge.body).toContain("BEGIN:VEVENT");
+    expect(await adapter.diagnostics()).toMatchObject({
+      projectionCount: 1,
+      pendingCount: 0,
+    });
+
+    let googleSecret = JSON.stringify(credentials);
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty(
+        (instance as unknown as { env: Env }).env,
+        "GOOGLE_CALENDAR_CREDENTIALS",
+        {
+          configurable: true,
+          get: () => googleSecret,
+        },
+      );
+    });
+    googleSecret = JSON.stringify({
+      ...credentials,
+      refreshToken: "fixture-refresh-token-after-cleanup",
+    });
+    await runDurableObjectAlarm(adapter);
+    expect(calendarMethods).toEqual(["PUT", "DELETE"]);
+
+    vi.setSystemTime(purgeAt);
+    const afterPurge = await adapter.feed({ token: feedToken });
+    expect(afterPurge.ok && afterPurge.body).not.toContain("BEGIN:VEVENT");
+    expect(await adapter.diagnostics()).toMatchObject({
+      projectionCount: 0,
+      pendingCount: 0,
+      counters: expect.not.objectContaining({ retention_cleanup_unresolved: expect.anything() }),
+    });
+  });
+
   it("preserves live dedup evidence and leaves new adapter work pending at the cap", async () => {
     const config = await configFor(suiteDate(7));
     const adapter = adapterStub();

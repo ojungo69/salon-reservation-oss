@@ -114,6 +114,7 @@ surfaced until retention frees evidence. Reservation commits remain unaffected.
 | `date`, `stamp_at`, `start_at`, `end_at` | canonical date/UTC instants; immutable feed stamp; `start_at < end_at` |
 | `service_label` | bounded schedule label only |
 | `status` | `tentative` or `confirmed` |
+| `google_deleted` | one-bit provider-cleanup evidence; never serialized into ICS or Google payloads |
 | `purge_at` | parent retention deadline |
 
 There is at most one row per reservation. ICS serializes only these rows ordered by start/external ID.
@@ -121,7 +122,9 @@ Rejection, cancellation, expiry, or retention purge deletes this row without wai
 capacity. If the mutation table cannot retain the provider delete, the transactional day outbox
 event remains unacknowledged as recovery evidence. Reconciliation, which has no such event to rely
 on, leaves the entire date unchanged unless every required Google mutation fits. Completion/no-show
-bookkeeping keeps the confirmed schedule row.
+bookkeeping keeps the confirmed schedule row. During the final 12-hour retention window, the
+authority queues Google deletion while retaining the ICS row; successful deletion sets
+`google_deleted` so rotation does not recreate the provider event before the local boundary.
 
 ### `projection_watermarks`
 
@@ -152,8 +155,9 @@ bounded by touched dates and removed at the parent deadline or adapter purge.
 | `created_at` / `purge_at` | pending-age source and parent deadline |
 
 A newer projection replaces an older queued/failed mutation and increments `desired_version`.
-Settle applies only when both generation and claimed version still match. Delete success removes the
-mutation; upsert success removes it because the projection itself is the desired-state record.
+Settle applies only when both generation and claimed version still match. Delete success marks any
+retained projection as provider-cleaned and removes the mutation; upsert success removes it because
+the projection itself is the desired-state record.
 Owner reconciliation with valid Google configuration resets every retained failed or
 configuration-blocked delete to a new queued version, because its projection row is already absent.
 One shared OAuth or Calendar authorization/configuration rejection stores the current non-secret
@@ -211,7 +215,9 @@ object exists only in request/alarm memory. Only a digest discriminator may be p
 
 - Projection, accepted event, projection-watermark, and mutation rows carry the day
   partition's frozen `purgeAt`.
-- No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
+- Google cleanup is queued inside the existing 12-hour terminal lead, which contains the complete
+  10-hour-21-minute retry ladder. ICS remains available until `purgeAt`; no provider call begins
+  at/past that boundary, and unresolved cleanup is terminalized before local delete.
 - `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
   visible in counters/ledger. A terminal event remains unacknowledged after its local ICS row is
   removed, or reconciliation retains its stale date projection set, until every required Google

@@ -257,10 +257,12 @@ Google recommends truncated exponential backoff for time-based quota errors and 
 indefinite retry. Retryable and payload-specific failures remain row-isolated; a shared credential
 rejection deliberately parks all rows for that fingerprint. Every row carries the parent `purgeAt`;
 the sender checks it after OAuth and immediately before every initial, fallback, or convergence
-Calendar request, so no mutation begins at or beyond it. Projection,
-dedup, queue, counters, and ledger are capped/pruned. At retention, an unresolved external deletion
-is terminally recorded before the local reference is discarded; external Calendar never becomes
-the system of record.
+Calendar request, so no mutation begins at or beyond it. The active sweep queues provider deletion
+inside the existing 12-hour terminal lead, which contains the complete 10h21m retry ladder, while
+ICS retains the projection until the hard boundary. Successful cleanup is remembered so credential
+rotation does not recreate the event. Projection, dedup, queue, counters, and ledger are capped and
+pruned; any unresolved deletion is terminally recorded before the local reference is discarded.
+External Calendar never becomes the system of record.
 
 **Sources**:
 

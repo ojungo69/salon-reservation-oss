@@ -20,7 +20,7 @@ Google account, or provider network call was used.
 - duplicate/lost responses, latest-desired claims, stale outcomes, retry exhaustion, configuration
   parking, and booking/provider isolation;
 - projection/queue/ledger caps, parent retention boundaries, disable leases, residual disclosure,
-  and unresolved external cleanup visibility;
+  pre-retention provider deletion, and unresolved external cleanup visibility;
 - release manifest, named-secret allowlist, fictional fixtures, direct dependencies, and install
   scripts.
 
@@ -46,6 +46,7 @@ Google account, or provider network call was used.
 | An in-flight active sweep could overwrite deactivation's cursor reset (`CWE-362`) | The sweep wrote its stale next date after an awaited day RPC while another request had entered deactivation | **Fixed.** Every success and fault path revalidates lifecycle state and generation before advancing or persisting the cursor. |
 | Revoked credentials or an unavailable target calendar could drive repeated provider calls per queued row (`CWE-400`) | A shared configuration result parked only the claimed row, and an event-insert 404 was misclassified as reservation-specific | **Fixed.** The authority treats collection-level 404 as shared configuration, persists the rejected non-secret fingerprint, parks current and newly accepted work together, stops the batch, and reopens it only on rotation or explicit reconciliation. |
 | Ten-round handoff draining could multiply every active sweep visit (`CWE-400`) | Calling the immediate handoff method for each of 16 sweep slots allowed up to 160 drain rounds rather than the shared timing model's 16 | **Fixed.** The shared one-round drain primitive is reused; handoff retains its bounded ten rounds, while a sweep spends one drain/ack round per slot and keeps the cursor when more remains. |
+| Retention pruning could orphan a successfully created Google event | A successful upsert removed its mutation row, then local retention deleted the only projection without first creating a provider delete | **Fixed.** The active sweep queues deletion in the final 12-hour window, which contains the 10h21m retry ladder; successful cleanup is recorded on the retained projection, rotation skips it, and unresolved cleanup remains visible at the boundary. |
 
 Post-remediation source review and focused Workers/DO tests found no remaining reportable attack
 path. Final reportable findings: **0**.
@@ -58,7 +59,7 @@ semgrep scan --metrics=off \
   --config https://gitlab.com/gitlab-org/security-products/sast-rules/-/raw/8a904a2ef98c8c0ef23c1368a6f4334a4e806f5a/rules/lgpl/javascript/ssrf/rule-node_ssrf.yml \
   src/calendar-adapter.ts
 npx vitest run test/worker.test.ts test/calendar-adapter.test.ts \
-  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|fails open when the optional calendar descriptor stalls|records durable recovery when a descriptor stalls|conservatively discloses residual calendar state when its lookup cannot run|orders events and exposes only an aggregate feed-auth|recovers descriptor-timeout mutations|prunes expired local calendar state|keeps the OAuth deadline active|keeps the Calendar API deadline active|reclaims a failed upsert for newer Google work|removes the ICS projection|defers a whole reconciliation date|reclaims failed upserts for required Google deletes|parks the whole queue|stops the current batch|parks the queue when the target Google calendar is missing|refreshes retention time before every Google claim|does not start a Google request after the caller crosses retention|does not start a fallback Google insert after retention|bounds a stalled Calendar sweep RPC|limits an active sweep|does not advance an active sweep|preserves a reactivated generation|retries purge faults|keeps a deferred reconciliation date" \
+  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|fails open when the optional calendar descriptor stalls|records durable recovery when a descriptor stalls|conservatively discloses residual calendar state when its lookup cannot run|orders events and exposes only an aggregate feed-auth|recovers descriptor-timeout mutations|prunes expired local calendar state|deletes Google events before pruning retained projections|keeps the OAuth deadline active|keeps the Calendar API deadline active|reclaims a failed upsert for newer Google work|removes the ICS projection|defers a whole reconciliation date|reclaims failed upserts for required Google deletes|parks the whole queue|stops the current batch|parks the queue when the target Google calendar is missing|refreshes retention time before every Google claim|does not start a Google request after the caller crosses retention|does not start a fallback Google insert after retention|bounds a stalled Calendar sweep RPC|limits an active sweep|does not advance an active sweep|preserves a reactivated generation|retries purge faults|keeps a deferred reconciliation date" \
   --reporter=verbose
 npm run release:audit
 npm audit --audit-level=low
@@ -68,7 +69,7 @@ rg -n "fetch\\(|authorization|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|co
 
 Semgrep ran 400 rules over 25 tracked files and returned its expected `--error` exit 1 for the one
 unchanged Turnstile finding dispositioned above; feature-004 blocking findings are zero. Results:
-the pinned GitLab SSRF rule reported 0 findings; 28 focused security regressions passed; 77
+the pinned GitLab SSRF rule reported 0 findings; 29 focused security regressions passed; 77
 allowlisted files passed the release audit; npm reported 0 vulnerabilities. Source inspection found
 only the allowlisted Google OAuth and Calendar HTTPS origins, `redirect: "manual"`, bounded response
 readers, and no calendar credential/body logging.

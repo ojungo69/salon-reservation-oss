@@ -184,4 +184,6 @@ location, extended properties, or contact fields are sent. Response bodies are b
 persisted. An event update 404 falls through to insert; an insert 404 identifies an unavailable
 target calendar and parks the fingerprint-scoped queue as a configuration failure. The parent
 retention boundary is checked immediately before every DELETE, PUT, or POST, including after OAuth
-and between fallback calls; no Calendar mutation begins at or beyond it.
+and between fallback calls; no Calendar mutation begins at or beyond it. During the final 12-hour
+retention window, the active sweep schedules provider deletion but keeps the ICS projection until
+the boundary. A successful delete is remembered so credential rotation does not recreate the event.

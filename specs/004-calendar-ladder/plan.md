@@ -82,7 +82,7 @@ per installation, one Google target calendar
 | Provider outage/quota | per-row claim, bounded backoff, retryable classification, terminal ledger, no booking wait; 429/5xx/exhaustion tests |
 | Mutation capacity | remove cancelled ICS projections independently; retain the day outbox row or an atomically stale reconciliation date until its Google delete fits; failed upserts may yield to newer work, but never evict a desired-absence or live record |
 | Configuration gap | no new external call while invalid; retained committed source plus owner cursor reconciliation after restore |
-| Data retention | every projection/mutation carries parent purge boundary; check immediately before each Calendar request, prune at boundary, bounded ledger/counters |
+| Data retention | every projection/mutation carries parent purge boundary; queue provider deletion in the 12-hour lead, check immediately before each Calendar request, retain ICS until/prune at boundary, surface unresolved cleanup |
 | Disable/rotation race | descriptor lease validated in day transaction; missing configuration resets the purge cursor and stops new descriptors; old-generation rows cancel/purge after the lease window |
 | Availability coupling | calendar data is never read by availability/core; byte-equality tests before/after enable, outage, retry, reconcile |
 | Backout/data loss | new DO kept by forward backout until drain; no namespace tombstone; day schema change additive and legacy LINE rows accepted |
@@ -202,6 +202,8 @@ Every ingress goes through one desired-state upsert:
   complete desired event (if Google configured);
 - rejected/cancelled/expired: retain desired Google absence before removing the ICS row; when the
   mutation cap is full, keep the outbox event or stale projection for the next sweep/reconciliation;
+- retained active projection: queue Google absence inside the existing 12-hour terminal lead, keep
+  the ICS row until its parent boundary, and mark successful provider cleanup so rotation skips it;
 - duplicate/lower sequence: no-op;
 - stale generation/past retention/overflow: redacted disposition/terminal record, never booking
   failure.
@@ -229,6 +231,9 @@ inactive/auth failure. Owner diagnostics expose only an aggregate failure count.
   before update. Newer desired state invalidates the older outcome. The claimed parent purge
   boundary is rechecked after OAuth and immediately before every initial, fallback, or convergence
   Calendar request; expired work returns to the ordinary retention prune without another fetch.
+- The active minute sweep stages retained-projection deletes during the final 12 hours. The existing
+  retry ladder ends by 10h21m; successful deletion is remembered locally while ICS remains available
+  until the source boundary, and an unresolved final state is surfaced before pruning.
 - Retry uses the existing absolute offsets and send batch. `Retry-After` is not trusted to grow the
   bound; safe HTTP/reason classification is in `research.md` R6.
 - No inbound list/sync/watch/free-busy method exists in code or credentials.

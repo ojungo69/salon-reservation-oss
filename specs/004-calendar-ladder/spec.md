@@ -143,8 +143,9 @@ redacted diagnostics.
 - Configuration is removed while a send is in flight: no new sends begin, the response cannot
   mutate reservation state, and later reconfiguration reconciles from committed source state.
 - A day partition is retention-purged while a calendar mutation is pending: the local projection is
-  removed, no initial or chained provider request starts at or beyond the parent boundary, and any
-  required provider deletion is driven or surfaced before derived local data is discarded.
+  retained for ICS while Google deletion is driven through its bounded ladder before the parent
+  boundary, no initial or chained provider request starts at or beyond that boundary, and unresolved
+  cleanup is surfaced before derived local data is discarded.
 - Queue or projection bounds are reached: new reservation commits still succeed; calendar work is
   terminally visible rather than growing storage without bound.
 
@@ -215,11 +216,13 @@ redacted diagnostics.
   values, provider bodies, and authorization headers MUST not appear.
 - **FR-012 (bounded retention and storage)**: Local calendar events, accepted-event deduplication,
   queue rows, and diagnostics MUST be size- and/or time-bounded and MUST not outlive the source
-  reservation's configured retention boundary. The boundary MUST be checked immediately before
-  every outbound Calendar mutation, including after OAuth and between fallback requests. Storage
-  pressure MUST degrade only the adapter and become visible; it MUST never reject a reservation.
-  Optional descriptor acquisition on a reservation path MUST fail open within 250 ms; automatic
-  sweep/reconciliation owns recovery.
+  reservation's configured retention boundary. For a retained active projection, Google deletion
+  MUST be queued early enough for the complete bounded retry ladder while the ICS row remains until
+  the parent boundary; successful provider cleanup MUST not be undone by credential rotation. The
+  boundary MUST be checked immediately before every outbound Calendar mutation, including after
+  OAuth and between fallback requests. Storage pressure MUST degrade only the adapter and become
+  visible; it MUST never reject a reservation. Optional descriptor acquisition on a reservation
+  path MUST fail open within 250 ms; automatic sweep/reconciliation owns recovery.
 - **FR-013 (fixture-only verification)**: Automated tests MUST use fictional data, fixture
   credentials, and mocked token/Calendar endpoints. CI MUST require no Google or Cloudflare account,
   no network access to Google, and no live deployment. A live provider smoke test remains an
