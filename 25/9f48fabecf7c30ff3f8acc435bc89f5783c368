@@ -1,0 +1,59 @@
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_1338fec62d9589 121,215-216
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 62,157-161
+test/worker.test.ts
+  s_a546c8dc2f182a::t_570e17d13f1c32 3153-3178
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 162-164,191-193
+  s_a546c8dc2f182a::t_1338fec62d9589 240-242,256-257
+specs/004-calendar-ladder/research.md
+  s_a546c8dc2f182a::t_1338fec62d9589 33-34
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 243-245,250-252
+specs/004-calendar-ladder/contracts/calendar-api.md
+  s_a546c8dc2f182a::t_1338fec62d9589 102-103
+docs/PRIVACY.md
+  s_a546c8dc2f182a::t_1338fec62d9589 71-74
+specs/004-calendar-ladder/spec.md
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 117-118
+  s_a546c8dc2f182a::t_1338fec62d9589 205-206
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_62ace78a8b3926 1666-1698
+  s_a546c8dc2f182a::t_64b90f5c2d3562 1595-1604,1607-1611,1615-1616,1619-1620,1622,1642-1662,1664,1940-1974
+  s_a546c8dc2f182a::t_570e17d13f1c32 1208-1283
+  s_a546c8dc2f182a::t_fb84f96a26130b 1626-1641,1663
+  s_a546c8dc2f182a::t_1db6f24da64b20 1665
+  s_a546c8dc2f182a::t_53da5cb0ee8d71 1975
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_ec821e51d6db17 1444-1449,1452-1472,1544-1545,1553-1558,1580-1585,1596-1597
+  s_a546c8dc2f182a::t_de6cc355ee69a4 1035,1050,1229,1283
+  s_a546c8dc2f182a::t_f1bac111c7d85e 420,430-432,543,622,631-632,644
+  s_a546c8dc2f182a::t_7726f434f5b1ca 1203-1207,1212-1213,1219,1274-1276,1284-1286
+  s_a546c8dc2f182a::t_4bd9423aa7b6e0 1314-1316,1321
+  s_a546c8dc2f182a::t_03cc2829d74cd0 824-835,863-864,866,876-879,882-883,889,893-896
+  s_a546c8dc2f182a::t_b533a08c673f38 1085,1087,1090,1092,1102,1112,1114-1126,1617,1627,1636
+  s_a546c8dc2f182a::t_6a0f1d8fa17cc2 1313
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 46-47,60
+  s_a546c8dc2f182a::t_1338fec62d9589 35,37,70
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_d9ae45b3ad2e81 81-86,122,124
+  s_a546c8dc2f182a::t_1338fec62d9589 13,15,17,87-91,112,134-136
+src/worker.ts
+  s_a546c8dc2f182a::t_7726f434f5b1ca 312,367,2274-2277
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "259f48fabecf7c30ff3f8acc435bc89f5783c368",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
