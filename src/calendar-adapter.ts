@@ -1474,12 +1474,13 @@ export class CalendarAdapter extends DurableObject<Env> {
       return;
     }
     for (let index = 0; index < ADAPTER.SEND_BATCH; index += 1) {
-      const row = this.#claimGoogle(now);
+      const claimNow = Date.now();
+      const row = this.#claimGoogle(claimNow);
       if (row === null) return;
-      const token = await getGoogleAccessToken(credentials, fetch, now);
+      const token = await getGoogleAccessToken(credentials, fetch, claimNow);
       if (!token.ok) {
         const kind = token.kind === "retryable" ? "retryable" : "configuration";
-        this.#settleGoogle(row, { kind, status: token.status }, now);
+        this.#settleGoogle(row, { kind, status: token.status }, Date.now());
         return;
       }
       let event: CalendarProjection | null = null;
@@ -1501,7 +1502,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           }
           event = parsed;
         } catch {
-          this.#settleGoogle(row, { kind: "permanent", status: null }, now);
+          this.#settleGoogle(row, { kind: "permanent", status: null }, Date.now());
           continue;
         }
       }

@@ -10,11 +10,11 @@ No deployment or live provider/account was used.
 |---|---|
 | `specify self check` | Up to date: 0.16.2 |
 | `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
-| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 68/68 passed (calendar 42; reservation-day 26) |
+| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 69/69 passed (calendar 43; reservation-day 26) |
 | pinned Semgrep command in `security-scan.md` | 400 rules over 25 tracked files; 1 unchanged Turnstile finding accepted; 0 feature blocking findings |
-| focused security regression command in `security-scan.md` | 17/17 passed |
+| focused security regression command in `security-scan.md` | 18/18 passed |
 | focused calendar privacy cleanup test | 1/1 passed |
-| `npm run check` | core 54/54; Workers/DO 218/218; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run check` | core 54/54; Workers/DO 219/219; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
 | GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 38 files, 321 changed symbols, 72 affected flows reviewed; shared validator/deadline/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
@@ -69,6 +69,10 @@ remains pending; and only failed upserts yield capacity to newer work. The new r
 all old paths and pass in the 68-case focused, 218-case full, and 17-case security runs above.
 The Worker descriptor path also reuses the shared deadline helper, and the queue-bound fixture now
 uses the exported production cap instead of a duplicate literal.
+A final P1 regression paused the first Google item until the next row crossed its retention
+deadline. Reusing the alarm-start time made an obsolete second provider call before the fix; each
+claim now refreshes the clock after prior I/O, and the 69-case focused, 219-case full, and 18-case
+security runs include this boundary.
 
 ## Manual completion sweep
 

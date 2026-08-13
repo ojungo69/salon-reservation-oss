@@ -1591,6 +1591,66 @@ describe("calendar projection and feed authority", () => {
     expect(raced).toMatchObject({ status: "queued", payload: { status: "confirmed" } });
   });
 
+  it("refreshes retention time before every Google claim", async () => {
+    let calendarCalls = 0;
+    let allowFirst!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      allowFirst = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return mockGoogleAuthSuccess();
+        }
+        calendarCalls += 1;
+        return calendarCalls === 1 ? firstResponse : new Response(null, { status: 200 });
+      }),
+    );
+    const config = await configFor(suiteDate(20));
+    const day = dayStub(config.date);
+    const first = await day.createOwner(config, createInput(config.date));
+    const second = await day.createOwner(config, createInput(config.date, "11:00"));
+    expect(first).toMatchObject({ ok: true, status: "approved" });
+    expect(second).toMatchObject({ ok: true, status: "approved" });
+    if (!first.ok || !second.ok) throw new Error("fixture create failed");
+    await adapterStub().pokeDay({ date: config.date });
+    await runInDurableObject(adapterStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE google_mutations SET created_at = ?, next_attempt_at = ?, purge_at = ?
+         WHERE reservation_id = ?`,
+        "2020-01-01T00:00:00.000Z",
+        SUITE_NOW,
+        SUITE_PURGE_AT,
+        first.reservationId,
+      );
+      state.storage.sql.exec(
+        `UPDATE google_mutations SET created_at = ?, next_attempt_at = ?, purge_at = ?
+         WHERE reservation_id = ?`,
+        "2020-01-02T00:00:00.000Z",
+        SUITE_NOW,
+        SUITE_NOW + 1,
+        second.reservationId,
+      );
+    });
+
+    let now = SUITE_NOW;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const alarm = runDurableObjectAlarm(adapterStub());
+    await vi.waitFor(() => expect(calendarCalls).toBe(1));
+    now = SUITE_NOW + 2;
+    allowFirst(new Response(null, { status: 200 }));
+    await alarm;
+
+    expect(calendarCalls).toBe(1);
+    expect(await adapterStub().diagnostics()).toMatchObject({
+      pendingCount: 0,
+      ledger: expect.arrayContaining([
+        expect.objectContaining({ reason: "past-retention", operation: "upsert" }),
+      ]),
+    });
+  });
+
   it("bounds a stalled Calendar sweep RPC and retries the same day", async () => {
     const adapter = adapterStub();
     const reservationDays = env.RESERVATION_DAYS;
