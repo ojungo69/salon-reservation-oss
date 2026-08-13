@@ -1,0 +1,35 @@
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_5751539cd3ca14 13,15,17,48,54-58,79,84,91,98,101-103
+test/worker.test.ts
+  s_a546c8dc2f182a::t_c899e2ab4bc93c 3435
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_5751539cd3ca14 37,60
+  s_a546c8dc2f182a::t_93f183534c2142 36,50
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_7c4a412b1be0df 259
+  s_a546c8dc2f182a::t_cf953ced78505f 239,242,253-258,260-261,1127-1142,1157,1213
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_67e26a85375417 234-236
+  s_a546c8dc2f182a::t_93f183534c2142 210-212,233
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_c899e2ab4bc93c 206-230,232-236,977,981-985,987-997,1000-1002,1007,1013-1014,1017,1020-1027,1031-1032,1036,1038,1042-1043,1046,1049-1056
+  s_a546c8dc2f182a::t_7c4a412b1be0df 231
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_93f183534c2142 105-107,192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0bd0e8054bc4119b3c13dae28bd7e5e6222692c3",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
