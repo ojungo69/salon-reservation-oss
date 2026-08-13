@@ -351,12 +351,8 @@ const withCalendarAdapter = async (
   ) {
     return context;
   }
-  if (
-    parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN) === null &&
-    parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS) === null
-  ) {
-    return context;
-  }
+  const modes = calendarModes(env);
+  if (!modes.feed && !modes.google) return context;
   try {
     const calendarAdapter = await calendarAdapterStub(env).descriptor();
     return calendarAdapter === null ? context : { ...context, calendarAdapter };
