@@ -827,12 +827,38 @@ describe("link flow over HTTP", () => {
     expect(linked.status).toBe(200);
     expect(await linked.json()).toMatchObject({ linked: true, replayed: false });
 
-    // The nonce is consumed inside the completing transaction.
+    // A lost success response can be replayed with the same nonce and subject
+    // while its original TTL is still live; it neither mutates the link twice
+    // nor depends on another day watermark read.
+    await runInDurableObject(
+      env.RESERVATION_DAYS.getByName(`single-location:${lineDay.date}`) as never,
+      (instance) => {
+        (instance as unknown as Record<string, unknown>).readEventSequence = async () => {
+          throw new Error("day unavailable after successful completion");
+        };
+      },
+    );
     const reuse = await post("/api/adapters/line/link", {
       nonce,
       idToken: "aaaa.bbbb.cccc",
     });
-    expect(reuse.status).toBe(404);
+    expect(reuse.status).toBe(200);
+    expect(await reuse.json()).toMatchObject({ linked: true, replayed: true });
+    const versionAfterReplay = await runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ link_version: number }>(
+          "SELECT link_version FROM links WHERE reservation_id = ?",
+          reservationId,
+        )
+        .toArray()[0]?.link_version,
+    );
+    expect(versionAfterReplay).toBe(1);
+    await runInDurableObject(
+      env.RESERVATION_DAYS.getByName(`single-location:${lineDay.date}`) as never,
+      (instance) => {
+        delete (instance as unknown as Record<string, unknown>).readEventSequence;
+      },
+    );
 
     // Same subject again: no-op replay. Different subject: surfaced conflict.
     const secondNonce = await mintIntent(reservationId);
@@ -855,6 +881,18 @@ describe("link flow over HTTP", () => {
       "LINE_LINK_CONFLICT",
     );
 
+    // Unlink must invalidate even a successful response-loss receipt.
+    const unlinkNonce = await mintIntent(reservationId);
+    interceptVerify(validClaims());
+    expect(
+      (
+        await post("/api/adapters/line/link", {
+          nonce: unlinkNonce,
+          idToken: "aaaa.bbbb.cccc",
+        })
+      ).status,
+    ).toBe(200);
+
     // Status shows presence only; unlink needs the same proof and works.
     const status = await post(`/api/reservations/${reservationId}/line/status`, {
       date: lineDay.date,
@@ -869,6 +907,18 @@ describe("link flow over HTTP", () => {
     });
     expect(unlinked.status).toBe(200);
     expect(await unlinked.json()).toMatchObject({ unlinked: true });
+
+    vi.stubGlobal("fetch", () => {
+      throw new Error("an unlinked receipt must fail before provider verification");
+    });
+    expect(
+      (
+        await post("/api/adapters/line/link", {
+          nonce: unlinkNonce,
+          idToken: "aaaa.bbbb.cccc",
+        })
+      ).status,
+    ).toBe(404);
 
     const gone = await post(`/api/reservations/${reservationId}/line/status`, {
       date: lineDay.date,

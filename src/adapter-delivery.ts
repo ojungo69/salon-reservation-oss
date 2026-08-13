@@ -718,8 +718,15 @@ export class AdapterDelivery extends DurableObject<Env> {
     if (!this.#hasSchema()) return { ok: false, code: "INVALID_INTENT" };
     const nonceDigest = await digestHex(input.nonce);
     const pre = this.ctx.storage.sql
-      .exec<{ reservation_id: string; date: string; generation: number }>(
-        "SELECT reservation_id, date, generation FROM intents WHERE nonce = ?",
+      .exec<{
+        reservation_id: string;
+        date: string;
+        generation: number;
+        link_status: string;
+      }>(
+        `SELECT i.reservation_id, i.date, i.generation, l.status AS link_status
+         FROM intents i JOIN links l ON l.reservation_id = i.reservation_id
+         WHERE i.nonce = ?`,
         nonceDigest,
       )
       .toArray()[0];
@@ -730,27 +737,31 @@ export class AdapterDelivery extends DurableObject<Env> {
       }
       return { ok: false, code: "INVALID_INTENT" };
     }
-    // Watermark read is a day RPC, so it happens before the local transaction.
+    // A final link plus the still-live intent is the bounded success receipt;
+    // replay needs no day RPC. First completion still needs the watermark read
+    // before the local transaction.
     // It is load-bearing: without the day's current sequence there is no fence
     // between pre-link history and post-link events, and defaulting to zero
     // would send the customer their own past. A day that cannot answer means
     // "try again", never "assume nothing has happened yet".
-    let watermark: number;
-    try {
-      const sequence = await this.env.RESERVATION_DAYS.getByName(
-        `single-location:${pre.date}`,
-      ).readEventSequence({ consumer: "line", generation: pre.generation });
-      if (!Number.isSafeInteger(sequence.eventSeq) || sequence.eventSeq < 0) {
-        throw new Error("bad event sequence");
+    let watermark: number | null = null;
+    if (pre.link_status !== "final") {
+      try {
+        const sequence = await this.env.RESERVATION_DAYS.getByName(
+          `single-location:${pre.date}`,
+        ).readEventSequence({ consumer: "line", generation: pre.generation });
+        if (!Number.isSafeInteger(sequence.eventSeq) || sequence.eventSeq < 0) {
+          throw new Error("bad event sequence");
+        }
+        watermark = sequence.eventSeq;
+      } catch {
+        // Kept apart from an invalid nonce: a brief day outage and a replay of
+        // dead nonces demand opposite responses from whoever reads diagnostics.
+        if (this.#readMeta().state === "active") {
+          this.#bumpCounter("link_failed:day-unavailable", 1);
+        }
+        return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
       }
-      watermark = sequence.eventSeq;
-    } catch {
-      // Kept apart from an invalid nonce: a brief day outage and a replay of
-      // dead nonces demand opposite responses from whoever reads diagnostics.
-      if (this.#readMeta().state === "active") {
-        this.#bumpCounter("link_failed:day-unavailable", 1);
-      }
-      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     await this.#armAlarm(Date.now());
     return this.ctx.storage.transactionSync(() => {
@@ -794,7 +805,9 @@ export class AdapterDelivery extends DurableObject<Env> {
         this.#bumpCounter("link_failed:invalid-intent", 1);
         return { ok: false as const, code: "INVALID_INTENT" as const };
       }
-      sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
+      // Keep the digest through its original TTL as a bounded success receipt:
+      // a response-lost retry with the same verified subject returns the final
+      // link below, while unlink, a newer intent, expiry, or disable removes it.
       if (existing.status === "final") {
         if (existing.subject === input.subject) {
           return {
@@ -803,8 +816,12 @@ export class AdapterDelivery extends DurableObject<Env> {
             replayed: true,
           };
         }
+        sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
         this.#bumpCounter("link_failed:conflict", 1);
         return { ok: false as const, code: "LINK_CONFLICT" as const };
+      }
+      if (watermark === null) {
+        return { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" as const };
       }
       const now = new Date().toISOString();
       const linkVersion = existing.link_version + 1;

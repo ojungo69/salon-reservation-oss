@@ -137,17 +137,18 @@
    - `POST /api/reservations/:reservationId/line/link-intent` — reservation ID in the path,
      `{date, managementKey}` in the JSON body only (the existing public-route convention; the
      management key never appears in a URL, access log, `Referer`, or response URL — negative
-     tests) — mints a **256-bit single-use nonce**. The clear nonce is returned once and never
+     tests) — mints a **256-bit nonce**. The clear nonce is returned once and never
      persisted; only its **SHA-256 digest** is stored with the reservation reference, date,
      adapter generation, and 10-minute TTL. The same transaction creates or refreshes the
      provisional link and stamps it with the parent `purgeAt`.
    - `POST /api/adapters/line/link` (active-gated) takes nonce + ID token, verifies the token
      against the LINE Platform (fixed URL, configured login channel ID as `client_id`). The
      completing `AdapterDelivery` transaction re-checks the nonce digest, TTL, and generation,
-     deletes the digest, and promotes the provisional link to final with the verified subject and
-     sequence watermark. The same clear nonce cannot be used again. A new intent for an identical
-     final subject is a no-op; a different subject over a live link is a 409 conflict, and unlink
-     followed by replay of the old nonce cannot recreate the link.
+     and promotes the provisional link to final with the verified subject and sequence watermark.
+     On success, the digest remains only through its original 10-minute TTL as a bounded receipt:
+     retrying the same nonce with the same verified subject returns replay success without another
+     mutation, while a different subject remains a 409 conflict. Minting a newer intent replaces
+     the receipt, and unlink followed by replay of the old nonce cannot recreate the link.
    - Links live in `AdapterDelivery` keyed by reservation **and** indexed by subject (webhooks
      carry only the subject). Links carry parent `purgeAt` for the retention sweep. Deliveries
      never duplicate the subject: a delivery stores the **canonical message fragment**, the link

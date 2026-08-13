@@ -129,6 +129,9 @@ terminal failure, and read every count and terminal record from the operator dia
   terminal visibility otherwise; other recipients and events unaffected.
 - The LINE token endpoint or push endpoint returns 5xx or times out mid-delivery: retried with the
   same idempotency key (`X-Line-Retry-Key`) and bounded backoff; a `409` counts as accepted.
+- Link completion commits but its response is lost: an identical same-subject retry within the
+  intent's original TTL returns success without another link mutation; a different subject still
+  conflicts, and unlink makes the old nonce unusable.
 - A reservation is unlinked (or its retention purge removes it) while deliveries for it are still
   pending: pending deliveries for that reservation are discarded or terminally parked without
   error loops, and no identifier outlives the link contractually promised to be removable.
