@@ -1,0 +1,32 @@
+tests-browser/line.spec.ts
+  s_a546c8dc2f182a::t_37d311d7680a68 179-185
+src/adapter-delivery.ts
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 486,1572
+specs/003-line-adapter/tasks.md
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 81
+src/reservation-day.ts
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 179-182,1186-1195,1200,1202,1204-1205,1207-1208
+specs/003-line-adapter/plan.md
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 275
+wrangler.jsonc
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 14
+test/adapter-delivery.test.ts
+  s_a546c8dc2f182a::t_22df71e00cc9e0 287-300,305-307
+  s_a546c8dc2f182a::t_0fd2b2b354f2d6 301-304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9e05622bf77f9db2082ae56b05289fdccc2a2527",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
