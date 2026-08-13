@@ -1431,7 +1431,7 @@ describe("delivery pipeline", () => {
     expect(diagnostics).toMatchObject({
       state: "active",
       links: { final: 1, provisional: 0 },
-      subjects: { followed: 1, unfollowed: 0 },
+      subjects: { followed: 0, unfollowed: 0 },
       pending: 1,
     });
     expect(diagnostics!.counters["link_failed:invalid-intent"]).toBe(1);

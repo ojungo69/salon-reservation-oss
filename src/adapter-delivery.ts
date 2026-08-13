@@ -809,11 +809,6 @@ export class AdapterDelivery extends DurableObject<Env> {
         intent.reservation_id, intent.date, input.subject, intent.generation,
         watermark, linkVersion, now, now, provisionalPurgeAt,
       );
-      sql.exec(
-        `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, 1, ?)
-         ON CONFLICT(subject) DO NOTHING`,
-        input.subject, Date.now(),
-      );
       // Re-dispose held events now that the watermark exists.
       const held = sql
         .exec<{ delivery_id: string; event_id: string; type: string }>(

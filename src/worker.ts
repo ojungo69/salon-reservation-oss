@@ -1924,16 +1924,17 @@ const handleLineWebhook = async (
   }
   const channelSecret = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
   if (channelSecret === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
-  // Unauthenticated endpoint: reject on the cheapest evidence first, so a
-  // header-less flood never pays for the body read, the HMAC, or a durable
-  // write, and give it its own rate-limit bucket so it cannot crowd out the
-  // customer routes. LINE retries webhooks, and duplicates are deduplicated.
+  // Unauthenticated endpoint: its own rate-limit bucket caps diagnostic writes
+  // and keeps it from crowding out customer routes. Reject malformed headers
+  // before reading the body or paying for HMAC. LINE retries webhooks, and
+  // duplicates are deduplicated.
   const signature = request.headers.get("x-line-signature");
-  if (signature === null || signature.length === 0 || signature.length > 64) {
-    return errorResponse(403, "PROTECTION_REFUSED");
-  }
   if (await limited(env.PUBLIC_RATE_LIMITER, request, "line-webhook")) {
     return rateLimited();
+  }
+  if (signature === null || signature.length === 0 || signature.length > 64) {
+    await adapterDeliveryStub(env).noteSignatureFailure();
+    return errorResponse(403, "PROTECTION_REFUSED");
   }
   const body = await readBoundedBytes(request.body, ADAPTER.WEBHOOK_BODY_MAX_BYTES);
   if (body === null) return errorResponse(413, "BAD_REQUEST");

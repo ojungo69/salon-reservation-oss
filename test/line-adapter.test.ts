@@ -910,15 +910,18 @@ describe("link flow over HTTP", () => {
       ],
     });
     const signature = await signWebhookBody(LINE_TEST_SECRET, payload);
-    const send = (body: string, sig: string) =>
-      worker.fetch(
+    const send = (body: string, sig?: string) => {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (sig !== undefined) headers.set("x-line-signature", sig);
+      return worker.fetch(
         new Request("https://example.test/api/adapters/line/webhook", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-line-signature": sig },
+          headers,
           body,
         }),
         env,
       );
+    };
 
     // Unlinked follower: acknowledged, but only the dedup row is written.
     expect((await send(payload, signature)).status).toBe(200);
@@ -942,7 +945,7 @@ describe("link flow over HTTP", () => {
     );
     expect(dedup).toEqual({ n: 1 });
 
-    // After a final link exists for the subject, a later follow persists it.
+    // A final link leaves deliverability unknown until LINE reports it.
     const reservationId = await createPendingReservation();
     interceptVerify(validClaims());
     const nonce = await mintIntent(reservationId);
@@ -954,6 +957,14 @@ describe("link flow over HTTP", () => {
         })
       ).status,
     ).toBe(200);
+    const unknownSubjects = await runInDurableObject(deliveryStub(), (_i, state) =>
+      state.storage.sql
+        .exec<{ subject: string }>("SELECT subject FROM subjects")
+        .toArray(),
+    );
+    expect(unknownSubjects).toEqual([]);
+
+    // A later provider event establishes the first deliverability watermark.
     const follow2 = JSON.stringify({
       destination: "U0",
       events: [
@@ -977,14 +988,17 @@ describe("link flow over HTTP", () => {
     );
     expect(subjects).toEqual([{ subject: SUBJECT, followed: 1 }]);
 
-    // Invalid signature: refused and counted.
+    // Invalid and structurally missing signatures are all refused and counted.
     expect((await send(payload, "A".repeat(44))).status).toBe(403);
+    expect((await send(payload)).status).toBe(403);
+    expect((await send(payload, "")).status).toBe(403);
+    expect((await send(payload, "A".repeat(65))).status).toBe(403);
     const sigfail = await runInDurableObject(deliveryStub(), (_i, state) =>
       state.storage.sql
         .exec<{ value: number }>("SELECT value FROM counters WHERE name = 'sigfail'")
         .toArray()[0],
     );
-    expect(sigfail).toEqual({ value: 1 });
+    expect(sigfail).toEqual({ value: 4 });
 
     // Oversized body is refused before any HMAC work.
     const huge = "x".repeat(ADAPTER.WEBHOOK_BODY_MAX_BYTES + 1);
