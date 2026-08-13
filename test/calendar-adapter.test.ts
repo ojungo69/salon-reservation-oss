@@ -1252,8 +1252,9 @@ describe("calendar projection and feed authority", () => {
     expect(raced).toMatchObject({ status: "queued", payload: { status: "confirmed" } });
   });
 
-  it("disables after the lease, purges its consumer, and re-enables above high-water", async () => {
+  it("retries purge faults, disables after the lease, and re-enables above high-water", async () => {
     const adapter = adapterStub();
+    const reservationDays = env.RESERVATION_DAYS;
     let feedSecret: string | undefined = feedToken;
     let googleSecret: string | undefined = JSON.stringify(credentials);
     const mutable = await runInDurableObject(adapter, (instance) => {
@@ -1325,6 +1326,33 @@ describe("calendar projection and feed authority", () => {
     vi.setSystemTime(SUITE_NOW + (ADAPTER.FINAL_PASS_LEASE_WAIT_S + 1) * 1_000);
     await runInDurableObject(adapter, (_instance, state) => {
       state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", config.date);
+    });
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: {
+          getByName: (name: string) =>
+            name === `single-location:${config.date}`
+              ? {
+                  purgeConsumer: async () => {
+                    throw new Error("fixture purge fault");
+                  },
+                }
+              : reservationDays.getByName(name),
+        },
+      });
+    });
+    await runDurableObjectAlarm(adapter);
+    expect(await adapter.diagnostics()).toMatchObject({
+      state: "deactivating",
+      sweepCursor: config.date,
+      counters: { sweep_faults: 1 },
+    });
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: reservationDays,
+      });
     });
     await runDurableObjectAlarm(adapter);
     expect(

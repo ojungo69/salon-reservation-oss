@@ -1466,6 +1466,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         }
       } catch {
         this.#bump("sweep_faults");
+        break;
       }
       cursor = shiftDate(cursor, 1);
     }

@@ -38,12 +38,15 @@ run and full check passed. A subsequent review reproduced retained failed/config
 Google deletes not being requeued and rate limiting suppressing residual privacy disclosure. The
 new regressions failed on the parked mutation and missing disclosure before the fixes; one bounded
 SQL update at reconciliation completion and a conditional conservative disclosure now pass in the
-59-case focused run and 207-case full run above.
+59-case focused run and 207-case full run above. The final review reproduced a failed day purge
+advancing the deactivation cursor; the lifecycle test failed on that cursor move before the sweep
+was changed to retain and retry the same day, then passed in both runs above.
 
 ## Manual completion sweep
 
 `speckit-verify-tasks` is not installed in this repository, so T039 used the specified manual
-equivalent exactly once. Every task is accounted for below.
+equivalent exactly once. Subsequent review fixes were checked against their affected tasks and the
+command evidence above. Every task is accounted for below.
 
 | Task | Implementation/evidence |
 |---|---|
@@ -70,7 +73,7 @@ equivalent exactly once. Every task is accounted for below.
 | T021 | Deterministic update→insert/409→update/delete Google protocol is implemented against fixed hosts. |
 | T022 | Latest desired state, bounded claims/retries, configuration parking, terminal ledger, and alarm scheduling are implemented. |
 | T023 | Fixture fetch assertions and source/security scans prove zero live network, redirect follow, secret logs, provider reads, or runtime dependency. |
-| T024 | Lifecycle/high-water/disable/purge/re-enable/requeue/redaction tests pass. |
+| T024 | Lifecycle/high-water/disable/purge-fault retry/re-enable/requeue/redaction tests pass. |
 | T025 | Owner status and bounded reconciliation auth/origin/rate/input/idempotency tests pass. |
 | T026 | Browser owner-only status/reconcile and zero customer calendar trace pass in `tests-browser/owner.spec.ts`. |
 | T027 | Mode transition, leases, consumer purge, fingerprint requeue, status, and quiescent alarms are implemented. |
@@ -82,7 +85,7 @@ equivalent exactly once. Every task is accounted for below.
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
 | T034 | Focused, full, type/build/audit, and 34-case browser results are recorded above. |
 | T035 | `security-scan.md` records the pinned 400-rule Semgrep run, complete adversarial review, three fixed CWE-770 candidates, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering, retained-delete recovery, and conservative-disclosure gaps. Ponytail reused the existing bounded LINE loop/schema migrator and native SQL, added only the required stamp/watermark state, and kept one concrete provider with no dependency. Focused/full reruns pass. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering, retained-delete recovery, conservative-disclosure, and failed-day purge cursor gaps. Ponytail reused the existing bounded LINE loop/schema migrator and native SQL, added only the required stamp/watermark state, and kept one concrete provider with no dependency. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |
