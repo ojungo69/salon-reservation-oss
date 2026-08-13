@@ -192,7 +192,9 @@ redacted diagnostics.
   MUST retry with bounded backoff. Permanent payload/auth/configuration failures MUST not be
   retried blindly. Exhaustion MUST park the reservation for reconciliation with a redacted reason,
   provider status where safe, and time. One failed item MUST NOT stall other items. A full mutation
-  queue MUST retain the source outbox event or existing projection until a required delete fits.
+  queue MUST retain the source outbox event or existing projection until a required delete fits;
+  Google capacity MUST NOT keep a cancelled item in the ICS projection. Failed upserts MAY yield
+  capacity to newer work, but unresolved delete rows and live upserts MUST NOT be evicted.
 - **FR-010 (reconciliation)**: The operator MUST be able to reconcile the adapter's projection and
   provider state against current committed reservations after duplicate delivery, missed handoff,
   outage, or configuration gap. Current committed state wins; reconciliation MUST NOT mutate a

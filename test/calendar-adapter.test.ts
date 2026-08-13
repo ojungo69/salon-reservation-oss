@@ -2,6 +2,7 @@ import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CALENDAR_ROW_CAP,
   CalendarAdapter,
   calendarIdentifiers,
   classifyGoogleResponse,
@@ -302,19 +303,27 @@ describe("calendar projection and feed authority", () => {
     managementDigest: "a".repeat(64),
   });
 
-  const fillGoogleMutationQueue = () =>
+  const fillGoogleMutationQueue = (
+    { operation = "upsert", status = "failed" }: {
+      operation?: "upsert" | "delete";
+      status?: "awaiting-configuration" | "failed";
+    } = {},
+  ) =>
     runInDurableObject(adapterStub(), (_instance, state) => {
       state.storage.sql.exec(
         `WITH RECURSIVE rows(value) AS (
-           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 2000
+           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < ?
          )
          INSERT INTO google_mutations
            (reservation_id, external_id, operation, payload_json, desired_version, generation,
             attempt, next_attempt_at, first_attempt_at, claimed_at, claimed_version, status,
             created_at, purge_at)
          SELECT printf('10000000-0000-4000-8000-%012d', value), printf('sr%064x', value),
-                'upsert', NULL, 1, 1, 0, NULL, NULL, NULL, NULL, 'failed',
+                ?, NULL, 1, 1, 0, NULL, NULL, NULL, NULL, ?,
                 '2020-01-01T00:00:00.000Z', ? FROM rows`,
+        CALENDAR_ROW_CAP,
+        operation,
+        status,
         SUITE_PURGE_AT,
       );
     });
@@ -816,7 +825,7 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(7));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    await fillGoogleMutationQueue();
+    await fillGoogleMutationQueue({ status: "awaiting-configuration" });
 
     const created = await day.createPublic(config, createInput(config.date));
     expect(created).toMatchObject({ ok: true });
@@ -896,7 +905,7 @@ describe("calendar projection and feed authority", () => {
     }));
     expect(counts).toEqual({
       accepted: ADAPTER.WEBHOOK_DEDUP_CAP,
-      mutations: 2000,
+      mutations: CALENDAR_ROW_CAP,
       projections: 1,
     });
     expect(await adapter.diagnostics()).toMatchObject({
@@ -909,7 +918,35 @@ describe("calendar projection and feed authority", () => {
     });
   });
 
-  it("keeps a cancellation pending until its Google delete fits at capacity", async () => {
+  it("reclaims a failed upsert for newer Google work at capacity", async () => {
+    const config = await configFor(suiteDate(21));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    await fillGoogleMutationQueue();
+
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toMatchObject({ ok: true });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => ({
+        total: state.storage.sql
+          .exec<{ n: number }>("SELECT COUNT(*) AS n FROM google_mutations")
+          .one().n,
+        operation: state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().operation,
+      })),
+    ).toEqual({ total: CALENDAR_ROW_CAP, operation: "upsert" });
+    expect(await adapter.diagnostics()).toMatchObject({
+      failedCount: CALENDAR_ROW_CAP - 1,
+    });
+  });
+
+  it("removes the ICS projection while its Google delete waits for capacity", async () => {
     const config = await configFor(suiteDate(22));
     const adapter = adapterStub();
     const day = dayStub(config.date);
@@ -940,7 +977,10 @@ describe("calendar projection and feed authority", () => {
         "UPDATE __adapter_meta SET event_seq = 2 WHERE consumer = 'calendar' AND generation = 1",
       );
     });
-    await fillGoogleMutationQueue();
+    await fillGoogleMutationQueue({
+      operation: "delete",
+      status: "awaiting-configuration",
+    });
 
     await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
       ok: true,
@@ -961,23 +1001,10 @@ describe("calendar projection and feed authority", () => {
           )
           .one().n,
       })),
-    ).toEqual({ projection: 1, mutation: 0 });
+    ).toEqual({ projection: 0, mutation: 0 });
     await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toMatchObject({
       events: [{ reservationId: created.reservationId, reservationStatus: "cancelled" }],
     });
-    await expect(adapter.reconcileDay({
-      ok: true,
-      date: config.date,
-      purgeAt: config.purgeAt,
-      watermark: { generation: 1, seq: 2 },
-      events: [],
-    })).resolves.toEqual({
-      ok: true,
-      projected: 0,
-      removed: 0,
-      deferred: true,
-    });
-
     await runInDurableObject(adapter, (_instance, state) => {
       state.storage.sql.exec(
         `DELETE FROM google_mutations WHERE reservation_id = (
@@ -1039,7 +1066,10 @@ describe("calendar projection and feed authority", () => {
         retained.reservationId,
       );
     });
-    await fillGoogleMutationQueue();
+    await fillGoogleMutationQueue({
+      operation: "delete",
+      status: "awaiting-configuration",
+    });
 
     await expect(adapter.reconcileDay(replacement)).resolves.toEqual({
       ok: true,
@@ -1092,6 +1122,50 @@ describe("calendar projection and feed authority", () => {
           .one().operation,
       })),
     ).toEqual({ removed: "delete", retained: "upsert" });
+  });
+
+  it("reclaims failed upserts for required Google deletes", async () => {
+    const config = await configFor(suiteDate(24));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await adapter.pokeDay({ date: config.date });
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        "DELETE FROM google_mutations WHERE reservation_id = ?",
+        created.reservationId,
+      );
+    });
+    await fillGoogleMutationQueue();
+
+    await expect(
+      adapter.reconcileDay({
+        ok: true,
+        date: config.date,
+        purgeAt: config.purgeAt,
+        watermark: { generation: 1, seq: 2 },
+        events: [],
+      }),
+    ).resolves.toEqual({ ok: true, projected: 0, removed: 1 });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => ({
+        total: state.storage.sql
+          .exec<{ n: number }>("SELECT COUNT(*) AS n FROM google_mutations")
+          .one().n,
+        operation: state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().operation,
+      })),
+    ).toEqual({ total: CALENDAR_ROW_CAP, operation: "delete" });
+    expect(await adapter.diagnostics()).toMatchObject({
+      projectionCount: 0,
+      failedCount: CALENDAR_ROW_CAP - 1,
+    });
   });
 
   it("converges create, update, and delete on one stable Google event", async () => {
@@ -1719,11 +1793,19 @@ describe("calendar projection and feed authority", () => {
     );
     expect(rotated).toBe(2);
 
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", config.date);
+    });
+
     feedSecret = undefined;
     googleSecret = undefined;
     expect(await adapter.descriptor()).toBeNull();
     expect(await adapter.hasDisclosure()).toBe(true);
-    expect(await adapter.diagnostics()).toMatchObject({ state: "deactivating", generation: 1 });
+    expect(await adapter.diagnostics()).toMatchObject({
+      state: "deactivating",
+      generation: 1,
+      sweepCursor: null,
+    });
 
     // A request that received generation 1 before disable may still commit
     // during its 30-second lease; the post-lease sweep must remove that row.

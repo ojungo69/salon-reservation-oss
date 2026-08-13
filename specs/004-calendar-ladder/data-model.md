@@ -77,7 +77,8 @@ active --Google false→true or fingerprint change--> active + requeue projectio
 
 The purge sweep carries the retiring generation into each day transaction. A concurrent
 reactivation therefore preserves newer outbox rows, and final authority cleanup commits only when
-state and generation still match the retiring snapshot.
+state and generation still match the retiring snapshot. Entering deactivation clears any active
+sweep cursor so the post-lease purge begins at the fixed window boundary.
 
 ### `accepted_events`
 
@@ -104,11 +105,11 @@ surfaced until retention frees evidence. Reservation commits remain unaffected.
 | `purge_at` | parent retention deadline |
 
 There is at most one row per reservation. ICS serializes only these rows ordered by start/external ID.
-Rejection, cancellation, expiry, or retention purge deletes this row after desired Google absence
-is recorded. If the mutation table is full, the row remains as recoverable desired-state evidence
-until reconciliation can retain the delete; that reconciliation leaves the entire date unchanged
-rather than partially replacing sibling projections. Completion/no-show bookkeeping keeps the
-confirmed schedule row.
+Rejection, cancellation, expiry, or retention purge deletes this row without waiting on Google
+capacity. If the mutation table cannot retain the provider delete, the transactional day outbox
+event remains unacknowledged as recovery evidence. Reconciliation, which has no such event to rely
+on, leaves the entire date unchanged unless every required delete fits. Completion/no-show
+bookkeeping keeps the confirmed schedule row.
 
 ### `projection_watermarks`
 
@@ -143,6 +144,9 @@ Settle applies only when both generation and claimed version still match. Delete
 mutation; upsert success removes it because the projection itself is the desired-state record.
 Owner reconciliation with valid Google configuration resets every retained failed or
 configuration-blocked delete to a new queued version, because its projection row is already absent.
+At the hard cap, the oldest terminal failed upsert may be discarded to admit newer work; delete
+rows and live upserts are never evicted for that purpose, and the prior terminal reason remains in
+the bounded ledger.
 
 ### `ledger`
 
@@ -192,8 +196,9 @@ object exists only in request/alarm memory. Only a digest discriminator may be p
   partition's frozen `purgeAt`.
 - No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
 - `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
-  visible in counters/ledger. A terminal event remains unacknowledged, or reconciliation retains
-  its stale date projection set, until every required delete for that date fits.
+  visible in counters/ledger. A terminal event remains unacknowledged after its local ICS row is
+  removed, or reconciliation retains its stale date projection set, until every required delete for
+  that date fits. Failed upserts yield to newer work before either path defers.
 - The ledger uses the released 500-row/30-day bounds; reconciliation/sweep cursors are scalars.
 - When both modes are absent and the final purge sweep completes, projection/mutation/event rows and
   calendar outbox consumer rows are gone; bounded aggregate diagnostics drain to quiescence.

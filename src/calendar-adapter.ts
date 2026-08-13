@@ -20,7 +20,7 @@ const CALENDAR_ORIGINS = ["https://www.googleapis.com"];
 const RESPONSE_MAX_BYTES = 16 * 1024;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
-const CALENDAR_ROW_CAP = 2_000;
+export const CALENDAR_ROW_CAP = 2_000;
 const ACCEPTED_EVENT_CAP = ADAPTER.WEBHOOK_DEDUP_CAP;
 const PROJECTION_WATERMARKS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS projection_watermarks (
@@ -760,9 +760,22 @@ export class CalendarAdapter extends DurableObject<Env> {
         sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM google_mutations").toArray()[0]?.n ??
         0;
       if (count >= CALENDAR_ROW_CAP) {
-        this.#record("overflow", operation);
-        this.#bump("mutation_overflow");
-        return false;
+        const reclaimable = sql
+          .exec<{ reservation_id: string }>(
+            `SELECT reservation_id FROM google_mutations
+             WHERE operation = 'upsert' AND status = 'failed'
+             ORDER BY created_at, reservation_id LIMIT 1`,
+          )
+          .toArray()[0];
+        if (reclaimable === undefined) {
+          this.#record("overflow", operation);
+          this.#bump("mutation_overflow");
+          return false;
+        }
+        sql.exec(
+          "DELETE FROM google_mutations WHERE reservation_id = ?",
+          reclaimable.reservation_id,
+        );
       }
     }
     const now = new Date().toISOString();
@@ -808,7 +821,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         const now = Date.now();
         this.ctx.storage.sql.exec(
           `UPDATE meta SET state = 'deactivating', google_configured = 0,
-                  begin_disable_at = ?
+                  begin_disable_at = ?, sweep_cursor = NULL
            WHERE singleton = 1`,
           now,
         );
@@ -983,6 +996,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             }
           }
         } else {
+          sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
           if (
             meta.googleSeen &&
             !this.#queueMutation(
@@ -998,7 +1012,6 @@ export class CalendarAdapter extends DurableObject<Env> {
             return null;
           }
           disposition = "removed";
-          sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
         }
         sql.exec(
           `INSERT INTO accepted_events
@@ -1131,24 +1144,34 @@ export class CalendarAdapter extends DurableObject<Env> {
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
         .toArray()
         .filter(({ reservation_id }) => !wanted.has(reservation_id));
+      let deleteRows = removedRows;
       if (meta.googleSeen) {
-        const queued = new Set(
-          sql
-            .exec<{ reservation_id: string }>("SELECT reservation_id FROM google_mutations")
-            .toArray()
-            .map(({ reservation_id }) => reservation_id),
+        const mutations = sql
+          .exec<{ reservation_id: string; operation: string; status: string }>(
+            "SELECT reservation_id, operation, status FROM google_mutations",
+          )
+          .toArray();
+        const queued = new Set(mutations.map(({ reservation_id }) => reservation_id));
+        const required = new Set(removedRows.map(({ reservation_id }) => reservation_id));
+        const existingDeletes = removedRows.filter(({ reservation_id }) =>
+          queued.has(reservation_id),
         );
         const missingDeletes = removedRows.filter(
           ({ reservation_id }) => !queued.has(reservation_id),
+        );
+        const reclaimable = mutations.filter(
+          ({ reservation_id, operation, status }) =>
+            operation === "upsert" && status === "failed" && !required.has(reservation_id),
         ).length;
-        if (queued.size + missingDeletes > CALENDAR_ROW_CAP) {
+        if (mutations.length + missingDeletes.length - reclaimable > CALENDAR_ROW_CAP) {
           this.#record("overflow", "delete");
           this.#bump("mutation_overflow");
           return { ok: true as const, projected: 0, removed: 0, deferred: true as const };
         }
+        deleteRows = [...existingDeletes, ...missingDeletes];
       }
       let removed = 0;
-      for (const row of removedRows) {
+      for (const row of deleteRows) {
         if (
           meta.googleSeen &&
           !this.#queueMutation(

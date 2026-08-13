@@ -103,7 +103,9 @@ Authorization header. Reconciliation accepts `{}` or `{"cursor":"YYYY-MM-DD"}`, 
 authoritative day partitions, applies lazy pending expiry, and returns the next cursor. Repeat until
 `nextCursor` is `null`; repeating a page is idempotent. If bounded provider-mutation capacity is
 temporarily full, the response stops before the deferred date and returns that same date as
-`nextCursor`; retry it after pending work clears.
+`nextCursor`; retry it after pending work clears. Failed upserts automatically yield capacity to
+newer work. Live or unresolved delete work is retained, while a cancelled item disappears from the
+ICS feed without waiting for Google capacity.
 
 Run reconciliation after first activation, restored credentials, a suspected handoff gap, or a
 target-calendar change. With a valid Google configuration, reconciliation also requeues retained
@@ -114,8 +116,9 @@ also sweeps the fixed retention/horizon window from the calendar authority's ala
 
 Removing both optional secrets immediately disables feed access, stops new provider calls, and
 starts local cleanup. Existing descriptor leases are allowed to expire, then the fixed sweep purges
-calendar outbox rows, projections, mutations, and bounded diagnostics. The privacy disclosure stays
-visible until cleanup reaches `disabled`. Removing secrets cannot guarantee deletion of copies a
+calendar outbox rows, projections, mutations, and bounded diagnostics from the start of its window.
+The privacy disclosure stays visible until cleanup reaches `disabled`. Removing secrets cannot
+guarantee deletion of copies a
 calendar client cached or events left in a Google calendar whose old grant is no longer available.
 
 Do not delete the `CalendarAdapter` Durable Object class or namespace during this process. A

@@ -80,10 +80,10 @@ per installation, one Google target calendar
 | Lost/duplicate handoff | transactional outbox, consumer sequence/generation, accept dedup, desired-state replacement, fixed sweep; dead-poke and duplicate tests |
 | Provider uncertain write | deterministic event ID, update→insert, 409→update, delete 404/410 success; lost-response fixtures |
 | Provider outage/quota | per-row claim, bounded backoff, retryable classification, terminal ledger, no booking wait; 429/5xx/exhaustion tests |
-| Mutation capacity | retain a terminal event's day outbox row or stale projection until its Google delete fits; never evict the only desired-absence record |
+| Mutation capacity | remove cancelled ICS projections independently; retain the day outbox row or an atomically stale reconciliation date until its Google delete fits; failed upserts may yield to newer work, but never evict a desired-absence or live record |
 | Configuration gap | no new external call while invalid; retained committed source plus owner cursor reconciliation after restore |
 | Data retention | every projection/mutation carries parent purge boundary; pre-send check, terminalize/delete at boundary, bounded ledger/counters |
-| Disable/rotation race | descriptor lease validated in day transaction; missing configuration stops new descriptors; old-generation rows cancel/purge after the lease window |
+| Disable/rotation race | descriptor lease validated in day transaction; missing configuration resets the purge cursor and stops new descriptors; old-generation rows cancel/purge after the lease window |
 | Availability coupling | calendar data is never read by availability/core; byte-equality tests before/after enable, outage, retry, reconcile |
 | Backout/data loss | new DO kept by forward backout until drain; no namespace tombstone; day schema change additive and legacy LINE rows accepted |
 

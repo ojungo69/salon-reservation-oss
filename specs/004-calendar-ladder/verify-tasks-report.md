@@ -10,11 +10,11 @@ No deployment or live provider/account was used.
 |---|---|
 | `specify self check` | Up to date: 0.16.2 |
 | `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
-| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 66/66 passed (calendar 40; reservation-day 26) |
+| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 68/68 passed (calendar 42; reservation-day 26) |
 | pinned Semgrep command in `security-scan.md` | 400 rules over 25 tracked files; 1 unchanged Turnstile finding accepted; 0 feature blocking findings |
-| focused security regression command in `security-scan.md` | 13/13 passed |
+| focused security regression command in `security-scan.md` | 17/17 passed |
 | focused calendar privacy cleanup test | 1/1 passed |
-| `npm run check` | core 54/54; Workers/DO 216/216; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run check` | core 54/54; Workers/DO 218/218; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
 | GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 38 files, 321 changed symbols, 72 affected flows reviewed; shared validator/deadline/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
@@ -61,6 +61,14 @@ sweep, an old final purge erasing a concurrently reactivated generation, and a d
 skipped by the owner cursor. The shared five-second RPC deadline now retries the same day;
 generation-scoped day purge plus a transactional lifecycle recheck preserve reactivation; and an
 explicit deferred result keeps the blocked date as `nextCursor`.
+The merge-gate review then reproduced an active sweep cursor surviving deactivation, Google queue
+pressure retaining a cancelled item in the independent ICS feed, and terminal failed upserts
+occupying every slot needed by a required delete. Entering deactivation now resets the purge cursor;
+local projection removal no longer waits for Google capacity while the transactional source event
+remains pending; and only failed upserts yield capacity to newer work. The new regressions failed on
+all old paths and pass in the 68-case focused, 218-case full, and 17-case security runs above.
+The Worker descriptor path also reuses the shared deadline helper, and the queue-bound fixture now
+uses the exported production cap instead of a duplicate literal.
 
 ## Manual completion sweep
 
