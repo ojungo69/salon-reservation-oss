@@ -1,0 +1,54 @@
+src/worker.ts
+  s_a546c8dc2f182a::t_d9db42126e10f1 40,359,361-362
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_deebe1e06048b0 5,306-311,315,322,324-326,908,946,949,980-983,1004,1069-1072,1127-1168,1804-1808
+  s_a546c8dc2f182a::t_8687aea24da45e 930
+  s_a546c8dc2f182a::t_53d0cae2d0b9bb 828,921-929,931-945
+  s_a546c8dc2f182a::t_8027bbd07b5422 1796-1799
+  s_a546c8dc2f182a::t_2db7861814a24f 947-948
+  s_a546c8dc2f182a::t_210091296f85e6 1169-1170
+specs/004-calendar-ladder/spec.md
+  s_a546c8dc2f182a::t_22b2cdff19a75c 197
+  s_a546c8dc2f182a::t_c2604ed9fb84d6 195-196
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_c2604ed9fb84d6 86
+  s_a546c8dc2f182a::t_22b2cdff19a75c 83
+docs/CALENDAR-SETUP.md
+  s_a546c8dc2f182a::t_7fbd0ba8d1b9ed 107-108,120-121
+  s_a546c8dc2f182a::t_c2604ed9fb84d6 106,119
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_8027bbd07b5422 23
+  s_a546c8dc2f182a::t_22b2cdff19a75c 763-769
+  s_a546c8dc2f182a::t_c1997118468010 775-778,1156-1157,1161
+  s_a546c8dc2f182a::t_d9db42126e10f1 770-774,824,999,1147,1149-1155,1162-1164,1166,1171,1174
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_c2604ed9fb84d6 108-112,199-200
+  s_a546c8dc2f182a::t_22b2cdff19a75c 147-149,201
+  s_a546c8dc2f182a::t_93ea46d175a664 80-81
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_c2604ed9fb84d6 41
+  s_a546c8dc2f182a::t_22b2cdff19a75c 42
+  s_a546c8dc2f182a::t_72c5b2fa12e4a8 55,65
+specs/004-calendar-ladder/contracts/calendar-api.md
+  s_a546c8dc2f182a::t_22b2cdff19a75c 102
+  s_a546c8dc2f182a::t_93ea46d175a664 103
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_3d506869cb6b0a 64-67,70-71
+  s_a546c8dc2f182a::t_72c5b2fa12e4a8 13,15,17,68-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "5f15521945a6998bb887e63585dc90a3dc621d6b",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
