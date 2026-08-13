@@ -302,7 +302,8 @@ export class AdapterDelivery extends DurableObject<Env> {
    * the provider HTTP status where one exists, and the time — never a
    * provider response body, header, or token. */
   #recordTerminal(reason: string, eventType: string, httpStatus: number | null = null): void {
-    this.ctx.storage.sql.exec(
+    const sql = this.ctx.storage.sql;
+    sql.exec(
       "INSERT INTO ledger (reason, event_type, http_status, occurred_at) VALUES (?, ?, ?, ?)",
       reason,
       eventType,
@@ -310,6 +311,18 @@ export class AdapterDelivery extends DurableObject<Env> {
       new Date().toISOString(),
     );
     this.#bumpCounter(`terminal:${reason}`, 1);
+    const ledgerCount =
+      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM ledger").toArray()[0]?.n ?? 0;
+    if (ledgerCount > ADAPTER.LEDGER_CAP) {
+      const excess = ledgerCount - ADAPTER.LEDGER_CAP;
+      sql.exec(
+        `DELETE FROM ledger WHERE entry_id IN (
+           SELECT entry_id FROM ledger ORDER BY entry_id ASC LIMIT ?
+         )`,
+        excess,
+      );
+      this.#bumpCounter("ledger_evicted", excess);
+    }
   }
 
   #secretPresent(): boolean {
@@ -1291,18 +1304,6 @@ export class AdapterDelivery extends DurableObject<Env> {
       "DELETE FROM ledger WHERE occurred_at < ?",
       new Date(now - ADAPTER.LEDGER_TTL_S * 1000).toISOString(),
     );
-    const ledgerCount =
-      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM ledger").toArray()[0]?.n ?? 0;
-    if (ledgerCount > ADAPTER.LEDGER_CAP) {
-      const excess = ledgerCount - ADAPTER.LEDGER_CAP;
-      sql.exec(
-        `DELETE FROM ledger WHERE entry_id IN (
-           SELECT entry_id FROM ledger ORDER BY entry_id ASC LIMIT ?
-         )`,
-        excess,
-      );
-      this.#bumpCounter("ledger_evicted", excess);
-    }
     sql.exec(
       "DELETE FROM webhook_dedup WHERE seen_at < ?",
       now - ADAPTER.WEBHOOK_DEDUP_TTL_S * 1000,
@@ -1569,12 +1570,14 @@ export class AdapterDelivery extends DurableObject<Env> {
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );
         }
-        if (this.#readMeta().state === "deactivating") {
+        const deactivating = this.#readMeta().state === "deactivating";
+        if (deactivating) {
           await withDeadline(
             stub.purgeConsumer({ consumer: "line" }),
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );
         }
+        if (batch.more && !deactivating) continue;
       } catch {
         // Deadline or transient failure: leave the cursor on this day (one
         // fault-budget failure); the next run re-drives the batch.

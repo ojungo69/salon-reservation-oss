@@ -4,8 +4,8 @@
 
 The roadmap records an in-stage prerequisite for S1: *"mechanism research (push-retry mechanism,
 current LIFF and token-verification endpoints) before the design commits"*. This document records
-that research. Every mechanism fact below was verified against the current official documentation
-on 2026-08-12; nothing is carried from memory.
+that research. It was first verified against the current official documentation on 2026-08-12;
+sections record later re-verification dates where applicable, and nothing is carried from memory.
 
 ## R1 — Push-retry substrate: Durable Object outbox, not Cloudflare Queues
 

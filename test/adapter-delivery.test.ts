@@ -1290,6 +1290,32 @@ describe("delivery pipeline", () => {
     expect((await counterMap())["disposition:overflow"]).toBe(1);
   });
 
+  it("keeps the terminal ledger capped when disable records pending deliveries", async () => {
+    await queueDelivery();
+    await markPurgeComplete();
+    await runInDurableObject(deliveryStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE fixture(n) AS (
+           SELECT 1 UNION ALL SELECT n + 1 FROM fixture WHERE n < ?
+         )
+         INSERT INTO ledger (reason, event_type, http_status, occurred_at)
+         SELECT 'fixture', 'approve', NULL, ? FROM fixture`,
+        ADAPTER.LEDGER_CAP,
+        new Date().toISOString(),
+      );
+    });
+    expect((await deliveryCounts()).ledger).toBe(ADAPTER.LEDGER_CAP);
+
+    await deliveryStub().completeDisable();
+
+    expect((await deliveryCounts()).ledger).toBe(ADAPTER.LEDGER_CAP);
+    expect((await ledgerReasons()).at(-1)).toEqual({
+      reason: "disabled",
+      event_type: "approve",
+    });
+    expect((await counterMap()).ledger_evicted).toBe(1);
+  });
+
   it("keeps every store byte-identical for priority-0 ingress across accept, finalize, and webhook", async () => {
     await activateGen1();
     await deliveryStub().beginDisable();
@@ -1336,6 +1362,46 @@ describe("delivery pipeline", () => {
     });
     expect(await dump()).toBe(before);
   });
+
+  it(
+    "sweep drains every outbox batch before advancing to the next day",
+    { timeout: 120_000 },
+    async () => {
+      const reservationId = await createPending(pDate);
+      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+      await activateGen1();
+      await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
+        for (let seq = 2; seq <= ADAPTER.OUTBOX_DRAIN_BATCH + 1; seq += 1) {
+          state.storage.sql.exec(
+            `INSERT INTO __adapter_outbox
+               (consumer, generation, seq, event_id, reservation_id, type, start_time,
+                service_label, occurred_at, purge_at)
+             SELECT consumer, generation, ?, ?, reservation_id, type, start_time,
+                    service_label, occurred_at, purge_at
+             FROM __adapter_outbox WHERE consumer = 'line' AND generation = 1 AND seq = 1`,
+            seq,
+            `${pDate}#${seq}`,
+          );
+        }
+        state.storage.sql.exec(
+          "UPDATE __adapter_meta SET event_seq = ? WHERE consumer = 'line' AND generation = 1",
+          ADAPTER.OUTBOX_DRAIN_BATCH + 1,
+        );
+      });
+      await runInDurableObject(deliveryStub(), (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE meta SET sweep_cursor = ?, cycle_started_at = ? WHERE singleton = 1",
+          pDate,
+          Date.now(),
+        );
+      });
+
+      await runDurableObjectAlarm(deliveryStub());
+
+      expect(await outboxRows(dayStub({ date: pDate }))).toEqual([]);
+      expect((await deliveryCounts()).accepted).toBe(ADAPTER.OUTBOX_DRAIN_BATCH + 1);
+    },
+  );
 
   it(
     "sweep recovers a dead handoff, survives a parked pull, a parked ack, and lateness in one run",
