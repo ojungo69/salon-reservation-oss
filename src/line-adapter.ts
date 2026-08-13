@@ -461,11 +461,6 @@ export const pushMessage = async (
   // and headers are never read, so nothing a provider sends can be stored.
   if (response.status === 200) return { ok: true, accepted: false };
   if (response.status === 409) return { ok: true, accepted: true };
-  // 429 covers a short rate limit, a per-recipient burst, and the monthly
-  // message cap alike, and the status alone cannot tell them apart. Retrying
-  // it lets a rate limit clear on its own; a real cap simply exhausts the
-  // ladder and is recorded as retry-exhausted with this status attached.
-  if (response.status === 429) return { ok: false, code: "RETRYABLE", status: 429 };
   if (response.status >= 500) return { ok: false, code: "RETRYABLE", status: response.status };
   // 401 means the channel credentials no longer match: an operator has to fix
   // the configuration, so retrying the same credentials cannot help.

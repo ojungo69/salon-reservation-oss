@@ -198,10 +198,10 @@
    restarts, config edits, and deploys (tested by simulating a default-serializer change).
    Absolute attempt schedule — attempt 1 at t=0, then t+1 m, t+6 m, t+21 m, t+1 h 21 m,
    t+4 h 21 m, t+10 h 21 m (**7 attempts total**; terminal parking at the 7th failure, ≈10.4 h,
-   comfortably < 24 h). Push retries on 5xx, `429`, and timeout; `409` means accepted; `401` is a
-   configuration rejection that parks the delivery as `awaiting-configuration`; other 4xx are
-   terminal immediately. Token-endpoint calls remain distinct from push outcomes — a token
-   failure never marks the delivery accepted.
+   comfortably < 24 h). Push retries only on 5xx and timeout; `409` means accepted; `401` is a
+   configuration rejection that parks the delivery as `awaiting-configuration`; all other 4xx,
+   including `429`, are terminal immediately. Token-endpoint calls remain distinct from push
+   outcomes — a token failure never marks the delivery accepted.
    Outbound timeouts fixed at 10 s each for verify, token, and push calls.
 8. **Lifecycle and cleanup are first-class**:
    - A **LINE-specific, server-managed, monotonically increasing generation** (not

@@ -97,11 +97,10 @@ are ready. Notification messages contain no management URL.
 
 The Messaging API **free plan sends at most 200 messages per month, and no
 additional messages can be purchased on it — delivery stops at the cap**.
-LINE returns HTTP 429 for the monthly cap and temporary rate limits alike,
-so the adapter retries it through the normal retry ladder. If no attempt
-succeeds, the delivery ends as `retry-exhausted`, with the HTTP status attached
-to its entry in the diagnostics ledger rather than recorded as a separate
-quota outcome. A salon with a few hundred bookings a month will exceed this.
+LINE returns HTTP 429 for the monthly cap and temporary rate limits alike.
+LINE's retry policy excludes 4xx responses, so the adapter records that attempt
+as terminally `rejected`, with HTTP 429 attached to its diagnostics-ledger
+entry. A salon with a few hundred bookings a month will exceed this.
 Check the current plans and pricing for your region in the LINE Official
 Account documentation before relying on notifications, and treat LINE as a
 convenience channel rather than the only record: every state change remains

@@ -992,8 +992,14 @@ export class AdapterDelivery extends DurableObject<Env> {
           )
           .toArray()[0];
         // Ordered by event timestamp: an older follow can never resurrect a
-        // newer unfollow (ties break toward unfollow above).
-        if (current !== undefined && current.updated_at > event.timestamp) {
+        // newer unfollow, and an equal-timestamp stored unfollow wins too.
+        if (
+          current !== undefined &&
+          (current.updated_at > event.timestamp ||
+            (current.updated_at === event.timestamp &&
+              current.followed === 0 &&
+              event.type === "follow"))
+        ) {
           applied += 1;
           continue;
         }
@@ -1513,8 +1519,8 @@ export class AdapterDelivery extends DurableObject<Env> {
         }
         const attempts = fresh.attempt + 1;
         if (attempts >= ADAPTER.RETRY_OFFSETS_S.length) {
-          // The status of the attempt that used up the ladder is what tells an
-          // operator whether this was the monthly cap (429) or an outage (5xx).
+          // Preserve the final provider status when a retryable outage uses up
+          // the ladder.
           this.#recordTerminal("retry-exhausted", fresh.type, outcome.status);
           sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
           return;

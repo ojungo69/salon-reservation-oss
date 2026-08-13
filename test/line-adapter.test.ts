@@ -577,7 +577,7 @@ describe("token mint and push client", () => {
     expect(calls).toBe(2);
   });
 
-  it("maps push outcomes: 200 sent, 409 accepted, 429 retryable, 401 config, 5xx retryable, 4xx rejected", async () => {
+  it("maps push outcomes: 200 sent, 409 accepted, 401 config, 5xx retryable, 429/other 4xx rejected", async () => {
     const push = (status: number) =>
       pushMessage(
         {
@@ -598,8 +598,7 @@ describe("token mint and push client", () => {
       );
     expect(await push(200)).toEqual({ ok: true, accepted: false });
     expect(await push(409)).toEqual({ ok: true, accepted: true });
-    // 429 walks the retry ladder (no longer QUOTA_REFUSED).
-    expect(await push(429)).toEqual({ ok: false, code: "RETRYABLE", status: 429 });
+    expect(await push(429)).toEqual({ ok: false, code: "REJECTED", status: 429 });
     expect(await push(401)).toEqual({ ok: false, code: "CONFIG_REJECTED", status: 401 });
     expect(await push(500)).toEqual({ ok: false, code: "RETRYABLE", status: 500 });
     expect(await push(400)).toEqual({ ok: false, code: "REJECTED", status: 400 });

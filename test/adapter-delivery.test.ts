@@ -1130,6 +1130,7 @@ describe("delivery pipeline", () => {
   it("parks pending deliveries on unfollow and re-queues on a later follow", async () => {
     lineApi();
     const reservationId = await createPending(pDate);
+    const unfollowedAt = Date.now();
     await activateGen1();
     await finalizedLink(reservationId);
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
@@ -1141,7 +1142,7 @@ describe("delivery pipeline", () => {
         {
           type: "unfollow",
           webhookEventId: "wh-unfollow-1",
-          timestamp: Date.now(),
+          timestamp: unfollowedAt,
           userId: SUBJECT,
           isRedelivery: false,
         },
@@ -1155,7 +1156,21 @@ describe("delivery pipeline", () => {
         {
           type: "follow",
           webhookEventId: "wh-follow-stale",
-          timestamp: Date.now() - 60_000,
+          timestamp: unfollowedAt - 60_000,
+          userId: SUBJECT,
+          isRedelivery: false,
+        },
+      ],
+    });
+    expect(await deliveryRows()).toMatchObject([{ status: "parked" }]);
+
+    // Unfollow wins an equal-timestamp tie even across webhook requests.
+    await deliveryStub().processWebhook({
+      events: [
+        {
+          type: "follow",
+          webhookEventId: "wh-follow-tied",
+          timestamp: unfollowedAt,
           userId: SUBJECT,
           isRedelivery: false,
         },
@@ -1168,7 +1183,7 @@ describe("delivery pipeline", () => {
         {
           type: "follow",
           webhookEventId: "wh-follow-1",
-          timestamp: Date.now() + 1_000,
+          timestamp: unfollowedAt + 1_000,
           userId: SUBJECT,
           isRedelivery: false,
         },
