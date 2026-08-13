@@ -101,6 +101,9 @@ const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise<T> => 
   }
 };
 
+const retryKeyCutoff = (now: number): number =>
+  now - (ADAPTER.RETRY_KEY_VALIDITY_S - ADAPTER.RETRY_KEY_SAFETY_MARGIN_S) * 1000;
+
 /**
  * Installation-singleton delivery and lifecycle authority for the LINE
  * adapter. Owns links, deliveries, webhook dedup, the redacted terminal
@@ -920,7 +923,8 @@ export class AdapterDelivery extends DurableObject<Env> {
    * Signature-verified webhook events: dedup by webhookEventId, apply
    * follow/unfollow ordered by timestamp (equal timestamps: unfollow wins —
    * the safe side). An unfollow parks the subject's pending deliveries; a
-   * follow re-queues parked ones. Anything while not active is acknowledged
+   * follow re-queues rows whose retry key is still safe (or unused), after
+   * terminalizing expired attempts. Anything while not active is acknowledged
    * with zero persistence (disposition priority 0).
    */
   async processWebhook(input: {
@@ -1023,6 +1027,22 @@ export class AdapterDelivery extends DurableObject<Env> {
             event.userId,
           );
         } else {
+          const expired = sql
+            .exec<{ delivery_id: string; type: string }>(
+              `SELECT delivery_id, type FROM deliveries
+               WHERE status = 'parked' AND park_reason = 'unfollow'
+                 AND first_attempt_at IS NOT NULL AND first_attempt_at < ?
+                 AND reservation_id IN (
+                   SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+                 )`,
+              retryKeyCutoff(now),
+              event.userId,
+            )
+            .toArray();
+          for (const row of expired) {
+            this.#recordTerminal("retry-exhausted", row.type);
+            sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+          }
           sql.exec(
             `UPDATE deliveries SET status = ?, park_reason = NULL, next_attempt_at = ?
              WHERE status = 'parked' AND park_reason = 'unfollow'
@@ -1266,7 +1286,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         `SELECT delivery_id, type FROM deliveries
          WHERE status = 'awaiting-configuration' AND first_attempt_at IS NOT NULL
            AND first_attempt_at < ?`,
-        now - (ADAPTER.RETRY_KEY_VALIDITY_S - ADAPTER.RETRY_KEY_SAFETY_MARGIN_S) * 1000,
+        retryKeyCutoff(now),
       )
       .toArray();
     for (const row of expired) {
@@ -1391,6 +1411,14 @@ export class AdapterDelivery extends DurableObject<Env> {
           .toArray()[0];
         if (fresh === undefined) return null;
         const claimNow = Date.now();
+        if (
+          fresh.first_attempt_at !== null &&
+          fresh.first_attempt_at < retryKeyCutoff(claimNow)
+        ) {
+          this.#recordTerminal("retry-exhausted", fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return null;
+        }
         // Last check before the message leaves: the parent reservation's
         // retention deadline is a send boundary, not just a prune boundary.
         if (fresh.purge_at !== null && fresh.purge_at <= claimNow) {

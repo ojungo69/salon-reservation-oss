@@ -186,7 +186,9 @@
      `webhookEventId` — no subject stored. This deliberately does not remember a pre-link
      unfollow: if that subject links later without a newer webhook, the first provider refusal
      terminalizes only that recipient's delivery. Avoiding storage of an unlinked subject wins
-     over predicting that future link; known linked-subject unfollows still park before push.
+     over predicting that future link; known linked-subject unfollows still park before push. A
+     later follow re-queues a never-attempted or still-valid row, but terminalizes an attempted row
+     whose retry-key safety window elapsed before re-queueing it.
 7. **Retry policy fits the 24-hour retry-key window**: a delivery persists the **canonical
    message fragment bytes, link ID + version, UUID retry key, and wire-format version** — the
    full push body is **never stored** (decision 6); each attempt rebuilds it through the
@@ -203,6 +205,8 @@
    including `429`, are terminal immediately. Token-endpoint calls remain distinct from push
    outcomes — token-endpoint 408, 429, 5xx, and transport failures retry; other non-200 token
    responses park for configuration repair; a token failure never marks the delivery accepted.
+   Every send claim re-checks the retry-key safety cutoff, so platform lateness cannot start a
+   push after that window either.
    Outbound timeouts fixed at 10 s each for verify, token, and push calls.
 8. **Lifecycle and cleanup are first-class**:
    - A **LINE-specific, server-managed, monotonically increasing generation** (not

@@ -1115,6 +1115,24 @@ describe("delivery pipeline", () => {
     },
   );
 
+  it("terminalizes a delayed queued delivery before its retry key becomes unsafe", async () => {
+    const calls = lineApi({ push: () => 500 });
+    await queueDelivery();
+    await runDurableObjectAlarm(deliveryStub());
+    expect(calls.push).toHaveLength(1);
+
+    advanceNow(
+      (ADAPTER.RETRY_KEY_VALIDITY_S - ADAPTER.RETRY_KEY_SAFETY_MARGIN_S) * 1000 + 1,
+    );
+    await runDurableObjectAlarm(deliveryStub());
+
+    expect(calls.push).toHaveLength(1);
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([
+      { reason: "retry-exhausted", event_type: "approve" },
+    ]);
+  });
+
   it("treats 409 as accepted and a thrown fetch as one retryable attempt", async () => {
     let pushStatus: number | "throw" = "throw";
     lineApi({ push: () => pushStatus });
@@ -1237,6 +1255,48 @@ describe("delivery pipeline", () => {
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
     await runDurableObjectAlarm(deliveryStub());
     expect((await counterMap()).delivered).toBe(1);
+  });
+
+  it("terminalizes an attempted delivery when follow arrives after retry-key validity", async () => {
+    const calls = lineApi({ push: () => 500 });
+    await queueDelivery();
+    await runDurableObjectAlarm(deliveryStub());
+    expect(calls.push).toHaveLength(1);
+    expect(await deliveryRows()).toMatchObject([
+      { status: "queued", first_attempt_at: Date.now() },
+    ]);
+
+    await deliveryStub().processWebhook({
+      events: [
+        {
+          type: "unfollow",
+          webhookEventId: "wh-expired-unfollow",
+          timestamp: Date.now(),
+          userId: SUBJECT,
+          isRedelivery: false,
+        },
+      ],
+    });
+    expect(await deliveryRows()).toMatchObject([{ status: "parked" }]);
+
+    advanceNow((ADAPTER.RETRY_KEY_VALIDITY_S + 1) * 1000);
+    await deliveryStub().processWebhook({
+      events: [
+        {
+          type: "follow",
+          webhookEventId: "wh-expired-follow",
+          timestamp: Date.now(),
+          userId: SUBJECT,
+          isRedelivery: false,
+        },
+      ],
+    });
+
+    expect(await deliveryRows()).toEqual([]);
+    expect(await ledgerReasons()).toEqual([
+      { reason: "retry-exhausted", event_type: "approve" },
+    ]);
+    expect(calls.push).toHaveLength(1);
   });
 
   it("moves a delivery to awaiting-configuration on a rejected token and recovers", async () => {
