@@ -1,0 +1,24 @@
+test/line-adapter.test.ts
+  s_a546c8dc2f182a::t_033942cc2a17bb 913-916,919,924,948,960-967,991,993-995,1001
+src/worker.ts
+  s_a546c8dc2f182a::t_319a562afce82f 1927-1930,1935-1937
+  s_a546c8dc2f182a::t_22c592d714b8c0 1938
+test/adapter-delivery.test.ts
+  s_a546c8dc2f182a::t_033942cc2a17bb 1434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e0be968364e0f5e6f7a57de0f3d449d6591c5657",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
