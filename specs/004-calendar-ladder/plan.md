@@ -205,8 +205,9 @@ Every ingress goes through one desired-state upsert:
 ### 4. Feed renderer
 
 The feed method first rejects an unconfigured mode without creating storage, then authenticates a
-configured mode before reading any projection. A configured invalid attempt may increment only its
-aggregate failure counter. A valid request reads a bounded ordered snapshot
+configured mode before reading any projection. A configured invalid attempt initializes only the
+bounded counter schema when necessary and increments its aggregate failure counter. A valid request
+reads a bounded ordered snapshot
 from one DO transaction and calls a pure RFC 5545 serializer. UID and Google ID use domain-separated
 SHA-256 derivatives of the reservation UUID; the clear/reversible reservation ID is never emitted. Responses are CRLF, UTF-8,
 escaped/folded, `private, no-store`, and `X-Content-Type-Options: nosniff`. Uniform 404 covers every

@@ -1129,12 +1129,13 @@ export class CalendarAdapter extends DurableObject<Env> {
   async feed(input: { token: string }): Promise<CalendarFeedResult> {
     const configured = parseCalendarFeedToken(this.env.CALENDAR_FEED_TOKEN);
     if (configured === null) return { ok: false };
+    this.#ensureSchema();
     if (parseCalendarFeedToken(input.token) === null) {
-      if (this.#hasSchema()) this.#bump("feed_auth_failed");
+      this.#bump("feed_auth_failed");
       return { ok: false };
     }
     if (!(await constantTimeTokenMatch(configured, input.token))) {
-      if (this.#hasSchema()) this.#bump("feed_auth_failed");
+      this.#bump("feed_auth_failed");
       return { ok: false };
     }
     const descriptor = await this.descriptor();

@@ -459,6 +459,7 @@ describe("calendar projection and feed authority", () => {
   });
 
   it("orders events and exposes only an aggregate feed-auth failure count", async () => {
+    expect(await adapterStub().feed({ token: "C".repeat(43) })).toEqual({ ok: false });
     const config = await configFor(suiteDate(2));
     const day = dayStub(config.date);
     for (const startTime of ["11:00", "09:00"]) {
@@ -477,7 +478,7 @@ describe("calendar projection and feed authority", () => {
       valid.body.indexOf(`DTSTART:${date}T020000Z\r\n`),
     );
     expect(await adapterStub().diagnostics()).toMatchObject({
-      counters: { feed_auth_failed: 2 },
+      counters: { feed_auth_failed: 3 },
     });
   });
 

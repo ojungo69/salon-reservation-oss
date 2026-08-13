@@ -89,6 +89,10 @@ full mutation table, and that the public residual-disclosure lookup could wait f
 authority. The date preflight now covers every required upsert and delete before any write, while
 the lookup reuses the shared 250 ms deadline and conservative disclosure fallback. The 74-case
 focused, 225-case full, and 25-case security runs cover both fixes.
+The final review also proved that a first wrong feed token was not counted before authority
+activation. A configured feed now initializes only the bounded counter schema before authentication,
+while an unconfigured mode remains storage-free; the existing aggregate-auth regression failed with
+two instead of three and passes after the fix without changing suite counts.
 
 ## Manual completion sweep
 
@@ -133,7 +137,7 @@ command evidence above. Every task is accounted for below.
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
 | T034 | 74-case focused, 225-case full, type/build/audit, and 34-case browser results are recorded above. |
 | T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, six fixed CWE-400 candidates, two fixed CWE-362 races, durable timeout recovery, atomic reconciliation-cap/cursor handling, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, sweep-round budget, required-upsert capacity, and residual-disclosure deadline gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, sweep-round budget, required-upsert capacity, residual-disclosure deadline, and first-feed-failure visibility gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |
