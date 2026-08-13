@@ -87,7 +87,7 @@ code is identical for both; only the operator's channel-creation walkthrough dif
 
 ## R3 — Server-side verification and push mechanics
 
-All facts from the current LINE Developers reference (2026-08-12).
+All facts from the current LINE Developers reference (2026-08-13).
 
 **ID token verification** (identity seam's "verify every assertion server-side"):
 
@@ -143,17 +143,17 @@ All facts from the current LINE Developers reference (2026-08-12).
 **Message quota (operator-side cost boundary)**:
 
 - Push, multicast, narrowcast, and broadcast messages count against the LINE Official Account
-  plan's monthly free message quota; **Reply API messages do not**. The default (Communication)
-  plan is ¥0 with **200 messages/month and no overage purchase** — delivery stops at the cap;
-  paid plans start at ¥5,000/month for 5,000 messages.
-  Source: <https://www.lycbiz.com/jp/service/line-official-account/plan>
+  plan's monthly free message quota; **Reply API messages do not**. Pricing varies by country or
+  region. In Japan, the Communication Plan is ¥0 with **200 messages/month and no overage
+  purchase** — delivery stops at the cap; paid plans start at ¥5,000/month for 5,000 messages.
+  Source: <https://developers.line.biz/en/docs/messaging-api/pricing/>
 - Every notification this stage sends is server-initiated and therefore a push (reply tokens only
   exist briefly after inbound webhook events, which reservation transitions are not). The design
-  is unaffected, but the **operator documentation must state the quota** (a salon with ~100
-  linked reservations a month sits near the free cap), and quota exhaustion surfaces naturally
-  through the existing terminal-failure visibility: a push refused for quota reasons parks as a
-  terminally failed delivery with its reason, so the operator sees it in diagnostics without a
-  dedicated quota widget.
+  is unaffected, but the **operator documentation must state the regional quota** (in Japan, a
+  salon with ~100 linked reservations a month sits near the Communication Plan cap), and quota
+  exhaustion surfaces naturally through the existing terminal-failure visibility: a push refused
+  for quota reasons parks as a terminally failed delivery with its reason, so the operator sees it
+  in diagnostics without a dedicated quota widget.
 
 **Channel model** (minimal-secret configuration):
 

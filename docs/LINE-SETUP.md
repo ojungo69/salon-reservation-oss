@@ -96,19 +96,21 @@ Enabling reuses the installation's live-readiness protection and fails with
 `ORIGIN_UNCONFIGURED` until `allowedHostname` and its matching Turnstile setup
 are ready. Notification messages contain no management URL.
 
-## ⚠️ The free-plan message quota
+## ⚠️ Regional message quotas and pricing
 
-The Messaging API **free plan sends at most 200 messages per month, and no
-additional messages can be purchased on it — delivery stops at the cap**.
+Messaging API plans and limits vary by country or region. For a LINE Official
+Account billed in **Japan**, the Communication Plan currently includes at most
+**200 messages per month and does not allow additional-message purchases —
+delivery stops at the cap**. Do not apply those numbers to another region or
+plan; check the [current pricing for your region](https://developers.line.biz/en/docs/messaging-api/pricing/)
+before relying on notifications.
 LINE returns HTTP 429 for the monthly cap and temporary rate limits alike.
 LINE's retry policy excludes 4xx responses, so the adapter records that attempt
 as terminally `rejected`, with HTTP 429 attached to its diagnostics-ledger
-entry. A salon with a few hundred bookings a month will exceed this.
-Check the current plans and pricing for your region in the LINE Official
-Account documentation before relying on notifications, and treat LINE as a
-convenience channel rather than the only record: every state change remains
-visible on the customer's booking-management page regardless of message
-delivery.
+entry. A Japan-billed salon with a few hundred bookings a month will exceed the
+Communication Plan allowance. Treat LINE as a convenience channel rather than
+the only record: every state change remains visible on the customer's
+booking-management page regardless of message delivery.
 
 ## Verifying a live channel (operator-side only)
 
