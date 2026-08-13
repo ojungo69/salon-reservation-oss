@@ -101,7 +101,9 @@ The status response contains mode booleans, aggregate counts, cursors, and redac
 It never contains either calendar secret, calendar ID, reservation ID, event ID, provider body, or
 Authorization header. Reconciliation accepts `{}` or `{"cursor":"YYYY-MM-DD"}`, reads at most seven
 authoritative day partitions, applies lazy pending expiry, and returns the next cursor. Repeat until
-`nextCursor` is `null`; repeating a page is idempotent.
+`nextCursor` is `null`; repeating a page is idempotent. If bounded provider-mutation capacity is
+temporarily full, the response stops before the deferred date and returns that same date as
+`nextCursor`; retry it after pending work clears.
 
 Run reconciliation after first activation, restored credentials, a suspected handoff gap, or a
 target-calendar change. With a valid Google configuration, reconciliation also requeues retained

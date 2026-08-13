@@ -15,6 +15,7 @@ import {
   parseGoogleCredentials,
   renderCalendar,
   requestGoogleAccessToken,
+  sendGoogleMutation,
   type CalendarProjection,
   type GoogleCalendarCredentials,
 } from "../src/calendar-adapter.ts";
@@ -233,6 +234,41 @@ describe("calendar adapter pure contracts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the Calendar API deadline active while reading an error body", async () => {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    const fetcher = vi.fn<typeof fetch>(async (_input, init = {}) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+          init.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("timed out", "AbortError"));
+          });
+        },
+      });
+      return new Response(body, { status: 403 });
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    const pending = sendGoogleMutation(
+      credentials,
+      "fixture-access-token",
+      "upsert",
+      projection,
+      projection.externalId,
+    );
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const usesDeadline = timeout.mock.calls.some(
+      ([milliseconds]) => milliseconds === ADAPTER.OUTBOUND_TIMEOUT_MS,
+    );
+    if (usesDeadline) deadline.abort();
+    else bodyController.error(new Error("test cleanup"));
+
+    expect(await pending).toEqual({ kind: "retryable", status: null });
+    expect(usesDeadline).toBe(true);
   });
 });
 
@@ -939,6 +975,7 @@ describe("calendar projection and feed authority", () => {
       ok: true,
       projected: 0,
       removed: 0,
+      deferred: true,
     });
 
     await runInDurableObject(adapter, (_instance, state) => {
@@ -1008,6 +1045,7 @@ describe("calendar projection and feed authority", () => {
       ok: true,
       projected: 0,
       removed: 0,
+      deferred: true,
     });
     expect(
       await runInDurableObject(adapter, (_instance, state) => ({
@@ -1479,6 +1517,157 @@ describe("calendar projection and feed authority", () => {
     expect(raced).toMatchObject({ status: "queued", payload: { status: "confirmed" } });
   });
 
+  it("bounds a stalled Calendar sweep RPC and retries the same day", async () => {
+    const adapter = adapterStub();
+    const reservationDays = env.RESERVATION_DAYS;
+    const config = await configFor(suiteDate(25));
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", config.date);
+    });
+    try {
+      let release!: (result: { events: []; more: false }) => void;
+      const blocked = new Promise<{ events: []; more: false }>((resolve) => {
+        release = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          release({ events: [], more: false });
+          resolve();
+        }, ADAPTER.SWEEP_RPC_DEADLINE_MS + 100);
+      });
+      await runInDurableObject(adapter, (instance) => {
+        Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+          configurable: true,
+          value: {
+            getByName: (name: string) =>
+              name === `single-location:${config.date}`
+                ? { drainOutbox: () => blocked }
+                : reservationDays.getByName(name),
+          },
+        });
+      });
+
+      await runDurableObjectAlarm(adapter);
+      await released;
+      expect(await adapter.diagnostics()).toMatchObject({
+        state: "active",
+        sweepCursor: config.date,
+        counters: { sweep_faults: 1 },
+      });
+    } finally {
+      await runInDurableObject(adapter, (instance) => {
+        Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+          configurable: true,
+          value: reservationDays,
+        });
+      });
+    }
+  }, ADAPTER.SWEEP_RPC_DEADLINE_MS + 10_000);
+
+  it("preserves a reactivated generation while the final purge is in flight", async () => {
+    const adapter = adapterStub();
+    const reservationDays = env.RESERVATION_DAYS;
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    let feedSecret: string | undefined = feedToken;
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperties((instance as unknown as { env: Env }).env, {
+        CALENDAR_FEED_TOKEN: {
+          configurable: true,
+          get: () => feedSecret,
+        },
+        GOOGLE_CALENDAR_CREDENTIALS: {
+          configurable: true,
+          value: undefined,
+        },
+      });
+    });
+    const afterLease = SUITE_NOW + (ADAPTER.FINAL_PASS_LEASE_WAIT_S + 1) * 1_000;
+    const finalDate = new Date(
+      afterLease + 9 * 60 * 60 * 1_000 + ADAPTER.SWEEP_FUTURE_DAYS * 86_400_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    const config = await configFor(finalDate);
+    const day = dayStub(config.date);
+    const first = await day.createPublic(config, createInput(config.date));
+    expect(first).toMatchObject({ ok: true });
+    await adapter.pokeDay({ date: config.date });
+
+    feedSecret = undefined;
+    expect(await adapter.descriptor()).toBeNull();
+    vi.setSystemTime(afterLease);
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", finalDate);
+    });
+    let allowPurge!: () => void;
+    const purgeGate = new Promise<void>((resolve) => {
+      allowPurge = resolve;
+    });
+    let purgeCalls = 0;
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: {
+          getByName: (name: string) => {
+            const target = reservationDays.getByName(name) as DurableObjectStub<ReservationDay>;
+            return {
+              purgeConsumer: async (input: {
+                consumer: "calendar";
+                throughGeneration?: number;
+              }) => {
+                purgeCalls += 1;
+                await purgeGate;
+                return target.purgeConsumer(input);
+              },
+            };
+          },
+        },
+      });
+    });
+
+    const alarm = runDurableObjectAlarm(adapter);
+    await vi.waitFor(() => expect(purgeCalls).toBe(1));
+    feedSecret = "B".repeat(43);
+    const reactivated = await adapter.descriptor();
+    expect(reactivated).toMatchObject({ generation: 2, phase: "active" });
+    if (reactivated === null) throw new Error("fixture reactivation failed");
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: { getByName: () => ({ pokeDay: async () => ({ ok: true, drained: 0 }) }) },
+      });
+    });
+    const second = await day.createPublic(
+      { ...config, calendarAdapter: reactivated },
+      createInput(config.date, "11:00"),
+    );
+    expect(second).toMatchObject({ ok: true });
+    if (!second.ok) throw new Error("fixture create failed");
+    allowPurge();
+    await alarm;
+
+    expect(await adapter.diagnostics()).toMatchObject({
+      state: "active",
+      generation: 2,
+      projectionCount: 1,
+    });
+    expect(await day.drainOutbox({ consumer: "calendar" })).toMatchObject({
+      events: [{ generation: 2, reservationId: second.reservationId }],
+    });
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: reservationDays,
+      });
+    });
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+    });
+  });
+
   it("retries purge faults, disables after the lease, and re-enables above high-water", async () => {
     const adapter = adapterStub();
     const reservationDays = env.RESERVATION_DAYS;
@@ -1613,6 +1802,9 @@ describe("calendar projection and feed authority", () => {
       ledger: [],
     });
     expect(await adapter.hasDisclosure()).toBe(false);
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => state.storage.getAlarm()),
+    ).toBeNull();
 
     feedSecret = "C".repeat(43);
     expect(await adapter.descriptor()).toMatchObject({ generation: 2, phase: "active" });

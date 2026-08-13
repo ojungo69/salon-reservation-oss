@@ -182,8 +182,10 @@ provider. Split only if a second provider is approved; no provider interface/fac
 No row represents `never`; persisted state moves `active → deactivating → disabled`, and re-enable
 increments `highWater`. Active persists only a non-secret SHA-256 fingerprint of the parsed Google
 credential object to detect rotation; no secret/config field is stored. During deactivation the authority waits for all issued
-leases to expire, purges `calendar` outbox rows over the fixed sweep, clears projection/mutations,
-and stops its alarm when bounded diagnostics have expired.
+leases to expire, purges only `calendar` outbox rows at or below the retiring generation over the
+fixed sweep, and clears projection/mutations only after revalidating that generation in the final
+transaction. Every day RPC uses the shared five-second deadline and retries the same cursor on
+failure. The alarm stops when bounded diagnostics have expired.
 
 Every ingress goes through one desired-state upsert:
 
@@ -212,7 +214,7 @@ inactive/auth failure. Owner diagnostics expose only an aggregate failure count.
   credentials and ends before provider expiry.
 - Event endpoint: fixed Google host and percent-encoded secret calendar ID/path event ID; no caller
   can supply a URL/host. Mutation body is reconstructed canonically from the stored minimal desired
-  event for every attempt.
+  event for every attempt. The same 10-second deadline covers each bounded error response body.
 - Claim commits before outbound fetch; a lease recovers dead sends. Settle verifies claim/generation
   before update. Newer desired state invalidates the older outcome.
 - Retry uses the existing absolute offsets and send batch. `Retry-After` is not trusted to grow the
@@ -231,9 +233,10 @@ the authority advances that watermark for both event delivery and replacement, s
 delayed older handoff nor an older replacement can undo newer committed calendar state. Response
 returns only `processedDates`, `nextCursor | null`, and aggregate counts. Repeated calls are
 idempotent. If every required Google delete cannot fit, the whole date replacement remains unchanged
-without advancing its watermark. With valid Google configuration, reconciliation also requeues
-retained failed or configuration-blocked deletes that no longer have a projection row. Status
-exposes last completed reconciliation and next cursor.
+without advancing its watermark; the page stops before that date and returns the same date as its
+next cursor. With valid Google configuration, reconciliation also requeues retained failed or
+configuration-blocked deletes that no longer have a projection row. Status exposes last completed
+reconciliation and next cursor.
 
 ### 7. Owner and public routes
 

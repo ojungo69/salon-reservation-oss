@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   DayConfig,
+  DayCalendarProjectionResult,
   ReservationDay,
 } from "../src/reservation-day.ts";
 import type { CalendarAdapter } from "../src/calendar-adapter.ts";
@@ -3361,6 +3362,60 @@ describe("T035 guided setup API", () => {
       off,
     );
     expect(notConfigured.status).toBe(409);
+  });
+
+  it("keeps a deferred reconciliation date as the next cursor", async () => {
+    await enableLiveInstallation();
+    const deferredDate = new Date(Date.parse(`${day.date}T00:00:00.000Z`) + 2 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const reconcileDay = vi.fn(async (projection: DayCalendarProjectionResult) => ({
+      ok: true as const,
+      projected: 0,
+      removed: 0,
+      ...(projection.date === deferredDate ? { deferred: true as const } : {}),
+    }));
+    const finishReconcile = vi.fn(async () => ({ ok: true as const }));
+    const authority = {
+      descriptor: async () => ({
+        consumer: "calendar" as const,
+        generation: 1,
+        phase: "active" as const,
+        leaseIssuedAt: Date.now(),
+        leaseNotAfter: Date.now() + 30_000,
+      }),
+      reconcileDay,
+      finishReconcile,
+    };
+    const deferredEnv = Object.create(env) as Env;
+    Object.defineProperty(deferredEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(deferredEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(deferredEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => authority },
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.test/api/admin/calendar/reconcile", {
+        method: "POST",
+        headers: {
+          ...ownerHeaders,
+          "content-type": "application/json",
+          origin: "https://example.test",
+        },
+        body: JSON.stringify({ cursor: day.date }),
+      }),
+      deferredEnv,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      processedDates: 2,
+      projected: 0,
+      removed: 0,
+      nextCursor: deferredDate,
+    });
+    expect(reconcileDay).toHaveBeenCalledTimes(3);
+    expect(finishReconcile).toHaveBeenCalledWith({ nextCursor: deferredDate });
   });
 
   it("applies pending expiry while reconciling an authoritative day", async () => {

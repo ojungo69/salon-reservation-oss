@@ -1323,7 +1323,10 @@ export class ReservationDay extends DurableObject<Env> {
    * to the exact pre-adapter storage shape. On a day that never emitted an
    * event this is a no-op that creates nothing.
    */
-  async purgeConsumer(input: { consumer: "line" | "calendar" }): Promise<{
+  async purgeConsumer(input: {
+    consumer: "line" | "calendar";
+    throughGeneration?: number;
+  }): Promise<{
     ok: true;
     removed: number;
     dropped: boolean;
@@ -1331,18 +1334,32 @@ export class ReservationDay extends DurableObject<Env> {
     if (
       typeof input !== "object" ||
       input === null ||
-      !["line", "calendar"].includes(input.consumer)
+      !["line", "calendar"].includes(input.consumer) ||
+      (input.throughGeneration !== undefined &&
+        (!Number.isSafeInteger(input.throughGeneration) || input.throughGeneration < 1))
     ) {
       throw new Error("bad purge input");
     }
     if (!this.#adapterOutboxExists()) return { ok: true, removed: 0, dropped: false };
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
-      const removed = sql.exec(
-        "DELETE FROM __adapter_outbox WHERE consumer = ?",
-        input.consumer,
-      ).rowsWritten;
-      sql.exec("DELETE FROM __adapter_meta WHERE consumer = ?", input.consumer);
+      const removed =
+        input.throughGeneration === undefined
+          ? sql.exec("DELETE FROM __adapter_outbox WHERE consumer = ?", input.consumer).rowsWritten
+          : sql.exec(
+              "DELETE FROM __adapter_outbox WHERE consumer = ? AND generation <= ?",
+              input.consumer,
+              input.throughGeneration,
+            ).rowsWritten;
+      if (input.throughGeneration === undefined) {
+        sql.exec("DELETE FROM __adapter_meta WHERE consumer = ?", input.consumer);
+      } else {
+        sql.exec(
+          "DELETE FROM __adapter_meta WHERE consumer = ? AND generation <= ?",
+          input.consumer,
+          input.throughGeneration,
+        );
+      }
       const remaining =
         sql
           .exec<{ n: number }>(

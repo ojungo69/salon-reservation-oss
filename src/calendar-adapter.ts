@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
-import { ADAPTER } from "./adapter-constants.ts";
+import { ADAPTER, withDeadline } from "./adapter-constants.ts";
 import { readBoundedBytes } from "./line-adapter.ts";
 import type {
   AdapterOutboxEvent,
@@ -315,9 +315,9 @@ type GoogleMutationOutcome =
   | { kind: "configuration"; status: number | null }
   | { kind: "permanent"; status: number | null };
 
-const googleErrorReasons = async (response: Response): Promise<string[]> => {
+const googleErrorReasons = async (response: Response): Promise<string[] | null> => {
   const bytes = await readBoundedBytes(response.body, RESPONSE_MAX_BYTES);
-  if (bytes === null) return [];
+  if (bytes === null) return null;
   try {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as {
       error?: { errors?: Array<{ reason?: unknown }> };
@@ -338,29 +338,29 @@ const calendarRequest = async (
   url: string,
   init: RequestInit,
 ): Promise<Response | null> => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, ADAPTER.OUTBOUND_TIMEOUT_MS);
   try {
     const target = new URL(url);
     if (CALENDAR_ORIGINS.includes(target.origin)) {
-      return await fetch(target, { ...init, redirect: "manual", signal: controller.signal });
+      return await fetch(target, {
+        ...init,
+        redirect: "manual",
+        signal: AbortSignal.timeout(ADAPTER.OUTBOUND_TIMEOUT_MS),
+      });
     }
     return null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 };
 
 const responseOutcome = async (response: Response): Promise<GoogleMutationOutcome> => {
-  const kind = classifyGoogleResponse(response.status, await googleErrorReasons(response));
+  const reasons = await googleErrorReasons(response);
+  if (reasons === null) return { kind: "retryable", status: null };
+  const kind = classifyGoogleResponse(response.status, reasons);
   return { kind, status: response.status };
 };
 
-const sendGoogleMutation = async (
+export const sendGoogleMutation = async (
   credentials: GoogleCalendarCredentials,
   accessToken: string,
   operation: "upsert" | "delete",
@@ -1039,18 +1039,24 @@ export class CalendarAdapter extends DurableObject<Env> {
     for (let round = 0; round < 10; round += 1) {
       const meta = this.#readMeta();
       if (meta?.state !== "active") return { ok: true, drained: accepted };
-      const drained = await stub.drainOutbox({
-        consumer: "calendar",
-        limit: ADAPTER.OUTBOX_DRAIN_BATCH,
-      });
+      const drained = await withDeadline(
+        stub.drainOutbox({
+          consumer: "calendar",
+          limit: ADAPTER.OUTBOX_DRAIN_BATCH,
+        }),
+        ADAPTER.SWEEP_RPC_DEADLINE_MS,
+      );
       if (drained.events.length > 0) {
         const batchAccepted = await this.#acceptEvents(drained.events);
         if (batchAccepted === null) break;
         accepted += batchAccepted;
-        await stub.ackOutbox({
-          consumer: "calendar",
-          events: drained.events.map(({ generation, eventId }) => ({ generation, eventId })),
-        });
+        await withDeadline(
+          stub.ackOutbox({
+            consumer: "calendar",
+            events: drained.events.map(({ generation, eventId }) => ({ generation, eventId })),
+          }),
+          ADAPTER.SWEEP_RPC_DEADLINE_MS,
+        );
       }
       if (!drained.more) break;
     }
@@ -1085,6 +1091,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     ok: true;
     projected: number;
     removed: number;
+    deferred?: true;
   }> {
     if (
       !input.ok ||
@@ -1137,7 +1144,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         if (queued.size + missingDeletes > CALENDAR_ROW_CAP) {
           this.#record("overflow", "delete");
           this.#bump("mutation_overflow");
-          return { ok: true as const, projected: 0, removed: 0 };
+          return { ok: true as const, projected: 0, removed: 0, deferred: true as const };
         }
       }
       let removed = 0;
@@ -1503,9 +1510,12 @@ export class CalendarAdapter extends DurableObject<Env> {
     for (let index = 0; index < ADAPTER.SWEEP_DAY_BATCH && cursor <= final; index += 1) {
       try {
         if (meta.state === "deactivating") {
-          await this.env.RESERVATION_DAYS.getByName(
-            `single-location:${cursor}`,
-          ).purgeConsumer({ consumer: "calendar" });
+          await withDeadline(
+            this.env.RESERVATION_DAYS.getByName(
+              `single-location:${cursor}`,
+            ).purgeConsumer({ consumer: "calendar", throughGeneration: meta.generation }),
+            ADAPTER.SWEEP_RPC_DEADLINE_MS,
+          );
         } else {
           await this.pokeDay({ date: cursor });
         }
@@ -1522,6 +1532,8 @@ export class CalendarAdapter extends DurableObject<Env> {
     }
     if (meta.state === "deactivating") {
       this.ctx.storage.transactionSync(() => {
+        const current = this.#readMeta();
+        if (current?.state !== "deactivating" || current.generation !== meta.generation) return;
         const sql = this.ctx.storage.sql;
         sql.exec("DELETE FROM accepted_events");
         sql.exec("DELETE FROM projections");
@@ -1536,7 +1548,6 @@ export class CalendarAdapter extends DurableObject<Env> {
           now,
         );
       });
-      await this.ctx.storage.deleteAlarm();
     } else {
       this.ctx.storage.sql.exec("UPDATE meta SET sweep_cursor = NULL WHERE singleton = 1");
       await this.#armAlarm(now + ADAPTER.SWEEP_REARM_DELAY_S * 1_000);

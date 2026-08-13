@@ -75,6 +75,10 @@ disabled --valid mode--> active (generation = high_water + 1)
 active --Google false→true or fingerprint change--> active + requeue projections
 ```
 
+The purge sweep carries the retiring generation into each day transaction. A concurrent
+reactivation therefore preserves newer outbox rows, and final authority cleanup commits only when
+state and generation still match the retiring snapshot.
+
 ### `accepted_events`
 
 | Field | Rule |

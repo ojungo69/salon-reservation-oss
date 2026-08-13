@@ -111,3 +111,17 @@ export function fullCycleBoundS(partitions: number): number {
   const batches = Math.ceil(partitions / ADAPTER.SWEEP_DAY_BATCH) + ADAPTER.FAULT_BUDGET_F;
   return batches * perBatchS + ADAPTER.SWEEP_RPC_MARGIN_S;
 }
+
+export const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("rpc deadline")), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};

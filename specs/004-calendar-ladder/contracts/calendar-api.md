@@ -97,9 +97,11 @@ whose schedule projection is already absent.
 ```
 
 The final page returns `nextCursor: null`. Repeating a page is idempotent and may report zero
-changes. Calendar configuration absence returns `409 CALENDAR_NOT_CONFIGURED`; calendar-authority
-absence and bounded internal failure return `503 TEMPORARILY_UNAVAILABLE`; invalid input returns
-`400 BAD_REQUEST`.
+changes. If mutation capacity defers a date, `processedDates` excludes it and `nextCursor` remains
+that date so the operator retries it after capacity recovers; no sibling projection from that date
+is changed. Calendar configuration absence returns `409 CALENDAR_NOT_CONFIGURED`;
+calendar-authority absence and bounded internal failure return `503 TEMPORARILY_UNAVAILABLE`;
+invalid input returns `400 BAD_REQUEST`.
 
 ## ReservationDay ↔ CalendarAdapter RPC
 
@@ -116,7 +118,9 @@ absence and bounded internal failure return `503 TEMPORARILY_UNAVAILABLE`; inval
 ```
 
 Calendar requires these fields; LINE may receive null only on released pre-S2 rows and never
-receives `create`. Ack/purge remain consumer-scoped.
+receives `create`. Ack remains consumer-scoped. Calendar deactivation purges only rows through the
+retiring generation so a concurrent reactivation cannot delete newer outbox work; LINE's released
+purge behavior remains unchanged.
 
 ### Safe projection
 

@@ -33,8 +33,11 @@ Google account, or provider network call was used.
 | Public reads could force serialized Calendar DO descriptor work (`CWE-770`) | `installationContext` originally acquired the optional descriptor for generic public reads; a stalled authority could still delay every day operation | **Fixed and suppressed.** Descriptor acquisition now occurs only around day operations, fails open after a 250 ms local deadline, `/api/config` performs zero calendar RPC, and public availability is rate-limited before calendar work. |
 | Wrong feed tokens could force unthrottled authority writes (`CWE-770`) | The initial feed path reached the authority without a limiter and activated the descriptor before rejecting the token | **Fixed and suppressed.** The Worker applies `PUBLIC_RATE_LIMITER` before namespace access and preserves a uniform 404; the authority validates and constant-time compares the token before `descriptor()`. |
 | Public privacy reads could force residual Calendar DO lookups (`CWE-770`) | With both local modes absent, every request queried `hasDisclosure()` | **Fixed and suppressed.** The residual lookup now passes through `PUBLIC_RATE_LIMITER`; a limited request performs no namespace access, and a limited or unavailable lookup conservatively renders bounded conditional disclosure so cleanup state cannot be hidden. |
-| OAuth response headers could arrive before a stalled body (`CWE-400`) | The first deadline ended as soon as `fetch` returned headers, leaving the bounded body reader without a time limit | **Fixed.** The same 10-second abort remains armed through the full body read; a body timeout is retryable and carries no misleading HTTP status. |
+| Google response headers could arrive before a stalled body (`CWE-400`) | The original OAuth and Calendar event deadlines ended as soon as `fetch` returned headers, leaving their bounded body readers without a time limit | **Fixed.** Each 10-second abort remains armed through the full relevant body read; a body timeout is retryable and carries no misleading HTTP status. |
 | A full mutation table could partially replace one reconciliation date | A failed required delete left its projection but sibling projection writes continued without a date watermark | **Fixed.** A bounded preflight defers the entire date before any projection write unless every required delete fits. |
+| A deferred reconciliation date could be skipped by the public cursor | The capacity preflight returned an ordinary zero-count success, so the Worker counted and advanced past the unchanged date | **Fixed.** The authority returns an explicit internal deferred result; the Worker stops before that date and persists/returns it as `nextCursor`. |
+| Calendar sweep RPCs could stall the alarm indefinitely (`CWE-400`) | Calendar drain, ack, and purge lacked the released LINE sweep's per-RPC deadline | **Fixed.** Both adapters now reuse one shared five-second deadline; Calendar records a fault and retries the unchanged day cursor. |
+| Final deactivation could erase a concurrent reactivation (`CWE-362`) | The sweep used pre-RPC state to clear authority tables, disable the new generation, purge all day generations, and delete its alarm | **Fixed.** Day purge is bounded to the retiring generation, final cleanup revalidates state and generation transactionally, and the old sweep never deletes a newly armed alarm. |
 
 Post-remediation source review and focused Workers/DO tests found no remaining reportable attack
 path. Final reportable findings: **0**.
@@ -47,7 +50,7 @@ semgrep scan --metrics=off \
   --config https://gitlab.com/gitlab-org/security-products/sast-rules/-/raw/8a904a2ef98c8c0ef23c1368a6f4334a4e806f5a/rules/lgpl/javascript/ssrf/rule-node_ssrf.yml \
   src/calendar-adapter.ts
 npx vitest run test/worker.test.ts test/calendar-adapter.test.ts \
-  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|fails open when the optional calendar descriptor stalls|conservatively discloses residual calendar state when its lookup cannot run|orders events and exposes only an aggregate feed-auth|prunes expired local calendar state|keeps the OAuth deadline active|defers a whole reconciliation date" \
+  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|fails open when the optional calendar descriptor stalls|conservatively discloses residual calendar state when its lookup cannot run|orders events and exposes only an aggregate feed-auth|prunes expired local calendar state|keeps the OAuth deadline active|keeps the Calendar API deadline active|defers a whole reconciliation date|bounds a stalled Calendar sweep RPC|preserves a reactivated generation|keeps a deferred reconciliation date" \
   --reporter=verbose
 npm run release:audit
 npm audit --audit-level=low
@@ -57,7 +60,7 @@ rg -n "fetch\\(|authorization|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|co
 
 Semgrep ran 400 rules over 25 tracked files and returned its expected `--error` exit 1 for the one
 unchanged Turnstile finding dispositioned above; feature-004 blocking findings are zero. Results:
-the pinned GitLab SSRF rule reported 0 findings; 9 focused security regressions passed; 77
+the pinned GitLab SSRF rule reported 0 findings; 13 focused security regressions passed; 77
 allowlisted files passed the release audit; npm reported 0 vulnerabilities. Source inspection found
 only the allowlisted Google OAuth and Calendar HTTPS origins, `redirect: "manual"`, bounded response
 readers, and no calendar credential/body logging.

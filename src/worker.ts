@@ -2188,11 +2188,13 @@ const handleCalendarReconcile = async (
     if (offset === null || offset < 0 || offset >= context.settings.horizonDays) {
       return errorResponse(400, "BAD_REQUEST");
     }
-    const processedDates = Math.min(7, context.settings.horizonDays - offset);
+    const pageSize = Math.min(7, context.settings.horizonDays - offset);
+    let processedDates = 0;
     let projected = 0;
     let removed = 0;
+    let nextCursor: string | null = null;
     const authority = calendarAdapterStub(env);
-    for (let index = 0; index < processedDates; index += 1) {
+    for (let index = 0; index < pageSize; index += 1) {
       const date = addDays(cursor, index);
       const projection = await dayCallWithRetry<DayCalendarProjectionResult>(
         env,
@@ -2204,13 +2206,17 @@ const handleCalendarReconcile = async (
       );
       if (!projection.ok) return failureResponse(projection);
       const reconciled = await authority.reconcileDay(projection);
+      if (reconciled.deferred === true) {
+        nextCursor = date;
+        break;
+      }
       projected += reconciled.projected;
       removed += reconciled.removed;
+      processedDates += 1;
     }
-    const nextCursor =
-      offset + processedDates < context.settings.horizonDays
-        ? addDays(cursor, processedDates)
-        : null;
+    if (nextCursor === null && offset + processedDates < context.settings.horizonDays) {
+      nextCursor = addDays(cursor, processedDates);
+    }
     await authority.finishReconcile({ nextCursor });
     return json({ ok: true, processedDates, projected, removed, nextCursor });
   } catch {
