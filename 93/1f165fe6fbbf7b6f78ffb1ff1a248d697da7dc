@@ -1,0 +1,26 @@
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_037762f1870375 347-353,355-360
+  s_a546c8dc2f182a::t_c6641fde98ca28 362-377
+  s_a546c8dc2f182a::t_aa57a6f419ea31 344-346,354,361,378-384
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_3e2ae0a49bc310 864,891-892
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_c6f5f0b047edac 48
+  s_a546c8dc2f182a::t_d4634de32417ec 13,17,52-54,75,87,97,99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "931f165fe6fbbf7b6f78ffb1ff1a248d697da7dc",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
