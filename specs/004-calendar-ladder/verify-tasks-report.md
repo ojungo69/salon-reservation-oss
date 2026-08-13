@@ -10,11 +10,11 @@ No deployment or live provider/account was used.
 |---|---|
 | `specify self check` | Up to date: 0.16.2 |
 | `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
-| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 75/75 passed (calendar 49; reservation-day 26) |
+| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 77/77 passed (calendar 51; reservation-day 26) |
 | pinned Semgrep command in `security-scan.md` | 400 rules over 25 tracked files; 1 unchanged Turnstile finding accepted; 0 feature blocking findings |
-| focused security regression command in `security-scan.md` | 26/26 passed |
+| focused security regression command in `security-scan.md` | 28/28 passed |
 | focused calendar privacy cleanup test | 1/1 passed |
-| `npm run check` | core 54/54; Workers/DO 226/226; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run check` | core 54/54; Workers/DO 228/228; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
 | GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 38 files, 321 changed symbols, 72 affected flows reviewed; shared validator/deadline/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
@@ -98,6 +98,11 @@ each queued row attempted an update plus insert because the collection-level 404
 item failure. Event-insert 404 now enters the existing fingerprint-scoped configuration block, so
 one update/insert pair parks the whole queue. The 75-case focused, 226-case full, and 26-case
 security runs cover this classification.
+The final P1 recheck reproduced both post-OAuth expiry before the first Calendar mutation and expiry
+after an update 404 but before its fallback insert. The shared sender now receives the claimed
+`purgeAt`, checks it immediately before every DELETE, PUT, and POST, and returns expired work to the
+existing retention prune. The regressions failed as a provider success instead of expiry and as two
+Calendar calls instead of one; the 77-case focused, 228-case full, and 28-case security runs pass.
 
 ## Manual completion sweep
 
@@ -118,7 +123,7 @@ command evidence above. Every task is accounted for below.
 | T009 | Binding/export/optional secret fixtures and regenerated types are present; `types:check` and dry-run build pass. |
 | T010 | Optional descriptor wiring preserves byte-identical public config, zero absent-mode calendar RPC, and 250 ms fail-open with a durable unbound outbox event under a stalled authority. |
 | T011 | Foundation, LINE regression, and type checks pass within the full command evidence. |
-| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 49-case calendar suite. |
+| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 51-case calendar suite. |
 | T013 | Absent/bad/valid/rotated/exact-query/header/cache/privacy Worker feed tests are in `test/worker.test.ts`. |
 | T014 | Calendar acceptance, projection, bounded cleanup, aggregate auth diagnostics, and serializer are implemented. |
 | T015 | Uniform-404 capability route and no-store/nosniff headers are implemented and tested. |
@@ -140,9 +145,9 @@ command evidence above. Every task is accounted for below.
 | T031 | Privacy documents and state-dependent Worker disclosure name the exact fields and cleanup lifecycle; the zero-adapter static asset keeps no integration copy. |
 | T032 | Cloudflare/release docs cover optional bindings, Free-plan budget, alarms, and forward backout. |
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
-| T034 | 75-case focused, 226-case full, type/build/audit, and 34-case browser results are recorded above. |
+| T034 | 77-case focused, 228-case full, type/build/audit, and 34-case browser results are recorded above. |
 | T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, six fixed CWE-400 candidates, two fixed CWE-362 races, durable timeout recovery, atomic reconciliation-cap/cursor handling, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, missing-target classification, sweep-round budget, required-upsert capacity, residual-disclosure deadline, and first-feed-failure visibility gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, missing-target classification, post-OAuth/subrequest retention, sweep-round budget, required-upsert capacity, residual-disclosure deadline, and first-feed-failure visibility gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |

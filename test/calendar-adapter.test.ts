@@ -260,6 +260,7 @@ describe("calendar adapter pure contracts", () => {
       "upsert",
       projection,
       projection.externalId,
+      Number.POSITIVE_INFINITY,
     );
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
     const usesDeadline = timeout.mock.calls.some(
@@ -1729,6 +1730,68 @@ describe("calendar projection and feed authority", () => {
           .map(({ status }) => status),
       ),
     ).toEqual(["awaiting-configuration", "awaiting-configuration"]);
+  });
+
+  it("does not start a Google request after the caller crosses retention", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    vi.setSystemTime(SUITE_NOW + 2);
+
+    for (const operation of ["upsert", "delete"] as const) {
+      await expect(
+        sendGoogleMutation(
+          credentials,
+          "fixture-access-token",
+          operation,
+          operation === "upsert" ? projection : null,
+          projection.externalId,
+          SUITE_NOW + 1,
+        ),
+      ).resolves.toEqual({ kind: "expired", status: null });
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not start a fallback Google insert after retention", async () => {
+    let allowUpdate!: (response: Response) => void;
+    const updateResponse = new Promise<Response>((resolve) => {
+      allowUpdate = resolve;
+    });
+    let calendarCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return mockGoogleAuthSuccess();
+        }
+        calendarCalls += 1;
+        return calendarCalls === 1 ? updateResponse : new Response(null, { status: 200 });
+      }),
+    );
+    const config = await configFor(suiteDate(9));
+    expect(await dayStub(config.date).createPublic(config, createInput(config.date))).toMatchObject({
+      ok: true,
+    });
+    await adapterStub().pokeDay({ date: config.date });
+    await runInDurableObject(adapterStub(), (_instance, state) => {
+      state.storage.sql.exec("UPDATE google_mutations SET purge_at = ?", SUITE_NOW + 1);
+    });
+
+    let now = SUITE_NOW;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const alarm = runDurableObjectAlarm(adapterStub());
+    await vi.waitFor(() => expect(calendarCalls).toBe(1));
+    now = SUITE_NOW + 2;
+    allowUpdate(new Response(null, { status: 404 }));
+    await alarm;
+
+    expect(calendarCalls).toBe(1);
+    expect(await adapterStub().diagnostics()).toMatchObject({
+      pendingCount: 0,
+      ledger: expect.arrayContaining([
+        expect.objectContaining({ reason: "past-retention", operation: "upsert" }),
+      ]),
+    });
   });
 
   it("bounds retry exhaustion and recovers an expired send claim", async () => {

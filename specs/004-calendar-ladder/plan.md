@@ -82,7 +82,7 @@ per installation, one Google target calendar
 | Provider outage/quota | per-row claim, bounded backoff, retryable classification, terminal ledger, no booking wait; 429/5xx/exhaustion tests |
 | Mutation capacity | remove cancelled ICS projections independently; retain the day outbox row or an atomically stale reconciliation date until its Google delete fits; failed upserts may yield to newer work, but never evict a desired-absence or live record |
 | Configuration gap | no new external call while invalid; retained committed source plus owner cursor reconciliation after restore |
-| Data retention | every projection/mutation carries parent purge boundary; pre-send check, terminalize/delete at boundary, bounded ledger/counters |
+| Data retention | every projection/mutation carries parent purge boundary; check immediately before each Calendar request, prune at boundary, bounded ledger/counters |
 | Disable/rotation race | descriptor lease validated in day transaction; missing configuration resets the purge cursor and stops new descriptors; old-generation rows cancel/purge after the lease window |
 | Availability coupling | calendar data is never read by availability/core; byte-equality tests before/after enable, outage, retry, reconcile |
 | Backout/data loss | new DO kept by forward backout until drain; no namespace tombstone; day schema change additive and legacy LINE rows accepted |
@@ -223,7 +223,9 @@ inactive/auth failure. Owner diagnostics expose only an aggregate failure count.
   can supply a URL/host. Mutation body is reconstructed canonically from the stored minimal desired
   event for every attempt. The same 10-second deadline covers each bounded error response body.
 - Claim commits before outbound fetch; a lease recovers dead sends. Settle verifies claim/generation
-  before update. Newer desired state invalidates the older outcome.
+  before update. Newer desired state invalidates the older outcome. The claimed parent purge
+  boundary is rechecked after OAuth and immediately before every initial, fallback, or convergence
+  Calendar request; expired work returns to the ordinary retention prune without another fetch.
 - Retry uses the existing absolute offsets and send batch. `Retry-After` is not trusted to grow the
   bound; safe HTTP/reason classification is in `research.md` R6.
 - No inbound list/sync/watch/free-busy method exists in code or credentials.

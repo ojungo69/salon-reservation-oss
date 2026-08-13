@@ -181,4 +181,6 @@ handling and `sendUpdates=none`. The complete event body contains only:
 Update always omits `id`; insert always includes it. No attendees, reminders, description,
 location, extended properties, or contact fields are sent. Response bodies are bounded and never
 persisted. An event update 404 falls through to insert; an insert 404 identifies an unavailable
-target calendar and parks the fingerprint-scoped queue as a configuration failure.
+target calendar and parks the fingerprint-scoped queue as a configuration failure. The parent
+retention boundary is checked immediately before every DELETE, PUT, or POST, including after OAuth
+and between fallback calls; no Calendar mutation begins at or beyond it.

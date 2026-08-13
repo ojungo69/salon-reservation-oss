@@ -313,7 +313,8 @@ type GoogleMutationOutcome =
   | { kind: "success"; status: number }
   | { kind: "retryable"; status: number | null }
   | { kind: "configuration"; status: number | null }
-  | { kind: "permanent"; status: number | null };
+  | { kind: "permanent"; status: number | null }
+  | { kind: "expired"; status: null };
 
 const googleErrorReasons = async (response: Response): Promise<string[] | null> => {
   const bytes = await readBoundedBytes(response.body, RESPONSE_MAX_BYTES);
@@ -366,12 +367,14 @@ export const sendGoogleMutation = async (
   operation: "upsert" | "delete",
   event: CalendarProjection | null,
   externalId: string,
+  purgeAt: number,
 ): Promise<GoogleMutationOutcome> => {
   const headers = {
     authorization: `Bearer ${accessToken}`,
     "content-type": "application/json",
   };
   if (operation === "delete") {
+    if (purgeAt <= Date.now()) return { kind: "expired", status: null };
     const response = await calendarRequest(googleEventUrl(credentials.calendarId, externalId), {
       method: "DELETE",
       headers,
@@ -389,12 +392,14 @@ export const sendGoogleMutation = async (
       headers,
       body: JSON.stringify(googleEventBody(event, false)),
     });
+  if (purgeAt <= Date.now()) return { kind: "expired", status: null };
   const first = await update();
   if (first === null) return { kind: "retryable", status: null };
   if (first.status >= 200 && first.status < 300) {
     return { kind: "success", status: first.status };
   }
   if (first.status !== 404) return responseOutcome(first);
+  if (purgeAt <= Date.now()) return { kind: "expired", status: null };
   const inserted = await calendarRequest(googleEventUrl(credentials.calendarId), {
     method: "POST",
     headers,
@@ -406,6 +411,7 @@ export const sendGoogleMutation = async (
   }
   if (inserted.status === 404) return { kind: "configuration", status: 404 };
   if (inserted.status !== 409) return responseOutcome(inserted);
+  if (purgeAt <= Date.now()) return { kind: "expired", status: null };
   const converged = await update();
   if (converged === null) return { kind: "retryable", status: null };
   return responseOutcome(converged);
@@ -1594,8 +1600,14 @@ export class CalendarAdapter extends DurableObject<Env> {
         row.operation,
         event,
         row.external_id,
+        row.purge_at,
       );
-      this.#settleGoogle(row, outcome, Date.now(), credentialFingerprint);
+      const settledAt = Date.now();
+      if (outcome.kind === "expired") {
+        this.#pruneRetention(settledAt);
+        continue;
+      }
+      this.#settleGoogle(row, outcome, settledAt, credentialFingerprint);
       if (outcome.kind === "configuration") return;
     }
   }

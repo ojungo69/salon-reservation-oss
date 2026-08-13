@@ -253,7 +253,8 @@ they already fit; add only calendar-specific queue/projection caps.
 Google recommends truncated exponential backoff for time-based quota errors and warns against
 indefinite retry. Retryable and payload-specific failures remain row-isolated; a shared credential
 rejection deliberately parks all rows for that fingerprint. Every row carries the parent `purgeAt`;
-no send begins at or beyond it. Projection,
+the sender checks it after OAuth and immediately before every initial, fallback, or convergence
+Calendar request, so no mutation begins at or beyond it. Projection,
 dedup, queue, counters, and ledger are capped/pruned. At retention, an unresolved external deletion
 is terminally recorded before the local reference is discarded; external Calendar never becomes
 the system of record.
