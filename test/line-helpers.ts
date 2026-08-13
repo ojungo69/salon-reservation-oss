@@ -1,0 +1,205 @@
+// Shared fixtures for the LINE adapter suites. Fictional values only.
+import { env } from "cloudflare:test";
+
+import type { AdapterDelivery } from "../src/adapter-delivery.ts";
+import type { InstallationConfig, ReadinessRuntime } from "../src/installation-config.ts";
+import type { DayConfig, ReservationDay } from "../src/reservation-day.ts";
+
+export const LINE_TEST_SECRET = "line-test-channel-secret-0123456789abcdef";
+
+export const identifiers = {
+  liffId: "1234567890-abcdefgh",
+  loginChannelId: "1234567890",
+  messagingChannelId: "9876543210",
+};
+
+// Derive the suite clock from the real wall clock before any fake timers land,
+// roughly one year ahead, so scheduled alarms never collide with the real year.
+const wallMs = Date.now();
+const wall = new Date(wallMs);
+export const SUITE_NOW = Date.UTC(
+  wall.getUTCFullYear() + 1,
+  wall.getUTCMonth(),
+  wall.getUTCDate(),
+  15,
+  0,
+  0,
+  0,
+);
+
+/** Calendar date (UTC) `dayOffset` days after the suite's base midnight-ish NOW. */
+export const suiteDate = (dayOffset: number): string =>
+  new Date(SUITE_NOW + dayOffset * 86_400_000).toISOString().slice(0, 10);
+
+/** Far-future retention deadline that stays ahead of any suite clock advance. */
+export const SUITE_PURGE_AT = SUITE_NOW + 10 * 365 * 86_400_000;
+
+export const lineDay: DayConfig & {
+  settingsVersion: number;
+  resources: Array<{ id: string; label: string; active: boolean }>;
+  services: Array<{
+    id: string;
+    label: string;
+    category: string | null;
+    durationMinutes: number;
+    cleanupMinutes: number;
+    priceYen: number | null;
+    eligibleResourceIds: string[];
+    active: boolean;
+  }>;
+  opensAt: string;
+  closesAt: string;
+  startIntervalMinutes: number;
+  consentVersion: string;
+} = {
+  date: suiteDate(1),
+  settingsVersion: 7,
+  resourceIds: ["resource-chair-a"],
+  resources: [{ id: "resource-chair-a", label: "架空チェア A", active: true }],
+  services: [
+    {
+      id: "service-cut",
+      label: "架空カット",
+      category: "ヘア",
+      durationMinutes: 45,
+      cleanupMinutes: 15,
+      priceYen: 4_000,
+      eligibleResourceIds: ["resource-chair-a"],
+      active: true,
+    },
+  ],
+  opensAt: "09:00",
+  closesAt: "13:00",
+  startIntervalMinutes: 30,
+  startTimes: ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00"],
+  slotMinutes: 60,
+  consentVersion: "consent-v2",
+  purgeAt: SUITE_PURGE_AT,
+};
+
+export const dayStub = (date = lineDay.date) =>
+  env.RESERVATION_DAYS.getByName(
+    `single-location:${date}`,
+  ) as unknown as DurableObjectStub<ReservationDay>;
+
+export const deliveryStub = () =>
+  env.ADAPTER_DELIVERY.getByName(
+    "installation",
+  ) as unknown as DurableObjectStub<AdapterDelivery>;
+
+export const installationStub = () =>
+  env.INSTALLATION_CONFIG.getByName(
+    "installation",
+  ) as unknown as DurableObjectStub<InstallationConfig>;
+
+export const testRuntime = (
+  overrides: Partial<ReadinessRuntime> = {},
+): ReadinessRuntime => ({
+  ownerSecretPresent: true,
+  ownerAuthenticated: true,
+  turnstileSecretPresent: true,
+  lineSecretPresent: true,
+  hostname: "example.test",
+  ...overrides,
+});
+
+export const configureTestProtection = async (): Promise<void> => {
+  const state = await installationStub().getState();
+  const current = state.settingsVersions.find(
+    (version) => version.version === state.activeSettingsVersion,
+  );
+  if (current === undefined) throw new Error("missing active settings");
+  const updated = await installationStub().executeCommand(
+    {
+      type: "settings.update",
+      commandId: crypto.randomUUID(),
+      expectedSettingsVersion: state.activeSettingsVersion,
+      settings: {
+        ...current.settings,
+        allowedHostname: testRuntime().hostname,
+        turnstileSiteKey: "browser-test-site-key-0000000000000000",
+      },
+    },
+    testRuntime(),
+  );
+  if (!updated.ok) throw new Error("test protection setup failed");
+};
+
+export const enableLineAdapter = async (): Promise<void> => {
+  await configureTestProtection();
+  const settings = await installationStub().executeLineCommand(
+    {
+      operation: "line.settings",
+      commandId: crypto.randomUUID(),
+      expectedLifecycleVersion: 0,
+      identifiers,
+    },
+    testRuntime(),
+  );
+  if (!settings.ok) throw new Error("settings command failed");
+  const enabled = await installationStub().executeLineCommand(
+    {
+      operation: "line.enable",
+      commandId: crypto.randomUUID(),
+      expectedLifecycleVersion: settings.lifecycleVersion,
+      identifiers,
+    },
+    testRuntime(),
+  );
+  if (!enabled.ok) throw new Error("enable command failed");
+};
+
+export const MANAGEMENT_KEY = "K".repeat(43);
+
+export const sha256Hex = async (value: string): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+export const createPendingReservation = async (
+  overrides: Partial<{
+    date: string;
+    startTime: string;
+    customerName: string;
+    contact: string;
+  }> = {},
+): Promise<string> => {
+  const date = overrides.date ?? lineDay.date;
+  const created = await dayStub(date).createPublic(
+    { ...lineDay, date },
+    {
+      commandId: crypto.randomUUID(),
+      settingsVersion: lineDay.settingsVersion,
+      serviceIds: ["service-cut"],
+      resourceId: "resource-chair-a",
+      date,
+      startTime: overrides.startTime ?? "09:00",
+      customerName: overrides.customerName ?? "架空 花子",
+      contact: overrides.contact ?? "hanako@example.invalid",
+      consentVersion: lineDay.consentVersion,
+      managementDigest: await sha256Hex(MANAGEMENT_KEY),
+    },
+  );
+  if (!created.ok) throw new Error("fixture reservation failed");
+  return created.reservationId;
+};
+
+export const signWebhookBody = async (
+  secret: string,
+  body: string,
+): Promise<string> => {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return btoa(String.fromCharCode(...new Uint8Array(mac)));
+};

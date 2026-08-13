@@ -6,6 +6,7 @@ import { defineConfig, devices } from "@playwright/test";
 import {
   ALLOWED_HOSTNAME,
   BROWSER_ORIGIN,
+  LINE_MESSAGING_CHANNEL_SECRET,
   OWNER_TOKEN,
   PORT,
   STATE_DIR,
@@ -132,6 +133,7 @@ export default defineConfig({
       `--persist-to ${STATE_DIR}`,
       `--var OWNER_TOKEN:${OWNER_TOKEN}`,
       `--var TURNSTILE_SECRET:${TURNSTILE_SECRET}`,
+      `--var LINE_MESSAGING_CHANNEL_SECRET:${LINE_MESSAGING_CHANNEL_SECRET}`,
     ].join(" "),
     url: `${SERVER_ORIGIN}/api/config`,
     ignoreHTTPSErrors: true,

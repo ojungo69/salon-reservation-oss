@@ -23,3 +23,9 @@
 
 /setup.html
   Cache-Control: no-store
+
+/line.html
+  Cache-Control: no-store
+
+/line
+  Cache-Control: no-store

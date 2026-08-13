@@ -11,7 +11,7 @@
   "assets": {
     "binding": "ASSETS",
     "directory": "./public",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/line", "/line/", "/line.html", "/line/index", "/line/index.html", "/line-link.mjs", "/line-liff.mjs", "/privacy", "/privacy.html"]
   },
   "durable_objects": {
     "bindings": [
@@ -22,6 +22,10 @@
       {
         "name": "INSTALLATION_CONFIG",
         "class_name": "InstallationConfig"
+      },
+      {
+        "name": "ADAPTER_DELIVERY",
+        "class_name": "AdapterDelivery"
       }
     ]
   },
@@ -31,6 +35,15 @@
       "storage": "sqlite"
     },
     "InstallationConfig": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    // Optional LINE adapter delivery authority. A compatible backout is a
+    // forward deploy that retains this entry, binding, export, and class; do
+    // not use wrangler rollback to a pre-adapter deployment. A "deleted"
+    // tombstone would destroy the namespace and its data. See
+    // specs/003-line-adapter/research.md R5 and docs/RELEASING.md.
+    "AdapterDelivery": {
       "type": "durable-object",
       "storage": "sqlite"
     }
