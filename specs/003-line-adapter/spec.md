@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-12
 
-**Status**: Implemented; PR gates pending
+**Status**: Implemented; PR #37 ready for review
 
 **Input**: Roadmap stage S1 — "Optional LINE identity and notifications" — implementing issue #1's
 LINE adapter scope: LIFF bootstrap and login, server-side token verification, account-link state,

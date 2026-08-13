@@ -2,7 +2,7 @@
 
 **Branch**: `feat/line-adapter` · **Spec**: [spec.md](spec.md) · **Research**: [research.md](research.md)
 
-**Created**: 2026-08-12 · **Status**: Implemented; PR gates pending
+**Created**: 2026-08-12 · **Status**: Implemented; PR #37 ready for review
 
 ## Constitution check
 
