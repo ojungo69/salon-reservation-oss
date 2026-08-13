@@ -203,6 +203,37 @@ describe("calendar adapter pure contracts", () => {
       ),
     ).resolves.toEqual({ ok: false, kind: "retryable", status: null });
   });
+
+  it("keeps the OAuth deadline active while reading the response body", async () => {
+    vi.useFakeTimers();
+    try {
+      let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+      let requestSignal: AbortSignal | null = null;
+      const pending = requestGoogleAccessToken(
+        credentials,
+        vi.fn<typeof fetch>(async (_input, init) => {
+          requestSignal = init?.signal ?? null;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodyController = controller;
+              requestSignal?.addEventListener("abort", () => {
+                controller.error(new DOMException("timed out", "AbortError"));
+              });
+            },
+          });
+          return new Response(body, { status: 200 });
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(ADAPTER.OUTBOUND_TIMEOUT_MS);
+      const aborted = requestSignal?.aborted ?? false;
+      if (!aborted) bodyController.error(new Error("test cleanup"));
+      expect(await pending).toEqual({ ok: false, kind: "retryable", status: null });
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("calendar projection and feed authority", () => {
@@ -943,67 +974,86 @@ describe("calendar projection and feed authority", () => {
     });
   });
 
-  it("keeps a stale projection until reconciliation can retain its delete", async () => {
+  it("defers a whole reconciliation date until every required delete fits", async () => {
     const config = await configFor(suiteDate(23));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
-    expect(created).toMatchObject({ ok: true, status: "approved" });
-    if (!created.ok) throw new Error("fixture create failed");
+    const removed = await day.createOwner(config, createInput(config.date));
+    const retained = await day.createOwner(config, createInput(config.date, "11:00"));
+    expect(removed).toMatchObject({ ok: true, status: "approved" });
+    expect(retained).toMatchObject({ ok: true, status: "approved" });
+    if (!removed.ok || !retained.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
+    const authoritative = await day.calendarProjection(config);
+    expect(authoritative).toMatchObject({ ok: true, events: expect.any(Array) });
+    if (!authoritative.ok) throw new Error("fixture projection failed");
+    const retainedEvent = authoritative.events.find(
+      ({ reservationId }) => reservationId === retained.reservationId,
+    );
+    if (retainedEvent === undefined) throw new Error("fixture retained event missing");
+    const replacement = {
+      ...authoritative,
+      events: [{ ...retainedEvent, serviceLabel: "架空の変更後サービス" }],
+    };
     await runInDurableObject(adapter, (_instance, state) => {
       state.storage.sql.exec(
-        "DELETE FROM google_mutations WHERE reservation_id = ?",
-        created.reservationId,
+        "DELETE FROM google_mutations WHERE reservation_id IN (?, ?)",
+        removed.reservationId,
+        retained.reservationId,
       );
     });
     await fillGoogleMutationQueue();
-    const absent = {
-      ok: true as const,
-      date: config.date,
-      purgeAt: config.purgeAt,
-      watermark: { generation: config.calendarAdapter?.generation ?? 1, seq: 1 },
-      events: [],
-    };
 
-    await expect(adapter.reconcileDay(absent)).resolves.toEqual({
+    await expect(adapter.reconcileDay(replacement)).resolves.toEqual({
       ok: true,
       projected: 0,
       removed: 0,
     });
     expect(
-      await runInDurableObject(adapter, (_instance, state) =>
-        state.storage.sql
+      await runInDurableObject(adapter, (_instance, state) => ({
+        removed: state.storage.sql
           .exec<{ n: number }>(
             "SELECT COUNT(*) AS n FROM projections WHERE reservation_id = ?",
-            created.reservationId,
+            removed.reservationId,
           )
           .one().n,
-      ),
-    ).toBe(1);
+        retained: state.storage.sql
+          .exec<{ service_label: string }>(
+            "SELECT service_label FROM projections WHERE reservation_id = ?",
+            retained.reservationId,
+          )
+          .one().service_label,
+      })),
+    ).toEqual({ removed: 1, retained: "架空カット" });
 
     await runInDurableObject(adapter, (_instance, state) => {
       state.storage.sql.exec(
-        `DELETE FROM google_mutations WHERE reservation_id = (
-           SELECT reservation_id FROM google_mutations ORDER BY reservation_id LIMIT 1
+        `DELETE FROM google_mutations WHERE reservation_id IN (
+           SELECT reservation_id FROM google_mutations ORDER BY reservation_id LIMIT 2
          )`,
       );
     });
-    await expect(adapter.reconcileDay(absent)).resolves.toEqual({
+    await expect(adapter.reconcileDay(replacement)).resolves.toEqual({
       ok: true,
-      projected: 0,
+      projected: 1,
       removed: 1,
     });
     expect(
-      await runInDurableObject(adapter, (_instance, state) =>
-        state.storage.sql
+      await runInDurableObject(adapter, (_instance, state) => ({
+        removed: state.storage.sql
           .exec<{ operation: string }>(
             "SELECT operation FROM google_mutations WHERE reservation_id = ?",
-            created.reservationId,
+            removed.reservationId,
           )
           .one().operation,
-      ),
-    ).toBe("delete");
+        retained: state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            retained.reservationId,
+          )
+          .one().operation,
+      })),
+    ).toEqual({ removed: "delete", retained: "upsert" });
   });
 
   it("converges create, update, and delete on one stable Google event", async () => {

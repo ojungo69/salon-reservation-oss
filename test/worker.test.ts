@@ -3432,6 +3432,7 @@ describe("T035 guided setup API", () => {
     );
     const baseline = await baselineResponse.text();
     expect(baseline).not.toContain("カレンダー連携を利用する場合");
+    expect(baseline).not.toContain("有効な任意連携がある場合");
 
     feedSecret = token;
     expect(await calendar.descriptor()).toMatchObject({ consumer: "calendar", phase: "active" });

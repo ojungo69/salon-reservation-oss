@@ -102,8 +102,9 @@ surfaced until retention frees evidence. Reservation commits remain unaffected.
 There is at most one row per reservation. ICS serializes only these rows ordered by start/external ID.
 Rejection, cancellation, expiry, or retention purge deletes this row after desired Google absence
 is recorded. If the mutation table is full, the row remains as recoverable desired-state evidence
-until reconciliation can retain the delete. Completion/no-show bookkeeping keeps the confirmed
-schedule row.
+until reconciliation can retain the delete; that reconciliation leaves the entire date unchanged
+rather than partially replacing sibling projections. Completion/no-show bookkeeping keeps the
+confirmed schedule row.
 
 ### `projection_watermarks`
 
@@ -188,7 +189,7 @@ object exists only in request/alarm memory. Only a digest discriminator may be p
 - No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
 - `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
   visible in counters/ledger. A terminal event remains unacknowledged, or reconciliation retains
-  its stale projection, until the required delete fits.
+  its stale date projection set, until every required delete for that date fits.
 - The ledger uses the released 500-row/30-day bounds; reconciliation/sweep cursors are scalars.
 - When both modes are absent and the final purge sweep completes, projection/mutation/event rows and
   calendar outbox consumer rows are gone; bounded aggregate diagnostics drain to quiescence.

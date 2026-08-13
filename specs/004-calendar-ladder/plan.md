@@ -207,9 +207,9 @@ inactive/auth failure. Owner diagnostics expose only an aggregate failure count.
 
 ### 5. Google delivery
 
-- Token exchange: fixed HTTPS URL, form body, manual redirects, 10-second timeout, bounded response,
-  exact allowlist. Memory cache is keyed by a SHA-256 discriminator of current credentials and ends
-  before provider expiry.
+- Token exchange: fixed HTTPS URL, form body, manual redirects, 10-second timeout covering the full
+  bounded response body, exact allowlist. Memory cache is keyed by a SHA-256 discriminator of current
+  credentials and ends before provider expiry.
 - Event endpoint: fixed Google host and percent-encoded secret calendar ID/path event ID; no caller
   can supply a URL/host. Mutation body is reconstructed canonically from the stored minimal desired
   event for every attempt.
@@ -230,9 +230,10 @@ longer present. The projection carries the calendar outbox generation/sequence o
 the authority advances that watermark for both event delivery and replacement, so neither a
 delayed older handoff nor an older replacement can undo newer committed calendar state. Response
 returns only `processedDates`, `nextCursor | null`, and aggregate counts. Repeated calls are
-idempotent. With valid Google configuration, reconciliation also requeues retained failed or
-configuration-blocked deletes that no longer have a projection row. Status exposes last completed
-reconciliation and next cursor.
+idempotent. If every required Google delete cannot fit, the whole date replacement remains unchanged
+without advancing its watermark. With valid Google configuration, reconciliation also requeues
+retained failed or configuration-blocked deletes that no longer have a projection row. Status
+exposes last completed reconciliation and next cursor.
 
 ### 7. Owner and public routes
 

@@ -235,11 +235,11 @@ export const requestGoogleAccessToken = async (
       signal: controller.signal,
     });
   } catch {
-    return { ok: false, kind: "retryable", status: null };
-  } finally {
     clearTimeout(timeout);
+    return { ok: false, kind: "retryable", status: null };
   }
   if (response.status !== 200) {
+    clearTimeout(timeout);
     return {
       ok: false,
       kind:
@@ -250,7 +250,15 @@ export const requestGoogleAccessToken = async (
     };
   }
   const bytes = await readBoundedBytes(response.body, RESPONSE_MAX_BYTES);
-  if (bytes === null) return { ok: false, kind: "protocol", status: response.status };
+  const timedOut = controller.signal.aborted;
+  clearTimeout(timeout);
+  if (bytes === null) {
+    return {
+      ok: false,
+      kind: timedOut ? "retryable" : "protocol",
+      status: timedOut ? null : response.status,
+    };
+  }
   try {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
@@ -1116,8 +1124,23 @@ export class CalendarAdapter extends DurableObject<Env> {
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
         .toArray()
         .filter(({ reservation_id }) => !wanted.has(reservation_id));
+      if (meta.googleSeen) {
+        const queued = new Set(
+          sql
+            .exec<{ reservation_id: string }>("SELECT reservation_id FROM google_mutations")
+            .toArray()
+            .map(({ reservation_id }) => reservation_id),
+        );
+        const missingDeletes = removedRows.filter(
+          ({ reservation_id }) => !queued.has(reservation_id),
+        ).length;
+        if (queued.size + missingDeletes > CALENDAR_ROW_CAP) {
+          this.#record("overflow", "delete");
+          this.#bump("mutation_overflow");
+          return { ok: true as const, projected: 0, removed: 0 };
+        }
+      }
       let removed = 0;
-      let fullyApplied = true;
       for (const row of removedRows) {
         if (
           meta.googleSeen &&
@@ -1131,8 +1154,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             meta.googleConfigured,
           )
         ) {
-          fullyApplied = false;
-          continue;
+          throw new Error("calendar delete preflight failed");
         }
         sql.exec("DELETE FROM projections WHERE reservation_id = ?", row.reservation_id);
         removed += 1;
@@ -1188,7 +1210,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         if (existing === undefined) projectionCount += 1;
         projected += 1;
       }
-      if (input.purgeAt > now && fullyApplied) {
+      if (input.purgeAt > now) {
         this.#advanceProjectionWatermark(
           input.date,
           input.watermark.generation,
