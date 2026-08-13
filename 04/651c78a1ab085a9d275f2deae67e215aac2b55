@@ -1,0 +1,29 @@
+specs/003-line-adapter/plan.md
+  s_a546c8dc2f182a::t_3c5422f8bb0e92 208-209
+  s_a546c8dc2f182a::t_489626e0c30e3b 189-191
+test/adapter-delivery.test.ts
+  s_a546c8dc2f182a::t_07ef73c6266701 1260-1301
+  s_a546c8dc2f182a::t_1bf65e470683b2 1118-1135
+specs/003-line-adapter/tasks.md
+  s_a546c8dc2f182a::t_489626e0c30e3b 106
+  s_a546c8dc2f182a::t_3c5422f8bb0e92 121
+src/adapter-delivery.ts
+  s_a546c8dc2f182a::t_a58ceb14a6b0be 926-927
+  s_a546c8dc2f182a::t_489626e0c30e3b 104-106,1030-1045,1289,1414-1421
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "04651c78a1ab085a9d275f2deae67e215aac2b55",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
