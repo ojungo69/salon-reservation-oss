@@ -29,6 +29,13 @@ const credentials: GoogleCalendarCredentials = {
   calendarId: "fixture+calendar@example.invalid",
 };
 
+const mockGoogleAuthSuccess = (expiresIn = 3_600): Response =>
+  Response.json({
+    access_token: "fixture-access-token",
+    token_type: "Bearer",
+    expires_in: expiresIn,
+  });
+
 const projection: CalendarProjection = {
   uid: "opaque@example.invalid",
   externalId: `sr${"a".repeat(64)}`,
@@ -98,6 +105,9 @@ describe("calendar adapter pure contracts", () => {
     expect(googleEventUrl(credentials.calendarId, projection.externalId)).toBe(
       `https://www.googleapis.com/calendar/v3/calendars/fixture%2Bcalendar%40example.invalid/events/${projection.externalId}?sendUpdates=none`,
     );
+    expect(new URL(googleEventUrl("https://attacker.invalid/internal")).origin).toBe(
+      "https://www.googleapis.com",
+    );
     expect(googleEventBody(projection, true)).toEqual({
       id: projection.externalId,
       summary: projection.serviceLabel,
@@ -125,12 +135,7 @@ describe("calendar adapter pure contracts", () => {
   });
 
   it("exchanges refresh credentials only at the fixed token endpoint", async () => {
-    const fetcher = vi.fn<typeof fetch>(async (_input, _init) =>
-      new Response(
-        JSON.stringify({ access_token: "fixture-access-token", token_type: "Bearer", expires_in: 3600 }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
+    const fetcher = vi.fn<typeof fetch>(async () => mockGoogleAuthSuccess());
     const now = Date.parse("2026-08-13T00:00:00.000Z");
     await expect(requestGoogleAccessToken(credentials, fetcher, now)).resolves.toEqual({
       ok: true,
@@ -969,11 +974,7 @@ describe("calendar projection and feed authority", () => {
         const url = String(input);
         calls.push({ url, init });
         if (url === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         if (init.method === "PUT") {
           updateCalls += 1;
@@ -1043,11 +1044,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input, init = {}) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         methods.push(String(init.method));
         calendarCall += 1;
@@ -1078,11 +1075,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input, init = {}) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         methods.push(String(init.method));
         calendarCall += 1;
@@ -1106,11 +1099,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input, init = {}) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         return new Response(null, {
           status: init.method === "DELETE" ? deleteStatus : 200,
@@ -1143,11 +1132,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input, init = {}) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         methods.push(String(init.method));
         return new Response(null, { status: 204 });
@@ -1219,11 +1204,7 @@ describe("calendar projection and feed authority", () => {
         "fetch",
         vi.fn<typeof fetch>(async (input, init = {}) => {
           if (String(input) === "https://oauth2.googleapis.com/token") {
-            return Response.json({
-              access_token: "fixture-access-token",
-              token_type: "Bearer",
-              expires_in: 3600,
-            });
+            return mockGoogleAuthSuccess();
           }
           if (init.method === "PUT") {
             return responseBody === null
@@ -1281,11 +1262,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 86400,
-          });
+          return mockGoogleAuthSuccess(86_400);
         }
         calendarCalls += 1;
         return new Response(null, { status: 503 });
@@ -1315,11 +1292,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input) =>
         String(input) === "https://oauth2.googleapis.com/token"
-          ? Response.json({
-              access_token: "fixture-access-token",
-              token_type: "Bearer",
-              expires_in: 3600,
-            })
+          ? mockGoogleAuthSuccess()
           : new Response(null, { status: 200 }),
       ),
     );
@@ -1375,11 +1348,7 @@ describe("calendar projection and feed authority", () => {
       "fetch",
       vi.fn<typeof fetch>(async (input) => {
         if (String(input) === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            access_token: "fixture-access-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          });
+          return mockGoogleAuthSuccess();
         }
         calendarCalls += 1;
         if (calendarCalls === 1) return firstResponse;

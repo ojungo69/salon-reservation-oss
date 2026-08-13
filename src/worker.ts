@@ -360,7 +360,9 @@ const withCalendarAdapter = async (
     const calendarAdapter = await Promise.race([
       calendarAdapterStub(env).descriptor(),
       new Promise<null>((resolve) => {
-        deadline = setTimeout(() => resolve(null), CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS);
+        deadline = setTimeout(() => {
+          resolve(null);
+        }, CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS);
       }),
     ]);
     return calendarAdapter === null ? context : { ...context, calendarAdapter };

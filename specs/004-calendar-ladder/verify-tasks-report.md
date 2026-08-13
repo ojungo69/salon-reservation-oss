@@ -16,7 +16,7 @@ No deployment or live provider/account was used.
 | focused calendar privacy cleanup test | 1/1 passed |
 | `npm run check` | core 54/54; Workers/DO 210/210; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
-| GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 37 files, 321 changed symbols, 72 affected flows reviewed; shared validator/call wrapper correctly classified critical blast radius |
+| GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 37 files, 318 changed symbols, 72 affected flows reviewed; shared validator/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
 
 The Workers pool prints expected unhandled-RPC warnings in tests that deliberately replace a
@@ -45,7 +45,11 @@ stalled optional descriptor could block reservation paths. Regressions failed be
 an acknowledged orphan delete and a one-second availability watchdog. Terminal ingress now retains
 its outbox event and projection, reconciliation retains the projection without advancing its
 watermark, and both recover when a slot frees; descriptor acquisition fails open after 250 ms. The
-61-case focused and 210-case full runs above pass.
+61-case focused and 210-case full runs above pass. Final static-analysis follow-up made the fixed
+Google origin an explicit pre-fetch allowlist, consolidated repeated OAuth fixtures, and clarified
+two duplicate contract headings. The exact GitLab SSRF rule changed from one finding to zero; the
+large-file split was rejected as a dependency-free code move with no behavioral or measured
+maintenance benefit.
 
 ## Manual completion sweep
 
@@ -89,8 +93,8 @@ command evidence above. Every task is accounted for below.
 | T032 | Cloudflare/release docs cover optional bindings, Free-plan budget, alarms, and forward backout. |
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
 | T034 | 61-case focused, 210-case full, type/build/audit, and 34-case browser results are recorded above. |
-| T035 | `security-scan.md` records the pinned 400-rule Semgrep run, complete adversarial review, three fixed CWE-770 candidates, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering, retained-delete recovery, conservative-disclosure, failed-day purge cursor, mutation-cap delete, and descriptor-stall gaps. Ponytail reused native Promise/SQLite and the existing durable recovery path, with no dependency or new abstraction. Focused/full reruns pass. |
+| T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, one accepted baseline finding, and zero feature-blocking findings. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering, retained-delete recovery, conservative-disclosure, failed-day purge cursor, mutation-cap delete, and descriptor-stall gaps. Ponytail reused native Promise/SQLite and the existing durable recovery path, consolidated repeated fixtures, and rejected a behavior-neutral file split; no dependency or speculative abstraction was added. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |

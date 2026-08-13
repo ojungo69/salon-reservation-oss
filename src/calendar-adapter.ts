@@ -16,6 +16,7 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 const GOOGLE_KEYS = ["calendarId", "clientId", "clientSecret", "refreshToken"] as const;
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3/calendars";
+const CALENDAR_ORIGINS = ["https://www.googleapis.com"];
 const RESPONSE_MAX_BYTES = 16 * 1024;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -216,7 +217,9 @@ export const requestGoogleAccessToken = async (
   now = Date.now(),
 ): Promise<GoogleTokenResult> => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ADAPTER.OUTBOUND_TIMEOUT_MS);
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, ADAPTER.OUTBOUND_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetcher(TOKEN_URL, {
@@ -294,7 +297,9 @@ export const getGoogleAccessToken = async (
   return result;
 };
 
-export const clearGoogleTokenCacheForTests = (): void => googleTokenCache.clear();
+export const clearGoogleTokenCacheForTests = (): void => {
+  googleTokenCache.clear();
+};
 
 type GoogleMutationOutcome =
   | { kind: "success"; status: number }
@@ -326,9 +331,15 @@ const calendarRequest = async (
   init: RequestInit,
 ): Promise<Response | null> => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ADAPTER.OUTBOUND_TIMEOUT_MS);
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, ADAPTER.OUTBOUND_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, redirect: "manual", signal: controller.signal });
+    const target = new URL(url);
+    if (CALENDAR_ORIGINS.includes(target.origin)) {
+      return await fetch(target, { ...init, redirect: "manual", signal: controller.signal });
+    }
+    return null;
   } catch {
     return null;
   } finally {

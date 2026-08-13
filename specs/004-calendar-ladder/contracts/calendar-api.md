@@ -9,7 +9,7 @@ ID, provider body, or authorization header.
 
 Query is exact: `?token=<43-char-base64url>` and no other parameter is accepted.
 
-### Success
+### Feed success
 
 ```http
 HTTP/1.1 200 OK
@@ -84,7 +84,7 @@ Each page replaces the selected days from committed reservation state. With vali
 configuration, it also requeues retained failed or configuration-blocked deletes, including rows
 whose schedule projection is already absent.
 
-### Success
+### Reconciliation success
 
 ```json
 {
