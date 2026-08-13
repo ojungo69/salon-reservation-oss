@@ -200,6 +200,10 @@ provider cannot reverse the value to the internal reservation identifier.
 3. A 409 duplicate after an uncertain insert converges by returning to update, never by minting a
    second ID.
 
+An update 404 can identify only an absent event, while an insert 404 targets the calendar collection
+and therefore means the configured calendar is missing or inaccessible. The latter is shared
+configuration state, not a reservation-specific terminal failure.
+
 **Desired absent**:
 
 - `DELETE` the stable ID. 2xx, 404, and an already-deleted 410 all mean reconciled absence.
@@ -239,10 +243,10 @@ they already fit; add only calendar-specific queue/projection caps.
 
 - retry: network/timeout, token 408/429/5xx, Calendar 408/429/5xx, and 403 only when a bounded
   parsed reason is `rateLimitExceeded` or `userRateLimitExceeded`;
-- configuration/authorization: other token 4xx, Calendar 401, and non-rate-limit 403 — park visibly
-  under the non-secret credential fingerprint until credentials are corrected or reconciliation is
-  requested; one shared rejection parks the current queue and later desired state without another
-  provider call;
+- configuration/authorization: other token 4xx, Calendar 401, non-rate-limit 403, and event-insert
+  404 — park visibly under the non-secret credential fingerprint until credentials are corrected or
+  reconciliation is requested; one shared rejection parks the current queue and later desired state
+  without another provider call;
 - permanent payload/not-found target: Calendar 400 and other non-idempotent 4xx — terminal ledger;
 - success/convergence: 2xx, create 409→update, delete 404/410.
 

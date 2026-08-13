@@ -180,4 +180,5 @@ handling and `sendUpdates=none`. The complete event body contains only:
 
 Update always omits `id`; insert always includes it. No attendees, reminders, description,
 location, extended properties, or contact fields are sent. Response bodies are bounded and never
-persisted.
+persisted. An event update 404 falls through to insert; an insert 404 identifies an unavailable
+target calendar and parks the fingerprint-scoped queue as a configuration failure.

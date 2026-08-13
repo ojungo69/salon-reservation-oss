@@ -159,8 +159,9 @@ provider. Split only if a second provider is approved; no provider interface/fac
 - Each alarm/status/feed call re-evaluates both bindings. A transition from zero valid modes starts
   cleanup; a later valid configuration mints a generation above the persistent high-water and
   starts reconciliation/sweep. Google false→true or credential-fingerprint change requeues every
-  current projection. A shared provider authorization/configuration rejection persists only that
-  non-secret fingerprint and parks the full queue until rotation or explicit reconciliation.
+  current projection. A shared provider authorization/configuration rejection, including an event
+  insert 404 for an unavailable target calendar, persists only that non-secret fingerprint and
+  parks the full queue until rotation or explicit reconciliation.
   Secret values and calendar ID never enter lifecycle storage.
 
 ### 2. Generic day outbox extension, not a replacement
@@ -206,7 +207,7 @@ Every ingress goes through one desired-state upsert:
 
 The feed method first rejects an unconfigured mode without creating storage, then authenticates a
 configured mode before reading any projection. A configured invalid attempt initializes only the
-bounded counter schema when necessary and increments its aggregate failure counter. A valid request
+bounded authority schema when necessary and increments only its aggregate failure counter. A valid request
 reads a bounded ordered snapshot
 from one DO transaction and calls a pure RFC 5545 serializer. UID and Google ID use domain-separated
 SHA-256 derivatives of the reservation UUID; the clear/reversible reservation ID is never emitted. Responses are CRLF, UTF-8,

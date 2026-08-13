@@ -404,6 +404,7 @@ export const sendGoogleMutation = async (
   if (inserted.status >= 200 && inserted.status < 300) {
     return { kind: "success", status: inserted.status };
   }
+  if (inserted.status === 404) return { kind: "configuration", status: 404 };
   if (inserted.status !== 409) return responseOutcome(inserted);
   const converged = await update();
   if (converged === null) return { kind: "retryable", status: null };

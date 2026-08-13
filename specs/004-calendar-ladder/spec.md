@@ -115,7 +115,8 @@ redacted diagnostics.
 3. **Given** Google configuration is incomplete or revoked, **When** delivery would otherwise run,
    **Then** no credential is logged or persisted as reservation data, no outbound mutation is made
    with incomplete configuration, one shared rejection parks all work for that non-secret
-   fingerprint until rotation or reconciliation, and the operator sees the configuration problem.
+   fingerprint until rotation or reconciliation, an inaccessible target calendar is treated the
+   same way, and the operator sees the configuration problem.
 4. **Given** an outage left mutations pending, **When** the provider recovers and reconciliation
    runs, **Then** current committed reservation state wins and the backlog converges without
    duplicates, including a retained failed delete whose projection row is already absent.

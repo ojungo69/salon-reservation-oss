@@ -1699,6 +1699,38 @@ describe("calendar projection and feed authority", () => {
     ).toEqual(["awaiting-configuration", "awaiting-configuration"]);
   });
 
+  it("parks the queue when the target Google calendar is missing", async () => {
+    const calendarMethods: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init = {}) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return mockGoogleAuthSuccess();
+        }
+        calendarMethods.push(init.method ?? "GET");
+        return new Response(null, { status: 404 });
+      }),
+    );
+    const config = await configFor(suiteDate(9));
+    for (const startTime of ["09:00", "11:00"]) {
+      expect(
+        await dayStub(config.date).createPublic(config, createInput(config.date, startTime)),
+      ).toMatchObject({ ok: true });
+    }
+    await adapterStub().pokeDay({ date: config.date });
+    await runDurableObjectAlarm(adapterStub());
+
+    expect(calendarMethods).toEqual(["PUT", "POST"]);
+    expect(
+      await runInDurableObject(adapterStub(), (_instance, state) =>
+        state.storage.sql
+          .exec<{ status: string }>("SELECT status FROM google_mutations")
+          .toArray()
+          .map(({ status }) => status),
+      ),
+    ).toEqual(["awaiting-configuration", "awaiting-configuration"]);
+  });
+
   it("bounds retry exhaustion and recovers an expired send claim", async () => {
     let calendarCalls = 0;
     vi.stubGlobal(
