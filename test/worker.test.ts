@@ -3460,13 +3460,16 @@ describe("T035 guided setup API", () => {
     }));
     const finishReconcile = vi.fn(async () => ({ ok: true as const }));
     const authority = {
-      descriptor: async () => ({
-        consumer: "calendar" as const,
-        generation: 1,
-        phase: "active" as const,
-        leaseIssuedAt: Date.now(),
-        leaseNotAfter: Date.now() + 30_000,
-      }),
+      descriptor: async () => {
+        const now = Date.now();
+        return {
+          consumer: "calendar" as const,
+          generation: 1,
+          phase: "active" as const,
+          leaseIssuedAt: now,
+          leaseNotAfter: now + 30_000,
+        };
+      },
       reconcileDay,
       finishReconcile,
     };

@@ -78,6 +78,12 @@ that an in-flight active sweep could overwrite deactivation's cursor reset. Cale
 one day-global sequence, with generation `0` reserved for timeout or expired-lease recovery and
 adopted only under a stable active generation. The sweep revalidates lifecycle state after every
 awaited day RPC. The 71-case focused, 222-case full, and 21-case security runs cover both fixes.
+The merge-gate P2 recheck then delayed an unbound recovery commit until after final deactivation.
+The old effectively infinite recovery lease recreated both day adapter tables while the authority
+reported disabled. Timeout recovery now carries the shared 30-second lease, and an ordinary expired
+descriptor may write generation `0` only inside the 60-second final-pass window. The existing
+deactivation regression failed with two tables instead of zero and now passes without changing
+suite counts.
 The last P2 pair then reproduced a revoked shared credential calling the provider once per queued
 row and the active sweep multiplying its 16-slot budget by the immediate handoff's ten rounds. A
 persisted non-secret blocked fingerprint now parks current and new work after one shared rejection,
@@ -147,7 +153,7 @@ command evidence above. Every task is accounted for below.
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
 | T034 | 77-case focused, 228-case full, type/build/audit, and 34-case browser results are recorded above. |
 | T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, six fixed CWE-400 candidates, two fixed CWE-362 races, durable timeout recovery, atomic reconciliation-cap/cursor handling, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, missing-target classification, post-OAuth/subrequest retention, sweep-round budget, required-upsert capacity, residual-disclosure deadline, and first-feed-failure visibility gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, late recovery lease, sweep-cursor transition, shared-credential parking, missing-target classification, post-OAuth/subrequest retention, sweep-round budget, required-upsert capacity, residual-disclosure deadline, and first-feed-failure visibility gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |

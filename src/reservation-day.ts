@@ -84,8 +84,12 @@ export type DayConfig = {
   // pinned schedule so enabling an adapter cannot change availability.
   calendarAdapter?: DayAdapterDescriptor;
   // A descriptor lookup timed out. The mutation still records an unbound
-  // calendar outbox event so the active authority can adopt it durably.
-  calendarRecovery?: true;
+  // calendar outbox event during this bounded window so the active authority
+  // can adopt it durably without outliving a completed disable sweep.
+  calendarRecovery?: {
+    leaseIssuedAt: number;
+    leaseNotAfter: number;
+  };
 };
 
 type TargetDayConfig = DayConfig & {
@@ -163,13 +167,15 @@ export type DayAdapterDescriptor = {
   leaseNotAfter: number;
 };
 
-const CALENDAR_RECOVERY_DESCRIPTOR: DayAdapterDescriptor = {
+const calendarRecoveryDescriptor = (
+  recovery: NonNullable<DayConfig["calendarRecovery"]>,
+): DayAdapterDescriptor => ({
   consumer: "calendar",
   generation: 0,
   phase: "active",
-  leaseIssuedAt: 1,
-  leaseNotAfter: Number.MAX_SAFE_INTEGER,
-};
+  leaseIssuedAt: recovery.leaseIssuedAt,
+  leaseNotAfter: recovery.leaseNotAfter,
+});
 
 export type AdapterEventType =
   | "create"
@@ -556,7 +562,18 @@ const isAdapterDescriptor = (
     Number.isSafeInteger(value.leaseIssuedAt) &&
     value.leaseIssuedAt > 0 &&
     Number.isSafeInteger(value.leaseNotAfter) &&
-    value.leaseNotAfter > value.leaseIssuedAt);
+    value.leaseNotAfter > value.leaseIssuedAt &&
+    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000);
+
+const isCalendarRecovery = (value: DayConfig["calendarRecovery"]): boolean =>
+  value === undefined ||
+  (typeof value === "object" &&
+    value !== null &&
+    Number.isSafeInteger(value.leaseIssuedAt) &&
+    value.leaseIssuedAt > 0 &&
+    Number.isSafeInteger(value.leaseNotAfter) &&
+    value.leaseNotAfter > value.leaseIssuedAt &&
+    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000);
 
 const isDayConfig = (config: DayConfig): boolean => {
   const base =
@@ -580,8 +597,8 @@ const isDayConfig = (config: DayConfig): boolean => {
       (Number.isSafeInteger(config.pendingExpiryMinutes) &&
         config.pendingExpiryMinutes >= 15 &&
         config.pendingExpiryMinutes <= 10080)) &&
-    (config.calendarRecovery === undefined || config.calendarRecovery === true) &&
-    !(config.calendarRecovery === true && config.calendarAdapter !== undefined) &&
+    isCalendarRecovery(config.calendarRecovery) &&
+    !(config.calendarRecovery !== undefined && config.calendarAdapter !== undefined) &&
     isAdapterDescriptor(config.adapter, "line") &&
     isAdapterDescriptor(config.calendarAdapter, "calendar");
   if (!base) return false;
@@ -1104,8 +1121,8 @@ export class ReservationDay extends DurableObject<Env> {
   // commit itself. No adapter configured → no-op. Deactivating → no new events
   // (disable is an explicit stop; the sweep drains what already exists).
   // An expired LINE lease preserves the released retry contract. Calendar is
-  // optional: a stale or unavailable lease writes generation 0 for the active
-  // authority to adopt without rolling back the reservation.
+  // optional: a stale or unavailable lease writes generation 0 only inside
+  // the bounded final-pass window; later commits omit the optional event.
   #emitAdapterEvents(
     config: DayConfig,
     events: Array<{
@@ -1121,7 +1138,9 @@ export class ReservationDay extends DurableObject<Env> {
     const adapters = [
       config.adapter,
       config.calendarAdapter,
-      config.calendarRecovery === true ? CALENDAR_RECOVERY_DESCRIPTOR : undefined,
+      config.calendarRecovery === undefined
+        ? undefined
+        : calendarRecoveryDescriptor(config.calendarRecovery),
     ].filter(
       (adapter): adapter is DayAdapterDescriptor => adapter !== undefined,
     );
@@ -1137,8 +1156,15 @@ export class ReservationDay extends DurableObject<Env> {
         adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
       if (adapter.phase !== "active" || accepted.length === 0) continue;
       let generation = adapter.generation;
-      if (Date.now() > adapter.leaseNotAfter) {
+      const now = Date.now();
+      if (now > adapter.leaseNotAfter) {
         if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
+        if (
+          adapter.generation === 0 ||
+          now >= adapter.leaseIssuedAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000
+        ) {
+          continue;
+        }
         generation = 0;
       }
       this.#ensureAdapterSchema();
@@ -1195,7 +1221,7 @@ export class ReservationDay extends DurableObject<Env> {
     if (
       config.adapter === undefined &&
       config.calendarAdapter === undefined &&
-      config.calendarRecovery !== true
+      config.calendarRecovery === undefined
     ) {
       return;
     }
@@ -1203,7 +1229,9 @@ export class ReservationDay extends DurableObject<Env> {
     for (const adapter of [
       config.adapter,
       config.calendarAdapter,
-      config.calendarRecovery === true ? CALENDAR_RECOVERY_DESCRIPTOR : undefined,
+      config.calendarRecovery === undefined
+        ? undefined
+        : calendarRecoveryDescriptor(config.calendarRecovery),
     ]) {
       if (adapter === undefined) continue;
       try {

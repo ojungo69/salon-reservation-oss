@@ -154,8 +154,9 @@ provider. Split only if a second provider is approved; no provider interface/fac
   delivery. The required-secret list remains only owner and Turnstile.
 - `CalendarAdapter.descriptor()` returns an active generation/30-second lease when either mode is
   valid. Worker calls it only when a local secret-shape hint says at least one mode may be active;
-  exceptions or a 250 ms local deadline use an unbound recovery marker, so booking continues while
-  its mutation is committed to the existing day outbox for the bounded active sweep.
+  exceptions or a 250 ms local deadline use an unbound 30-second recovery lease, so booking
+  continues while its mutation can be committed to the existing day outbox for the bounded active
+  sweep without outliving final disable.
 - Each alarm/status/feed call re-evaluates both bindings. A transition from zero valid modes starts
   cleanup; a later valid configuration mints a generation above the persistent high-water and
   starts reconciliation/sweep. Google false→true or credential-fingerprint change requeues every
@@ -175,8 +176,10 @@ provider. Split only if a second provider is approved; no provider interface/fac
   Old LINE rows may be null; calendar rows must have canonical values.
 - `#emitAdapterEvents` loops the two optional descriptors within the existing transaction. A stale
   LINE lease keeps the released one-refresh retry. A stale or unavailable optional calendar lease
-  writes generation `0` with the shared calendar sequence; the authority binds it to the current
-  active generation, so calendar rotation or disable cannot roll back a reservation.
+  writes generation `0` with the shared calendar sequence only inside the bounded final-pass
+  window; afterward the reservation still commits but does not recreate adapter data. The authority
+  binds timely recovery to the current active generation, so rotation or disable cannot roll back a
+  reservation.
 - `#adapterHandoff` independently pokes `ADAPTER_DELIVERY` and `CALENDAR_ADAPTER` after commit.
   The reservation-day retention alarm is untouched.
 

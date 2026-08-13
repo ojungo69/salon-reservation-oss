@@ -1225,13 +1225,16 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
 });
 
 describe("S2 calendar outbox substrate", () => {
-  const descriptor = (consumer: "line" | "calendar", expired = false) => ({
-    consumer,
-    generation: 1,
-    phase: "active" as const,
-    leaseIssuedAt: Date.now() - 1_000,
-    leaseNotAfter: Date.now() + (expired ? -1 : 30_000),
-  });
+  const descriptor = (consumer: "line" | "calendar", expired = false) => {
+    const now = Date.now();
+    return {
+      consumer,
+      generation: 1,
+      phase: "active" as const,
+      leaseIssuedAt: now - (expired ? 30_000 : 0),
+      leaseNotAfter: now + (expired ? -1 : 30_000),
+    };
+  };
 
   const configured = (
     config: TargetDayConfig,

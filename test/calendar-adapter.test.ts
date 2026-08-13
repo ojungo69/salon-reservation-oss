@@ -592,7 +592,14 @@ describe("calendar projection and feed authority", () => {
     if (!created.ok) throw new Error("fixture create failed");
     expect(
       await day.transitionOwner(
-        { ...config, calendarAdapter: undefined, calendarRecovery: true },
+        {
+          ...config,
+          calendarAdapter: undefined,
+          calendarRecovery: {
+            leaseIssuedAt: SUITE_NOW,
+            leaseNotAfter: SUITE_NOW + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+          },
+        },
         {
           commandId: crypto.randomUUID(),
           date: config.date,
@@ -2260,7 +2267,9 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(15));
     expect(config.calendarAdapter).toMatchObject({ generation: 1, phase: "active" });
     const day = dayStub(config.date);
-    expect(await day.createPublic(config, createInput(config.date))).toMatchObject({ ok: true });
+    const created = await day.createPublic(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
     expect(await adapter.diagnostics()).toMatchObject({
       state: "active",
@@ -2299,9 +2308,9 @@ describe("calendar projection and feed authority", () => {
 
     // A request that received generation 1 before disable may still commit
     // during its 30-second lease; the post-lease sweep must remove that row.
-    expect(
-      await day.createPublic(config, createInput(config.date, "11:00")),
-    ).toMatchObject({ ok: true });
+    const leased = await day.createPublic(config, createInput(config.date, "11:00"));
+    expect(leased).toMatchObject({ ok: true });
+    if (!leased.ok) throw new Error("fixture create failed");
     const calendarRowsBefore = await runInDurableObject(day, (_instance, state) =>
       state.storage.sql
         .exec<{ n: number }>(
@@ -2377,6 +2386,42 @@ describe("calendar projection and feed authority", () => {
     expect(
       await runInDurableObject(adapter, (_instance, state) => state.storage.getAlarm()),
     ).toBeNull();
+
+    expect(
+      await day.transitionOwner(
+        {
+          ...config,
+          calendarAdapter: undefined,
+          calendarRecovery: {
+            leaseIssuedAt: SUITE_NOW,
+            leaseNotAfter: SUITE_NOW + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+          },
+        },
+        {
+          commandId: crypto.randomUUID(),
+          date: config.date,
+          reservationId: created.reservationId,
+          action: "approve",
+        },
+      ),
+    ).toMatchObject({ ok: true, status: "approved" });
+    expect(
+      await day.transitionOwner(config, {
+        commandId: crypto.randomUUID(),
+        date: config.date,
+        reservationId: leased.reservationId,
+        action: "approve",
+      }),
+    ).toMatchObject({ ok: true, status: "approved" });
+    expect(
+      await runInDurableObject(day, (_instance, state) =>
+        state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name GLOB '__adapter*'",
+          )
+          .one().n,
+      ),
+    ).toBe(0);
 
     feedSecret = "C".repeat(43);
     expect(await adapter.descriptor()).toMatchObject({ generation: 2, phase: "active" });

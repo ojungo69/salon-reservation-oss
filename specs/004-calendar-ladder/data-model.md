@@ -84,11 +84,13 @@ state and generation after every awaited day RPC before it advances that cursor.
 
 Calendar outbox sequence numbers are monotonic across generations within one day. If descriptor
 lookup exceeds its 250 ms budget, or an active lease expires before commit, the day atomically
-writes the event with recovery generation `0`. This is not an authority generation: the adapter
-binds it to the current active generation while accepting it, and leaves it unacknowledged if a
-lifecycle transition races that acceptance. Its accepted-event key remains `0:eventId` so an ack
-retry cannot be adopted twice across reactivation; the accepted generation column records the
-generation that applied it. Normal later events keep the shared sequence order.
+writes the event with recovery generation `0` only inside the bounded 30-second recovery or
+60-second final-pass window. After that window the reservation still commits, but no adapter table
+or row is recreated. Generation `0` is not an authority generation: the adapter binds it to the
+current active generation while accepting it, and leaves it unacknowledged if a lifecycle
+transition races that acceptance. Its accepted-event key remains `0:eventId` so an ack retry cannot
+be adopted twice across reactivation; the accepted generation column records the generation that
+applied it. Normal later events keep the shared sequence order.
 
 ### `accepted_events`
 

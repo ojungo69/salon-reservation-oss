@@ -29,9 +29,12 @@ a provider registry, or an interface with only one implementation.
 - Workers RPC calls return asynchronous custom thenables that support standard Promise patterns.
   Reservation paths race the optional descriptor against a 250 ms local deadline; this does not
   make calendar authoritative or cancel its independent work. A timed-out path writes an unbound
-  event into the durable day outbox, and the bounded sweep adopts it under a stable active
-  generation. The public residual-disclosure lookup uses the same deadline and conservatively keeps
-  its conditional copy visible when the authority does not answer.
+  event into the durable day outbox only within a 30-second recovery lease, and the bounded sweep
+  adopts it under a stable active generation. Expired ordinary descriptors retain generation-0
+  recovery only within the 60-second final-pass window; later reservation commits remain successful
+  without recreating calendar data after disable. The public residual-disclosure lookup uses the
+  same deadline and conservatively keeps its conditional copy visible when the authority does not
+  answer.
 - Calendar volume is bounded by the existing single-location limits. Queues would not remove the
   required transactional outbox or the reconciliation store, so it would add infrastructure and
   tests without deleting code.

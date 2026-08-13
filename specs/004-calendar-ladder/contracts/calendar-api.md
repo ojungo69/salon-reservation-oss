@@ -123,8 +123,9 @@ Calendar requires these fields; LINE may receive null only on released pre-S2 ro
 receives `create`. Ack remains consumer-scoped. Calendar deactivation purges only rows through the
 retiring generation so a concurrent reactivation cannot delete newer outbox work; LINE's released
 purge behavior remains unchanged. Calendar sequences are day-global across generations. A
-descriptor timeout or lease expiry writes recovery generation `0`; CalendarAdapter binds that row
-to the active generation at acceptance and does not acknowledge it across a lifecycle race.
+descriptor timeout or lease expiry writes recovery generation `0` only within its bounded recovery
+or final-pass window; CalendarAdapter binds that row to the active generation at acceptance and does
+not acknowledge it across a lifecycle race. A later commit succeeds without recreating calendar rows.
 
 ### Safe projection
 

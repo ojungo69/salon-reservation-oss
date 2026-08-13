@@ -56,7 +56,7 @@ type InstallationContext = {
   runtime: ReadinessRuntime;
   line?: LineContext;
   calendarAdapter?: DayConfig["calendarAdapter"];
-  calendarRecovery?: true;
+  calendarRecovery?: DayConfig["calendarRecovery"];
 };
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -368,8 +368,16 @@ const withCalendarAdapter = async (
     );
     return calendarAdapter === null ? base : { ...base, calendarAdapter };
   } catch {
-    // Calendar is optional and post-commit; reservation paths stay available.
-    return { ...base, calendarRecovery: true };
+    // Calendar is optional and post-commit; a bounded recovery lease keeps
+    // reservation paths available without outliving the final disable sweep.
+    const leaseIssuedAt = Date.now();
+    return {
+      ...base,
+      calendarRecovery: {
+        leaseIssuedAt,
+        leaseNotAfter: leaseIssuedAt + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+      },
+    };
   }
 };
 
@@ -520,7 +528,9 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     ...(context.calendarAdapter === undefined
       ? {}
       : { calendarAdapter: context.calendarAdapter }),
-    ...(context.calendarRecovery === true ? { calendarRecovery: true as const } : {}),
+    ...(context.calendarRecovery === undefined
+      ? {}
+      : { calendarRecovery: context.calendarRecovery }),
   };
 };
 
