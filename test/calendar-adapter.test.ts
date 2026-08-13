@@ -341,6 +341,47 @@ describe("calendar projection and feed authority", () => {
     expect(accepted).toBe(4);
   });
 
+  it("rejects an old-generation event when activation changes during identifier hashing", async () => {
+    const config = await configFor(suiteDate(24));
+    const day = dayStub(config.date);
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    expect(await day.createPublic(config, createInput(config.date))).toMatchObject({ ok: true });
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+    });
+
+    await expect(
+      runInDurableObject(adapterStub(), (instance, state) => {
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        let firstDigest = true;
+        vi.spyOn(crypto.subtle, "digest").mockImplementation((algorithm, data) => {
+          if (firstDigest) {
+            firstDigest = false;
+            state.storage.sql.exec(
+              "UPDATE meta SET generation = 2, high_water = 2 WHERE singleton = 1",
+            );
+          }
+          return digest(algorithm, data);
+        });
+        return instance.pokeDay({ date: config.date });
+      }),
+    ).resolves.toEqual({ ok: true, drained: 1 });
+    expect(await adapterStub().diagnostics()).toMatchObject({
+      generation: 2,
+      projectionCount: 0,
+      counters: { "disposition:stale-generation": 1 },
+    });
+  });
+
   it("orders events and exposes only an aggregate feed-auth failure count", async () => {
     const config = await configFor(suiteDate(2));
     const day = dayStub(config.date);

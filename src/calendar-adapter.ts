@@ -861,8 +861,7 @@ export class CalendarAdapter extends DurableObject<Env> {
   async #acceptEvents(events: AdapterOutboxEvent[]): Promise<number | null> {
     const now = Date.now();
     this.#pruneRetention(now);
-    const meta = this.#readMeta();
-    if (meta?.state !== "active") return 0;
+    if (this.#readMeta()?.state !== "active") return 0;
     const prepared = await Promise.all(
       events.map(async (event) => ({
         event,
@@ -889,6 +888,8 @@ export class CalendarAdapter extends DurableObject<Env> {
       return null;
     }
     const accepted = this.ctx.storage.transactionSync(() => {
+      const meta = this.#readMeta();
+      if (meta?.state !== "active") return null;
       let accepted = 0;
       const sql = this.ctx.storage.sql;
       for (const { event, eventKey, ids } of prepared) {
