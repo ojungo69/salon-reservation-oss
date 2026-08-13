@@ -62,7 +62,9 @@ export const parseGoogleCredentials = (value: unknown): GoogleCalendarCredential
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
     if (
-      Object.keys(record).sort().join("\0") !== GOOGLE_KEYS.join("\0") ||
+      Object.keys(record)
+        .sort((left, right) => left.localeCompare(right))
+        .join("\0") !== GOOGLE_KEYS.join("\0") ||
       !boundedSecret(record.clientId, 512) ||
       !boundedSecret(record.clientSecret, 4_096) ||
       !boundedSecret(record.refreshToken, 4_096) ||
