@@ -1,0 +1,59 @@
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_5dd721dcfcb1f3 38-40,53,63
+  s_a546c8dc2f182a::t_f3c2ee2c568dc8 36
+src/worker.ts
+  s_a546c8dc2f182a::t_d5674029b14d08 2191-2192,2195,2197,2209-2212,2215-2218
+specs/004-calendar-ladder/contracts/calendar-api.md
+  s_a546c8dc2f182a::t_ec40c6b538c930 100-104,121-123
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_ec40c6b538c930 78-81
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_ed51d48e722902 318,320,344-348,357-359
+  s_a546c8dc2f182a::t_8bfa47d1c100aa 363
+  s_a546c8dc2f182a::t_d5674029b14d08 3,1042-1048,1053-1059,1094,1147,1513-1518,1535-1536
+test/worker.test.ts
+  s_a546c8dc2f182a::t_058580be2b58ba 12,3367-3418
+  s_a546c8dc2f182a::t_67619bdfca9e85 3419-3420
+src/reservation-day.ts
+  s_a546c8dc2f182a::t_d5674029b14d08 1326-1329,1337-1339,1346-1362
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_d53996742449a3 1527-1530,1532-1548,1550-1562,1564
+  s_a546c8dc2f182a::t_9909f6a54cc0ac 1570
+  s_a546c8dc2f182a::t_c5fcc3d0f1e977 1656-1667
+  s_a546c8dc2f182a::t_eca69865e9e6e6 978,1048
+  s_a546c8dc2f182a::t_f91183cae12373 1805-1807
+  s_a546c8dc2f182a::t_058580be2b58ba 1520-1526,1531,1549,1563,1565-1569,1571-1572,1582-1655,1668-1670
+  s_a546c8dc2f182a::t_8f09abad20e5d8 1573-1581
+  s_a546c8dc2f182a::t_8bfa47d1c100aa 18,238-272
+src/adapter-constants.ts
+  s_a546c8dc2f182a::t_d5674029b14d08 114-127
+docs/CALENDAR-SETUP.md
+  s_a546c8dc2f182a::t_ec40c6b538c930 104-106
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_3a839163e75956 19
+  s_a546c8dc2f182a::t_f3c2ee2c568dc8 56-58
+  s_a546c8dc2f182a::t_6b2915ca8501ce 13,15,17,48,59-63,84,96,100,106-108
+  s_a546c8dc2f182a::t_414f057d319340 93
+src/adapter-delivery.ts
+  s_a546c8dc2f182a::t_d5674029b14d08 4-8
+  s_a546c8dc2f182a::t_c4331d58e2b82a 3
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_ec40c6b538c930 185-188,236-239
+  s_a546c8dc2f182a::t_f3c2ee2c568dc8 217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9231182b631843e268c5551faf903dba43879767",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
