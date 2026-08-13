@@ -3,13 +3,13 @@
  * specs/003-line-adapter/tasks.md ("Constants"); the inequalities between them are asserted by
  * a test so a future edit cannot silently break the timing model.
  *
- * Sweep cycle bound (documented, not stored — it depends on runtime settings):
- *   partitions       = retentionDays + 1 + horizonDays   (worst case 365 + 1 + 90 = 456)
+ * Sweep cycle bound (documented, not stored — computed by fullCycleBoundS below):
+ *   partitions       = SWEEP_PAST_DAYS + 1 + SWEEP_FUTURE_DAYS = 366 + 1 + 90 = 457
  *   fullCycleBound   = (ceil(partitions / SWEEP_DAY_BATCH) + FAULT_BUDGET_F)
  *                      × (SWEEP_MAX_BATCH_RUNTIME_S + SWEEP_REARM_DELAY_S
  *                         + ALARM_LATENESS_ALLOWANCE_S + ALARM_RETRY_BACKOFF_ALLOWANCE_S)
  *                      + SWEEP_RPC_MARGIN_S
- *                    = (29 + 3) × 600 + 300 = 19,500 s ≈ 5.42 h at worst-case settings.
+ *                    = (29 + 3) × 720 + 300 = 23,340 s ≈ 6.48 h at the fixed window.
  *   HANDOFF_TERMINAL_LEAD_S must stay strictly above that worst case (and below the 24 h
  *   push retry-key validity). More than FAULT_BUDGET_F batch failures per cycle is out of the
  *   timing model: delivery still recovers (the sweep keeps re-driving), only the bound's

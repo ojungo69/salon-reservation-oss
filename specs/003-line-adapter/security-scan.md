@@ -48,6 +48,13 @@ fetch and matching digest refuted that claim.
 
 ## Result
 
+- Gate policy: `--error` deliberately stops on every finding so each one must
+  be dispositioned. The feature gate passes only with zero undispositioned or
+  blocking findings introduced by the feature; an accepted baseline finding
+  remains non-blocking only while its line and rationale remain unchanged.
 - Blocking findings introduced by this feature: **0**
 - Scan exit status: 1 (the single pre-existing finding above, disposition
   recorded; unchanged from baseline)
+- The separately installed Semgrep Cloud GitHub Check also completed
+  successfully with zero annotations on PR #37. It is an external PR check,
+  not a duplicate step in `.github/workflows/ci.yml`.

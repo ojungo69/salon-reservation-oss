@@ -34,6 +34,7 @@ import {
 const NOW = SUITE_NOW;
 const SUBJECT = `U${"a".repeat(32)}`;
 const OTHER_SUBJECT = `U${"b".repeat(32)}`;
+const ADAPTER_DELIVERY_BINDING = env.ADAPTER_DELIVERY;
 
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -56,6 +57,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  Object.defineProperty(env, "ADAPTER_DELIVERY", {
+    configurable: true,
+    value: ADAPTER_DELIVERY_BINDING,
+  });
   vi.useRealTimers();
   vi.restoreAllMocks();
   // restoreAllMocks does not undo stubGlobal — fetch stubs must not leak.
@@ -351,8 +356,38 @@ describe("constants inequalities (T033)", () => {
   });
 });
 
+describe("lifecycle coordinator recovery", () => {
+  it("re-arms activation after exhausting stale-generation retries", async () => {
+    const authority = {
+      readMeta: () => Promise.resolve(null),
+      activate: () =>
+        Promise.resolve({ ok: false as const, code: "STALE_GENERATION" as const }),
+    };
+    await runInDurableObject(installationStub(), (instance) => {
+      const runtimeEnv = (instance as unknown as { env: Env }).env;
+      Object.defineProperty(runtimeEnv, "ADAPTER_DELIVERY", {
+        configurable: true,
+        value: { getByName: () => authority },
+      });
+    });
+
+    await enableLineAdapter();
+    await expect(
+      installationStub().lineAdapterStatus().then(({ phase }) => phase),
+    ).resolves.toBe("activating");
+
+    // The command's pre-armed alarm drives a second exhausted retry cycle.
+    vi.setSystemTime(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000 + 1);
+    await runDurableObjectAlarm(installationStub());
+    const alarm = await runInDurableObject(installationStub(), (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm).not.toBeNull();
+  });
+});
+
 describe("privacy page state rule", () => {
-  // Only the canonical /privacy path is worker-handled; /privacy.html is not.
+  // Both public privacy paths share the state-aware Worker handler.
   const fetchPrivacy = async (customEnv: Env = env): Promise<Response> =>
     worker.fetch(new Request("https://example.test/privacy"), customEnv);
 
@@ -368,7 +403,7 @@ describe("privacy page state rule", () => {
     expect(baseline).not.toContain("個人を特定しない運用記録");
     expect(baseline).toContain("<!-- adapter-disclosure-slot -->");
 
-    // /privacy.html is not worker-handled: no disclosure injection there.
+    // Before activation, /privacy.html remains the same disclosure-free asset.
     const htmlPath = await worker.fetch(
       new Request("https://example.test/privacy.html"),
       env,
@@ -380,6 +415,11 @@ describe("privacy page state rule", () => {
     expect(activeResponse.headers.get("cache-control")).toBe("no-store");
     const active = await activeResponse.text();
     expect(active).toContain("LINE 連携を利用する場合");
+    const activeHtmlPath = await worker.fetch(
+      new Request("https://example.test/privacy.html"),
+      env,
+    );
+    expect(await activeHtmlPath.text()).toContain("LINE 連携を利用する場合");
     // Injected disclosure carries the operational-records paragraph.
     expect(active).toContain("個人を特定しない");
 
@@ -509,11 +549,23 @@ describe("token mint and push client", () => {
     expect(calls).toBe(2);
   });
 
-  it("maps token endpoint failures: 5xx retryable, 4xx configuration-rejected", async () => {
+  it("maps token endpoint failures: 5xx/408/429 retryable, other 4xx configuration-rejected", async () => {
     expect(
       await mintChannelToken(
         { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
         tokenFetch(500),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(408),
+      ),
+    ).toEqual({ ok: false, code: "RETRYABLE" });
+    expect(
+      await mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        tokenFetch(429),
       ),
     ).toEqual({ ok: false, code: "RETRYABLE" });
     expect(

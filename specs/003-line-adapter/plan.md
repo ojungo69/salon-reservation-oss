@@ -201,7 +201,8 @@
    comfortably < 24 h). Push retries only on 5xx and timeout; `409` means accepted; `401` is a
    configuration rejection that parks the delivery as `awaiting-configuration`; all other 4xx,
    including `429`, are terminal immediately. Token-endpoint calls remain distinct from push
-   outcomes — a token failure never marks the delivery accepted.
+   outcomes — token-endpoint 408, 429, 5xx, and transport failures retry; other non-200 token
+   responses park for configuration repair; a token failure never marks the delivery accepted.
    Outbound timeouts fixed at 10 s each for verify, token, and push calls.
 8. **Lifecycle and cleanup are first-class**:
    - A **LINE-specific, server-managed, monotonically increasing generation** (not

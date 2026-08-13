@@ -2023,7 +2023,7 @@ const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
         連携は予約管理ページからいつでも解除でき、解除すると対応関係と未送信の通知を削除します。予約の保存期限が過ぎたとき、および運営者が連携機能を停止したときも同じように削除します。LINE 側でのデータの取り扱いは LINE の利用規約とプライバシーポリシーに従います。
       </p>`;
 
-// Only the canonical path is worker-served, and only a state that actually has
+// Both public privacy paths are worker-served, and only a state that actually has
 // a disclosure changes anything: without one the assets response is returned
 // exactly as the platform produced it — same status, same headers, same body —
 // so an installation without the adapter is byte-identical to one built before
@@ -2136,7 +2136,7 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   if (LINE_PAGE_PATHS.has(url.pathname) || LINE_MODULE_PATHS.has(url.pathname)) {
     return handleLineAsset(request, env, url);
   }
-  if (url.pathname === "/privacy") {
+  if (url.pathname === "/privacy" || url.pathname === "/privacy.html") {
     return handlePrivacyPage(request, env, url);
   }
 

@@ -1801,7 +1801,6 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           const activated = await authority.activate({
             operationId: operation.operationId,
             generation,
-            watermark: 0,
             snapshot: {
               messagingChannelId: (operation.identifiers as LineIdentifiers)
                 .messagingChannelId,
@@ -1887,6 +1886,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         return;
       }
     }
+    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
   }
 
   override async alarm(): Promise<void> {

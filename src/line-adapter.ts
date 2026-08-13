@@ -344,7 +344,9 @@ export const mintChannelToken = async (
   } catch {
     return { ok: false, code: "RETRYABLE" };
   }
-  if (response.status >= 500) return { ok: false, code: "RETRYABLE" };
+  if (response.status === 408 || response.status === 429 || response.status >= 500) {
+    return { ok: false, code: "RETRYABLE" };
+  }
   if (response.status !== 200) return { ok: false, code: "CONFIG_REJECTED" };
   const text = await readBoundedText(response, ADAPTER.VERIFY_RESPONSE_MAX_BYTES);
   if (text === null) return { ok: false, code: "RETRYABLE" };

@@ -27,9 +27,6 @@ export type AdapterDeliveryMeta = {
   // disable and a compatible forward backout (storage persists —
   // specs/003-line-adapter/research.md R5); re-enable stays above it.
   highWater: number;
-  // Day event sequence recorded at activation: events at or below it predate
-  // the installation's links and are never delivered retroactively.
-  watermark: number;
   updatedAt: string;
   // Non-secret channel snapshot captured at activation so alarms can send
   // without any config read. Null outside `active`/`deactivating`.
@@ -141,7 +138,6 @@ export class AdapterDelivery extends DurableObject<Env> {
           state TEXT NOT NULL CHECK (state IN ('never', 'active', 'deactivating', 'disabled')),
           generation INTEGER NOT NULL CHECK (generation >= 0),
           high_water INTEGER NOT NULL CHECK (high_water >= 0),
-          watermark INTEGER NOT NULL CHECK (watermark >= 0),
           updated_at TEXT NOT NULL,
           snapshot_json TEXT,
           begin_disable_at INTEGER,
@@ -235,8 +231,8 @@ export class AdapterDelivery extends DurableObject<Env> {
       `);
       if (!hadMeta) {
         sql.exec(
-          `INSERT INTO meta (singleton, state, generation, high_water, watermark, updated_at)
-           VALUES (1, 'never', 0, 0, 0, ?)`,
+          `INSERT INTO meta (singleton, state, generation, high_water, updated_at)
+           VALUES (1, 'never', 0, 0, ?)`,
           new Date().toISOString(),
         );
       }
@@ -249,14 +245,13 @@ export class AdapterDelivery extends DurableObject<Env> {
         state: string;
         generation: number;
         high_water: number;
-        watermark: number;
         updated_at: string;
         snapshot_json: string | null;
         begin_disable_at: number | null;
         purge_completed_at: number | null;
         sweep_cursor: string | null;
       }>(
-        `SELECT state, generation, high_water, watermark, updated_at, snapshot_json,
+        `SELECT state, generation, high_water, updated_at, snapshot_json,
                 begin_disable_at, purge_completed_at, sweep_cursor
          FROM meta WHERE singleton = 1`,
       )
@@ -265,8 +260,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       row === undefined ||
       !["never", "active", "deactivating", "disabled"].includes(row.state) ||
       !Number.isSafeInteger(row.generation) ||
-      !Number.isSafeInteger(row.high_water) ||
-      !Number.isSafeInteger(row.watermark)
+      !Number.isSafeInteger(row.high_water)
     ) {
       throw new Error("corrupt adapter meta");
     }
@@ -286,7 +280,6 @@ export class AdapterDelivery extends DurableObject<Env> {
       state: row.state as AdapterState,
       generation: row.generation,
       highWater: row.high_water,
-      watermark: row.watermark,
       updatedAt: row.updated_at,
       snapshot,
       beginDisableAt: row.begin_disable_at,
@@ -709,8 +702,8 @@ export class AdapterDelivery extends DurableObject<Env> {
     if (!this.#hasSchema()) return { ok: false, code: "INVALID_INTENT" };
     const nonceDigest = await digestHex(input.nonce);
     const pre = this.ctx.storage.sql
-      .exec<{ reservation_id: string; date: string }>(
-        "SELECT reservation_id, date FROM intents WHERE nonce = ?",
+      .exec<{ reservation_id: string; date: string; generation: number }>(
+        "SELECT reservation_id, date, generation FROM intents WHERE nonce = ?",
         nonceDigest,
       )
       .toArray()[0];
@@ -730,7 +723,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     try {
       const sequence = await this.env.RESERVATION_DAYS.getByName(
         `single-location:${pre.date}`,
-      ).readEventSequence();
+      ).readEventSequence({ consumer: "line", generation: pre.generation });
       if (!Number.isSafeInteger(sequence.eventSeq) || sequence.eventSeq < 0) {
         throw new Error("bad event sequence");
       }
@@ -1103,7 +1096,6 @@ export class AdapterDelivery extends DurableObject<Env> {
    */
   async activate(input: {
     generation: number;
-    watermark: number;
     snapshot?: AdapterSnapshot;
     // Names the saga operation this activation belongs to. A re-driven
     // operation reports the activation it already performed instead of
@@ -1116,8 +1108,6 @@ export class AdapterDelivery extends DurableObject<Env> {
       (input.operationId !== undefined && !UUID.test(input.operationId)) ||
       !Number.isSafeInteger(input.generation) ||
       input.generation < 1 ||
-      !Number.isSafeInteger(input.watermark) ||
-      input.watermark < 0 ||
       (input.snapshot !== undefined &&
         (typeof input.snapshot !== "object" ||
           input.snapshot === null ||
@@ -1155,13 +1145,12 @@ export class AdapterDelivery extends DurableObject<Env> {
         );
       }
       this.ctx.storage.sql.exec(
-        `UPDATE meta SET state = 'active', generation = ?, high_water = ?, watermark = ?,
+        `UPDATE meta SET state = 'active', generation = ?, high_water = ?,
                 updated_at = ?, snapshot_json = ?, begin_disable_at = NULL,
                 purge_completed_at = NULL, sweep_cursor = NULL, cycle_started_at = NULL
          WHERE singleton = 1`,
         input.generation,
         input.generation,
-        input.watermark,
         new Date().toISOString(),
         input.snapshot === undefined ? null : JSON.stringify(input.snapshot),
       );

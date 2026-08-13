@@ -257,7 +257,15 @@ describe("adapter event foundation", () => {
       { event_id: `${day.date}#1`, seq: 1, type: "approve" },
       { event_id: `${day.date}#2`, seq: 2, type: "cancel" },
     ]);
-    expect(await dayStub().readEventSequence()).toEqual({ eventSeq: 2 });
+    expect(
+      await dayStub().readEventSequence({ consumer: "line", generation: 1 }),
+    ).toEqual({ eventSeq: 2 });
+    expect(
+      await dayStub().readEventSequence({ consumer: "calendar", generation: 1 }),
+    ).toEqual({ eventSeq: 0 });
+    expect(
+      await dayStub().readEventSequence({ consumer: "line", generation: 2 }),
+    ).toEqual({ eventSeq: 0 });
   });
 
   it("keeps the partition's frozen retention boundary on later adapter events", async () => {
@@ -310,7 +318,7 @@ describe("adapter event foundation", () => {
     });
     expect(await outboxRows()).toHaveLength(2);
 
-    const activated = await deliveryStub().activate({ generation: 1, watermark: 0 });
+    const activated = await deliveryStub().activate({ generation: 1 });
     expect(activated).toMatchObject({ ok: true, meta: { state: "active", generation: 1 } });
     // Accept-then-die-before-ack: event #2 is already recorded on the
     // receiver while the day still holds both rows. The poke must record #1,
@@ -336,7 +344,7 @@ describe("adapter event foundation", () => {
     const reservationId = await createPending();
     await dayStub().transitionOwner(adapterDay({ generation: 1 }), approveInput(reservationId));
 
-    const activated = await deliveryStub().activate({ generation: 2, watermark: 0 });
+    const activated = await deliveryStub().activate({ generation: 2 });
     expect(activated).toMatchObject({ ok: true });
     await deliveryStub().pokeDay({ date: day.date });
 
@@ -353,16 +361,16 @@ describe("adapter event foundation", () => {
   });
 
   it("refuses generations at or below the persistent high-water", async () => {
-    await deliveryStub().activate({ generation: 3, watermark: 0 });
+    await deliveryStub().activate({ generation: 3 });
     await deliveryStub().beginDisable();
     await markPurgeComplete();
     await deliveryStub().completeDisable();
 
-    expect(await deliveryStub().activate({ generation: 3, watermark: 0 })).toEqual({
+    expect(await deliveryStub().activate({ generation: 3 })).toEqual({
       ok: false,
       code: "STALE_GENERATION",
     });
-    expect(await deliveryStub().activate({ generation: 2, watermark: 0 })).toEqual({
+    expect(await deliveryStub().activate({ generation: 2 })).toEqual({
       ok: false,
       code: "STALE_GENERATION",
     });
@@ -374,7 +382,6 @@ describe("adapter event foundation", () => {
     const operationId = crypto.randomUUID();
     const first = await deliveryStub().activate({
       generation: 1,
-      watermark: 0,
       operationId,
       snapshot: { messagingChannelId: "9876543210" },
     });
@@ -383,7 +390,6 @@ describe("adapter event foundation", () => {
     // generation is requested, one operator command cannot mint a second one.
     const replay = await deliveryStub().activate({
       generation: 2,
-      watermark: 0,
       operationId,
       snapshot: { messagingChannelId: "9876543210" },
     });
@@ -392,7 +398,7 @@ describe("adapter event foundation", () => {
   });
 
   it("acknowledges nothing and persists nothing while disabled", async () => {
-    await deliveryStub().activate({ generation: 1, watermark: 0 });
+    await deliveryStub().activate({ generation: 1 });
     await deliveryStub().beginDisable();
     await markPurgeComplete();
     await deliveryStub().completeDisable();
@@ -416,7 +422,7 @@ describe("adapter event foundation", () => {
   });
 
   it("keeps no alarm scheduled once disabled with drained stores", async () => {
-    await deliveryStub().activate({ generation: 1, watermark: 0 });
+    await deliveryStub().activate({ generation: 1 });
     await deliveryStub().beginDisable();
     await markPurgeComplete();
     await deliveryStub().completeDisable();
@@ -432,7 +438,9 @@ describe("adapter event foundation", () => {
       events: [],
       more: false,
     });
-    expect(await fresh.readEventSequence()).toEqual({ eventSeq: 0 });
+    expect(
+      await fresh.readEventSequence({ consumer: "line", generation: 1 }),
+    ).toEqual({ eventSeq: 0 });
     const tables = await runInDurableObject(fresh, (_instance, state) =>
       state.storage.sql
         .exec<{ n: number }>(
@@ -456,7 +464,7 @@ describe("adapter event foundation", () => {
       await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
       expect(await outboxRows()).toHaveLength(1);
 
-      await deliveryStub().activate({ generation: 2, watermark: 0 });
+      await deliveryStub().activate({ generation: 2 });
       await deliveryStub().beginDisable();
       // Before the lease wait passes, alarms run but must not mark the purge
       // complete (a cycle finishing early would count leases still live).
@@ -480,7 +488,7 @@ describe("adapter event foundation", () => {
     await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
     expect(await outboxRows()).toHaveLength(1);
 
-    await deliveryStub().activate({ generation: 1, watermark: 0 });
+    await deliveryStub().activate({ generation: 1 });
     // Any later use of the day re-pokes the delivery object.
     await dayStub().statusPublic(adapterDay(), {
       date: day.date,
@@ -887,7 +895,7 @@ describe("delivery pipeline", () => {
 
   const activateGen1 = async () => {
     clearTokenCacheForTests();
-    const activated = await deliveryStub().activate({ generation: 1, watermark: 0, snapshot });
+    const activated = await deliveryStub().activate({ generation: 1, snapshot });
     expect(activated).toMatchObject({ ok: true });
   };
 
@@ -1403,6 +1411,10 @@ describe("delivery pipeline", () => {
     // A synthetic second consumer's pending row must survive a LINE purge.
     await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
       state.storage.sql.exec(
+        `INSERT INTO __adapter_meta (consumer, generation, event_seq)
+         VALUES ('calendar', 1, 1)`,
+      );
+      state.storage.sql.exec(
         `INSERT INTO __adapter_outbox
            (consumer, generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at)
          VALUES ('calendar', 1, 1, 'cal-1', ?, 'approve', '09:00', 'カット', ?, ?)`,
@@ -1415,12 +1427,20 @@ describe("delivery pipeline", () => {
     const first = await dayStub({ date: pDate }).purgeConsumer({ consumer: "line" });
     expect(first).toEqual({ ok: true, removed: 1, dropped: false });
     expect(await adapterTableCount(dayStub({ date: pDate }))).toBe(2);
+    expect(
+      await dayStub({ date: pDate }).readEventSequence({ consumer: "calendar", generation: 1 }),
+    ).toEqual({ eventSeq: 1 });
 
     await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
       state.storage.sql.exec("DELETE FROM __adapter_outbox WHERE consumer = 'calendar'");
     });
     const second = await dayStub({ date: pDate }).purgeConsumer({ consumer: "line" });
-    expect(second).toEqual({ ok: true, removed: 0, dropped: true });
+    expect(second).toEqual({ ok: true, removed: 0, dropped: false });
+    await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM __adapter_meta WHERE consumer = 'calendar'");
+    });
+    const third = await dayStub({ date: pDate }).purgeConsumer({ consumer: "line" });
+    expect(third).toEqual({ ok: true, removed: 0, dropped: true });
     expect(await adapterTableCount(dayStub({ date: pDate }))).toBe(0);
   });
 

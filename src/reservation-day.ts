@@ -996,8 +996,10 @@ export class ReservationDay extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     sql.exec(`
       CREATE TABLE IF NOT EXISTS __adapter_meta (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        event_seq INTEGER NOT NULL CHECK (event_seq >= 0)
+        consumer TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        event_seq INTEGER NOT NULL CHECK (event_seq >= 0),
+        PRIMARY KEY (consumer, generation)
       )
     `);
     sql.exec(`
@@ -1042,7 +1044,9 @@ export class ReservationDay extends DurableObject<Env> {
     const purgeAt = this.#readMeta()?.purgeAt ?? config.purgeAt;
     const row = sql
       .exec<{ event_seq: number }>(
-        "SELECT event_seq FROM __adapter_meta WHERE singleton = 1",
+        "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
+        adapter.consumer,
+        adapter.generation,
       )
       .toArray()[0];
     let seq = row?.event_seq ?? 0;
@@ -1066,8 +1070,10 @@ export class ReservationDay extends DurableObject<Env> {
       );
     }
     sql.exec(
-      `INSERT INTO __adapter_meta (singleton, event_seq) VALUES (1, ?)
-       ON CONFLICT(singleton) DO UPDATE SET event_seq = excluded.event_seq`,
+      `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
+       ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
+      adapter.consumer,
+      adapter.generation,
       seq,
     );
   }
@@ -1213,9 +1219,14 @@ export class ReservationDay extends DurableObject<Env> {
         "DELETE FROM __adapter_outbox WHERE consumer = ?",
         input.consumer,
       ).rowsWritten;
+      sql.exec("DELETE FROM __adapter_meta WHERE consumer = ?", input.consumer);
       const remaining =
-        sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox").toArray()[0]
-          ?.n ?? 0;
+        sql
+          .exec<{ n: number }>(
+            `SELECT (SELECT COUNT(*) FROM __adapter_outbox) +
+                    (SELECT COUNT(*) FROM __adapter_meta) AS n`,
+          )
+          .toArray()[0]?.n ?? 0;
       if (remaining > 0) return { ok: true as const, removed, dropped: false };
       sql.exec("DROP TABLE __adapter_outbox");
       sql.exec("DROP TABLE __adapter_meta");
@@ -1223,13 +1234,27 @@ export class ReservationDay extends DurableObject<Env> {
     });
   }
 
-  // The enable saga's watermark read: events at or below this sequence predate
+  // Link finalization's watermark read: events at or below this sequence predate
   // the link and are never delivered retroactively.
-  async readEventSequence(): Promise<{ eventSeq: number }> {
+  async readEventSequence(input: {
+    consumer: string;
+    generation: number;
+  }): Promise<{ eventSeq: number }> {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      !ID.test(input.consumer) ||
+      !Number.isSafeInteger(input.generation) ||
+      input.generation < 1
+    ) {
+      throw new Error("bad sequence input");
+    }
     if (!this.#adapterOutboxExists()) return { eventSeq: 0 };
     const row = this.ctx.storage.sql
       .exec<{ event_seq: number }>(
-        "SELECT event_seq FROM __adapter_meta WHERE singleton = 1",
+        "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
+        input.consumer,
+        input.generation,
       )
       .toArray()[0];
     if (row !== undefined && !Number.isSafeInteger(row.event_seq)) {
