@@ -99,7 +99,8 @@ whose schedule projection is already absent.
 The final page returns `nextCursor: null`. Repeating a page is idempotent and may report zero
 changes. If mutation capacity defers a date, `processedDates` excludes it and `nextCursor` remains
 that date so the operator retries it after capacity recovers; no sibling projection from that date
-is changed. Failed upserts yield capacity to newer work before a date is deferred. Calendar
+is changed, and every required Google upsert and delete must fit before replacement begins. Failed
+upserts yield capacity to newer work before a date is deferred. Calendar
 configuration absence returns `409 CALENDAR_NOT_CONFIGURED`;
 calendar-authority absence and bounded internal failure return `503 TEMPORARILY_UNAVAILABLE`;
 invalid input returns `400 BAD_REQUEST`.

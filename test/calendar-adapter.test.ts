@@ -1205,6 +1205,82 @@ describe("calendar projection and feed authority", () => {
     ).toEqual({ removed: "delete", retained: "upsert" });
   });
 
+  it("defers a whole reconciliation date when a required upsert cannot fit", async () => {
+    const config = await configFor(suiteDate(23));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await adapter.pokeDay({ date: config.date });
+    const authoritative = await day.calendarProjection(config);
+    if (!authoritative.ok) throw new Error("fixture projection failed");
+    const replacement = {
+      ...authoritative,
+      watermark: { ...authoritative.watermark, seq: authoritative.watermark.seq + 1 },
+      events: authoritative.events.map((event) => ({
+        ...event,
+        serviceLabel: "架空の変更後サービス",
+      })),
+    };
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        "DELETE FROM google_mutations WHERE reservation_id = ?",
+        created.reservationId,
+      );
+    });
+    await fillGoogleMutationQueue({
+      operation: "delete",
+      status: "awaiting-configuration",
+    });
+
+    await expect(adapter.reconcileDay(replacement)).resolves.toEqual({
+      ok: true,
+      projected: 0,
+      removed: 0,
+      deferred: true,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => ({
+        label: state.storage.sql
+          .exec<{ service_label: string }>(
+            "SELECT service_label FROM projections WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().service_label,
+        watermark: state.storage.sql
+          .exec<{ seq: number }>(
+            "SELECT seq FROM projection_watermarks WHERE date = ?",
+            config.date,
+          )
+          .one().seq,
+      })),
+    ).toEqual({ label: "架空カット", watermark: authoritative.watermark.seq });
+
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        `DELETE FROM google_mutations WHERE reservation_id = (
+           SELECT reservation_id FROM google_mutations ORDER BY reservation_id LIMIT 1
+         )`,
+      );
+    });
+    await expect(adapter.reconcileDay(replacement)).resolves.toEqual({
+      ok: true,
+      projected: 1,
+      removed: 0,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) =>
+        state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().operation,
+      ),
+    ).toBe("upsert");
+  });
+
   it("reclaims failed upserts for required Google deletes", async () => {
     const config = await configFor(suiteDate(24));
     const adapter = adapterStub();
@@ -1516,28 +1592,110 @@ describe("calendar projection and feed authority", () => {
     },
   );
 
-  it("parks token authorization loss without attempting a Calendar request", async () => {
-    const fetcher = vi.fn<typeof fetch>(async () =>
-      Response.json({ error: "invalid_grant" }, { status: 400 }),
-    );
+  it("parks the whole queue after shared token rejection until credentials rotate", async () => {
+    let authorized = false;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === "https://oauth2.googleapis.com/token") {
+        return authorized
+          ? mockGoogleAuthSuccess()
+          : Response.json({ error: "invalid_grant" }, { status: 400 });
+      }
+      return new Response(null, { status: 200 });
+    });
     vi.stubGlobal("fetch", fetcher);
     const config = await configFor(suiteDate(9));
-    expect(
-      await dayStub(config.date).createPublic(config, createInput(config.date)),
-    ).toMatchObject({ ok: true });
+    for (const startTime of ["09:00", "11:00"]) {
+      expect(
+        await dayStub(config.date).createPublic(config, createInput(config.date, startTime)),
+      ).toMatchObject({ ok: true });
+    }
     await adapterStub().pokeDay({ date: config.date });
     await runDurableObjectAlarm(adapterStub());
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 1 });
-    const state = await runInDurableObject(adapterStub(), (_instance, durableState) =>
+    expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 2 });
+    const states = await runInDurableObject(adapterStub(), (_instance, durableState) =>
       durableState.storage.sql
         .exec<{ status: string }>("SELECT status FROM google_mutations")
-        .one().status,
+        .toArray()
+        .map(({ status }) => status),
     );
-    expect(state).toBe("awaiting-configuration");
+    expect(states).toEqual(["awaiting-configuration", "awaiting-configuration"]);
     expect(await adapterStub().diagnostics()).toMatchObject({
       counters: { "delivery:configuration": 1 },
     });
+    expect(
+      await dayStub(config.date).createPublic(config, createInput(config.date, "12:00")),
+    ).toMatchObject({ ok: true });
+    await adapterStub().pokeDay({ date: config.date });
+    expect(
+      await runInDurableObject(adapterStub(), (_instance, durableState) =>
+        durableState.storage.sql
+          .exec<{ status: string }>("SELECT status FROM google_mutations")
+          .toArray()
+          .map(({ status }) => status),
+      ),
+    ).toEqual([
+      "awaiting-configuration",
+      "awaiting-configuration",
+      "awaiting-configuration",
+    ]);
+    await runDurableObjectAlarm(adapterStub());
+    expect(fetcher).toHaveBeenCalledOnce();
+
+    let googleSecret = JSON.stringify(credentials);
+    await runInDurableObject(adapterStub(), (instance) => {
+      Object.defineProperty(
+        (instance as unknown as { env: Env }).env,
+        "GOOGLE_CALENDAR_CREDENTIALS",
+        {
+          configurable: true,
+          get: () => googleSecret,
+        },
+      );
+    });
+    googleSecret = JSON.stringify({
+      ...credentials,
+      refreshToken: "fixture-refresh-token-rotated",
+    });
+    authorized = true;
+    await runDurableObjectAlarm(adapterStub());
+    expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 0 });
+    expect(fetcher).toHaveBeenCalledTimes(5);
+  });
+
+  it("stops the current batch after shared Calendar authorization rejection", async () => {
+    let calendarCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return mockGoogleAuthSuccess();
+        }
+        calendarCalls += 1;
+        return Response.json(
+          { error: { errors: [{ reason: "forbidden" }] } },
+          { status: 403 },
+        );
+      }),
+    );
+    const config = await configFor(suiteDate(9));
+    for (const startTime of ["09:00", "11:00"]) {
+      expect(
+        await dayStub(config.date).createPublic(config, createInput(config.date, startTime)),
+      ).toMatchObject({ ok: true });
+    }
+    await adapterStub().pokeDay({ date: config.date });
+    await runDurableObjectAlarm(adapterStub());
+
+    expect(calendarCalls).toBe(1);
+    expect(
+      await runInDurableObject(adapterStub(), (_instance, state) =>
+        state.storage.sql
+          .exec<{ status: string }>("SELECT status FROM google_mutations")
+          .toArray()
+          .map(({ status }) => status),
+      ),
+    ).toEqual(["awaiting-configuration", "awaiting-configuration"]);
   });
 
   it("bounds retry exhaustion and recovers an expired send claim", async () => {
@@ -1778,6 +1936,42 @@ describe("calendar projection and feed authority", () => {
       });
     }
   }, ADAPTER.SWEEP_RPC_DEADLINE_MS + 10_000);
+
+  it("limits an active sweep to one drain round per batch slot", async () => {
+    const adapter = adapterStub();
+    const reservationDays = env.RESERVATION_DAYS;
+    const config = await configFor(suiteDate(25));
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", config.date);
+    });
+    let drains = 0;
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: {
+          getByName: () => ({
+            drainOutbox: async () => {
+              drains += 1;
+              return { events: [], more: true };
+            },
+          }),
+        },
+      });
+    });
+
+    try {
+      await runDurableObjectAlarm(adapter);
+      expect(drains).toBe(ADAPTER.SWEEP_DAY_BATCH);
+      expect(await adapter.diagnostics()).toMatchObject({ sweepCursor: config.date });
+    } finally {
+      await runInDurableObject(adapter, (instance) => {
+        Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+          configurable: true,
+          value: reservationDays,
+        });
+      });
+    }
+  });
 
   it("does not advance an active sweep after deactivation resets its cursor", async () => {
     const adapter = adapterStub();

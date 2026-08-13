@@ -309,7 +309,7 @@ const calendarModes = (env: AppEnv) => ({
   google: parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS) !== null,
 });
 
-const CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS = 250;
+const CALENDAR_AUTHORITY_RPC_DEADLINE_MS = 250;
 
 const dayStub = (env: AppEnv, date: string): DurableObjectStub<ReservationDay> =>
   env.RESERVATION_DAYS.getByName(`single-location:${date}`);
@@ -364,7 +364,7 @@ const withCalendarAdapter = async (
   try {
     const calendarAdapter = await withDeadline(
       calendarAdapterStub(env).descriptor(),
-      CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS,
+      CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
     );
     return calendarAdapter === null ? base : { ...base, calendarAdapter };
   } catch {
@@ -2271,7 +2271,10 @@ const handlePrivacyPage = async (
       discloseCalendar = true;
     } else {
       try {
-        discloseCalendar = await calendarAdapterStub(env).hasDisclosure();
+        discloseCalendar = await withDeadline(
+          calendarAdapterStub(env).hasDisclosure(),
+          CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
+        );
       } catch {
         // Residual state cannot be ruled out. The inserted copy is conditional,
         // so an unavailable authority must not hide a cleanup disclosure.

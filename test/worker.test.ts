@@ -3150,6 +3150,32 @@ describe("T035 guided setup API", () => {
     );
     expect(await unavailable.text()).toContain("カレンダー連携を利用する場合");
     expect(namespaceReads).toBe(1);
+
+    let releaseDisclosure!: (value: false) => void;
+    const disclosure = new Promise<false>((resolve) => {
+      releaseDisclosure = resolve;
+    });
+    const stalledEnv = Object.create(unavailableEnv) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => ({ hasDisclosure: () => disclosure }) },
+    });
+    const responsePromise = worker.fetch(
+      new Request("https://example.test/privacy"),
+      stalledEnv,
+    );
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      responsePromise.then(() => "response" as const),
+      new Promise<"stalled">((resolve) => {
+        watchdog = setTimeout(() => resolve("stalled"), 1_000);
+      }),
+    ]);
+    clearTimeout(watchdog);
+    releaseDisclosure(false);
+    const stalled = await responsePromise;
+
+    expect(outcome).toBe("response");
+    expect(await stalled.text()).toContain("カレンダー連携を利用する場合");
   });
 
   it("keeps reservation and availability JSON identical through Google retry and terminal failure", async () => {

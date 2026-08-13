@@ -59,6 +59,7 @@ calling the calendar authority.
 | `generation` | current generation |
 | `high_water` | monotonic across disable/re-enable |
 | `mode_fingerprint` | SHA-256 of the parsed Google credential object or null; never the secret |
+| `google_blocked_fingerprint` | fingerprint whose shared authorization/configuration rejection parks outbound work, or null |
 | `google_configured` / `google_seen` | current Google validity and whether cleanup may be required |
 | `begin_disable_at` | epoch ms or null |
 | `purge_completed_at` | epoch ms or null |
@@ -117,7 +118,7 @@ There is at most one row per reservation. ICS serializes only these rows ordered
 Rejection, cancellation, expiry, or retention purge deletes this row without waiting on Google
 capacity. If the mutation table cannot retain the provider delete, the transactional day outbox
 event remains unacknowledged as recovery evidence. Reconciliation, which has no such event to rely
-on, leaves the entire date unchanged unless every required delete fits. Completion/no-show
+on, leaves the entire date unchanged unless every required Google mutation fits. Completion/no-show
 bookkeeping keeps the confirmed schedule row.
 
 ### `projection_watermarks`
@@ -153,6 +154,11 @@ Settle applies only when both generation and claimed version still match. Delete
 mutation; upsert success removes it because the projection itself is the desired-state record.
 Owner reconciliation with valid Google configuration resets every retained failed or
 configuration-blocked delete to a new queued version, because its projection row is already absent.
+One shared OAuth or Calendar authorization/configuration rejection stores the current non-secret
+fingerprint and parks every current-generation mutation. New desired state joins that parked queue;
+no further provider call starts for the same fingerprint. Credential rotation clears the marker and
+requeues current projections plus retained deletes. Explicit reconciliation also clears it and
+requeues the refreshed desired state, so a recovered provider can be retried without secret churn.
 At the hard cap, the oldest terminal failed upsert may be discarded to admit newer work; delete
 rows and live upserts are never evicted for that purpose, and the prior terminal reason remains in
 the bounded ledger.
@@ -206,8 +212,8 @@ object exists only in request/alarm memory. Only a digest discriminator may be p
 - No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
 - `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
   visible in counters/ledger. A terminal event remains unacknowledged after its local ICS row is
-  removed, or reconciliation retains its stale date projection set, until every required delete for
-  that date fits. Failed upserts yield to newer work before either path defers.
+  removed, or reconciliation retains its stale date projection set, until every required Google
+  upsert and delete for that date fits. Failed upserts yield to newer work before either path defers.
 - The ledger uses the released 500-row/30-day bounds; reconciliation/sweep cursors are scalars.
 - When both modes are absent and the final purge sweep completes, projection/mutation/event rows and
   calendar outbox consumer rows are gone; bounded aggregate diagnostics drain to quiescence.

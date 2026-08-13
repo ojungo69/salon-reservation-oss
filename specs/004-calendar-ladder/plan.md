@@ -159,7 +159,9 @@ provider. Split only if a second provider is approved; no provider interface/fac
 - Each alarm/status/feed call re-evaluates both bindings. A transition from zero valid modes starts
   cleanup; a later valid configuration mints a generation above the persistent high-water and
   starts reconciliation/sweep. Google false→true or credential-fingerprint change requeues every
-  current projection. Secret values and calendar ID never enter lifecycle storage.
+  current projection. A shared provider authorization/configuration rejection persists only that
+  non-secret fingerprint and parks the full queue until rotation or explicit reconciliation.
+  Secret values and calendar ID never enter lifecycle storage.
 
 ### 2. Generic day outbox extension, not a replacement
 
@@ -186,7 +188,9 @@ leases to expire, purges only `calendar` outbox rows at or below the retiring ge
 fixed sweep, and clears projection/mutations only after revalidating that generation in the final
 transaction. Every day RPC uses the shared five-second deadline and retries the same cursor on
 failure. State and generation are revalidated after every awaited day RPC before its cursor moves.
-The alarm stops when bounded diagnostics have expired.
+An immediate handoff may drain up to ten rounds, while each sweep loop slot performs only one
+drain/ack round and retains a `more` cursor; at most 16 bounded round slots therefore stay within
+the shared 300-second batch budget. The alarm stops when bounded diagnostics have expired.
 
 Every ingress goes through one desired-state upsert:
 
@@ -233,9 +237,9 @@ longer present. The projection carries the calendar outbox generation/sequence o
 the authority advances that watermark for both event delivery and replacement, so neither a
 delayed older handoff nor an older replacement can undo newer committed calendar state. Response
 returns only `processedDates`, `nextCursor | null`, and aggregate counts. Repeated calls are
-idempotent. If every required Google delete cannot fit, the whole date replacement remains unchanged
-without advancing its watermark; the page stops before that date and returns the same date as its
-next cursor. With valid Google configuration, reconciliation also requeues retained failed or
+idempotent. If every required Google upsert and delete cannot fit, the whole date replacement remains
+unchanged without advancing its watermark; the page stops before that date and returns the same date
+as its next cursor. With valid Google configuration, reconciliation also requeues retained failed or
 configuration-blocked deletes that no longer have a projection row. Status exposes last completed
 reconciliation and next cursor.
 
@@ -249,8 +253,8 @@ reconciliation and next cursor.
 - Public `/api/config`, booking responses, customer DOM, and asset paths gain no calendar property.
   Calendar is an operator-only adapter, so no new customer runtime module is needed. The existing
   privacy response normally gains a disclosure only while a mode is active or residual cleanup
-  state exists; a rate-limited or unavailable residual lookup conservatively renders conditional
-  disclosure. It disappears after disabled-and-purged when state can be checked.
+  state exists; a rate-limited, failed, or 250 ms deadline-exceeded residual lookup conservatively
+  renders conditional disclosure. It disappears after disabled-and-purged when state can be checked.
 
 ### 8. Completion and status changes
 

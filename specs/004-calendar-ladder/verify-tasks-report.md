@@ -10,11 +10,11 @@ No deployment or live provider/account was used.
 |---|---|
 | `specify self check` | Up to date: 0.16.2 |
 | `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
-| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 71/71 passed (calendar 45; reservation-day 26) |
+| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 74/74 passed (calendar 48; reservation-day 26) |
 | pinned Semgrep command in `security-scan.md` | 400 rules over 25 tracked files; 1 unchanged Turnstile finding accepted; 0 feature blocking findings |
-| focused security regression command in `security-scan.md` | 21/21 passed |
+| focused security regression command in `security-scan.md` | 25/25 passed |
 | focused calendar privacy cleanup test | 1/1 passed |
-| `npm run check` | core 54/54; Workers/DO 222/222; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run check` | core 54/54; Workers/DO 225/225; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
 | GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 38 files, 321 changed symbols, 72 affected flows reviewed; shared validator/deadline/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
@@ -78,6 +78,17 @@ that an in-flight active sweep could overwrite deactivation's cursor reset. Cale
 one day-global sequence, with generation `0` reserved for timeout or expired-lease recovery and
 adopted only under a stable active generation. The sweep revalidates lifecycle state after every
 awaited day RPC. The 71-case focused, 222-case full, and 21-case security runs cover both fixes.
+The last P2 pair then reproduced a revoked shared credential calling the provider once per queued
+row and the active sweep multiplying its 16-slot budget by the immediate handoff's ten rounds. A
+persisted non-secret blocked fingerprint now parks current and new work after one shared rejection,
+and rotation or explicit reconciliation requeues it. Sweep and handoff reuse one drain primitive,
+but sweep spends only one round per slot and retains the date while `more` remains. The 73-case
+focused, 224-case full, and 24-case security runs cover these bounds.
+A final P2 pair proved that reconciliation could advance after a required upsert failed to enter a
+full mutation table, and that the public residual-disclosure lookup could wait forever on a stalled
+authority. The date preflight now covers every required upsert and delete before any write, while
+the lookup reuses the shared 250 ms deadline and conservative disclosure fallback. The 74-case
+focused, 225-case full, and 25-case security runs cover both fixes.
 
 ## Manual completion sweep
 
@@ -98,7 +109,7 @@ command evidence above. Every task is accounted for below.
 | T009 | Binding/export/optional secret fixtures and regenerated types are present; `types:check` and dry-run build pass. |
 | T010 | Optional descriptor wiring preserves byte-identical public config, zero absent-mode calendar RPC, and 250 ms fail-open with a durable unbound outbox event under a stalled authority. |
 | T011 | Foundation, LINE regression, and type checks pass within the full command evidence. |
-| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 45-case calendar suite. |
+| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 48-case calendar suite. |
 | T013 | Absent/bad/valid/rotated/exact-query/header/cache/privacy Worker feed tests are in `test/worker.test.ts`. |
 | T014 | Calendar acceptance, projection, bounded cleanup, aggregate auth diagnostics, and serializer are implemented. |
 | T015 | Uniform-404 capability route and no-store/nosniff headers are implemented and tested. |
@@ -108,9 +119,9 @@ command evidence above. Every task is accounted for below.
 | T019 | Worker tests prove Google retry/permanent failure leaves reservation/availability JSON unchanged. |
 | T020 | Bounded refresh exchange and credential-fingerprint memory cache are implemented without persistence/logging. |
 | T021 | Deterministic update→insert/409→update/delete Google protocol is implemented against fixed hosts with bounded error-response deadlines. |
-| T022 | Latest desired state, bounded claims/retries, configuration parking, terminal ledger, and alarm scheduling are implemented. |
+| T022 | Latest desired state, bounded claims/retries, fingerprint-scoped whole-queue configuration parking, terminal ledger, and alarm scheduling are implemented. |
 | T023 | Fixture fetch assertions and source/security scans prove zero live network, redirect follow, secret logs, provider reads, or runtime dependency. |
-| T024 | Lifecycle/high-water/disable/purge-fault/deadline retry, generation-safe reactivation, cursor revalidation, recovery-event adoption, requeue/redaction, atomic date-reconciliation, and identifier-hash generation-race tests pass. |
+| T024 | Lifecycle/high-water/disable/purge-fault/deadline retry, one-round sweep budgeting, generation-safe reactivation, cursor revalidation, recovery-event adoption, requeue/redaction, atomic date-reconciliation, and identifier-hash generation-race tests pass. |
 | T025 | Owner status and bounded reconciliation auth/origin/rate/input/idempotency tests pass. |
 | T026 | Browser owner-only status/reconcile and zero customer calendar trace pass in `tests-browser/owner.spec.ts`. |
 | T027 | Mode transition, leases, consumer purge, fingerprint requeue, status, and quiescent alarms are implemented. |
@@ -120,9 +131,9 @@ command evidence above. Every task is accounted for below.
 | T031 | Privacy documents and state-dependent Worker disclosure name the exact fields and cleanup lifecycle; the zero-adapter static asset keeps no integration copy. |
 | T032 | Cloudflare/release docs cover optional bindings, Free-plan budget, alarms, and forward backout. |
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
-| T034 | 71-case focused, 222-case full, type/build/audit, and 34-case browser results are recorded above. |
-| T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, three fixed CWE-400 candidates, two fixed CWE-362 races, durable timeout recovery, atomic reconciliation-cap/cursor handling, one accepted baseline finding, and zero feature-blocking findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, and sweep-cursor transition gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline helper; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
+| T034 | 74-case focused, 225-case full, type/build/audit, and 34-case browser results are recorded above. |
+| T035 | `security-scan.md` records the pinned 400-rule Semgrep run, exact GitLab SSRF rule, complete adversarial review, one hardened CWE-918 candidate, three fixed CWE-770 candidates, six fixed CWE-400 candidates, two fixed CWE-362 races, durable timeout recovery, atomic reconciliation-cap/cursor handling, one accepted baseline finding, and zero feature-blocking findings. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, optional-lease, reconciliation-ordering/cursor, retained-delete recovery, conservative-disclosure, failed/stalled day sweep, mutation-cap delete/atomicity, deactivation/reactivation race, descriptor and Google response-body deadline stalls, zero-adapter copy, identifier-hash generation-race, timeout-recovery, sweep-cursor transition, shared-credential parking, sweep-round budget, required-upsert capacity, and residual-disclosure deadline gaps. Ponytail reused native Promise/SQLite, the existing outbox, and the shared deadline/drain primitives; it added no dependency, provider API, or speculative abstraction. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |

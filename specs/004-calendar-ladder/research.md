@@ -30,7 +30,8 @@ a provider registry, or an interface with only one implementation.
   Reservation paths race the optional descriptor against a 250 ms local deadline; this does not
   make calendar authoritative or cancel its independent work. A timed-out path writes an unbound
   event into the durable day outbox, and the bounded sweep adopts it under a stable active
-  generation.
+  generation. The public residual-disclosure lookup uses the same deadline and conservatively keeps
+  its conditional copy visible when the authority does not answer.
 - Calendar volume is bounded by the existing single-location limits. Queues would not remove the
   required transactional outbox or the reconciliation store, so it would add infrastructure and
   tests without deleting code.
@@ -239,13 +240,16 @@ they already fit; add only calendar-specific queue/projection caps.
 - retry: network/timeout, token 408/429/5xx, Calendar 408/429/5xx, and 403 only when a bounded
   parsed reason is `rateLimitExceeded` or `userRateLimitExceeded`;
 - configuration/authorization: other token 4xx, Calendar 401, and non-rate-limit 403 — park visibly
-  until credentials are corrected/reconciliation is requested;
+  under the non-secret credential fingerprint until credentials are corrected or reconciliation is
+  requested; one shared rejection parks the current queue and later desired state without another
+  provider call;
 - permanent payload/not-found target: Calendar 400 and other non-idempotent 4xx — terminal ledger;
 - success/convergence: 2xx, create 409→update, delete 404/410.
 
 Google recommends truncated exponential backoff for time-based quota errors and warns against
-indefinite retry. One failed reservation is claimed and settled independently, so it cannot block
-other due rows. Every row carries the parent `purgeAt`; no send begins at or beyond it. Projection,
+indefinite retry. Retryable and payload-specific failures remain row-isolated; a shared credential
+rejection deliberately parks all rows for that fingerprint. Every row carries the parent `purgeAt`;
+no send begins at or beyond it. Projection,
 dedup, queue, counters, and ledger are capped/pruned. At retention, an unresolved external deletion
 is terminally recorded before the local reference is discarded; external Calendar never becomes
 the system of record.

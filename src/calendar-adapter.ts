@@ -417,6 +417,7 @@ type CalendarMeta = {
   generation: number;
   highWater: number;
   modeFingerprint: string;
+  googleBlockedFingerprint: string | null;
   googleConfigured: boolean;
   googleSeen: boolean;
   beginDisableAt: number | null;
@@ -425,6 +426,9 @@ type CalendarMeta = {
   lastReconciledAt: string | null;
   reconcileCursor: string | null;
 };
+
+const googleReady = (meta: CalendarMeta): boolean =>
+  meta.googleConfigured && meta.googleBlockedFingerprint !== meta.modeFingerprint;
 
 type ProjectionRow = {
   reservation_id: string;
@@ -536,6 +540,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           generation INTEGER NOT NULL,
           high_water INTEGER NOT NULL,
           mode_fingerprint TEXT NOT NULL,
+          google_blocked_fingerprint TEXT,
           google_configured INTEGER NOT NULL CHECK (google_configured IN (0, 1)),
           google_seen INTEGER NOT NULL CHECK (google_seen IN (0, 1)),
           begin_disable_at INTEGER,
@@ -614,6 +619,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         generation: number;
         high_water: number;
         mode_fingerprint: string;
+        google_blocked_fingerprint: string | null;
         google_configured: number;
         google_seen: number;
         begin_disable_at: number | null;
@@ -622,7 +628,8 @@ export class CalendarAdapter extends DurableObject<Env> {
         last_reconciled_at: string | null;
         reconcile_cursor: string | null;
       }>(
-        `SELECT state, generation, high_water, mode_fingerprint, google_configured,
+        `SELECT state, generation, high_water, mode_fingerprint, google_blocked_fingerprint,
+                google_configured,
                 google_seen, begin_disable_at, purge_completed_at,
                 sweep_cursor, last_reconciled_at, reconcile_cursor
          FROM meta WHERE singleton = 1`,
@@ -634,6 +641,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       generation: row.generation,
       highWater: row.high_water,
       modeFingerprint: row.mode_fingerprint,
+      googleBlockedFingerprint: row.google_blocked_fingerprint,
       googleConfigured: row.google_configured === 1,
       googleSeen: row.google_seen === 1,
       beginDisableAt: row.begin_disable_at,
@@ -813,6 +821,18 @@ export class CalendarAdapter extends DurableObject<Env> {
     }
   }
 
+  #requeueConfigurationBlocked(generation: number, now: number): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE google_mutations SET desired_version = desired_version + 1,
+              generation = ?, attempt = 0, next_attempt_at = ?, first_attempt_at = NULL,
+              claimed_at = NULL, claimed_version = NULL, status = 'queued'
+       WHERE status = 'awaiting-configuration' AND purge_at > ?`,
+      generation,
+      now,
+      now,
+    );
+  }
+
   async descriptor(): Promise<DayAdapterDescriptor | null> {
     const configuration = this.#configuration();
     if (configuration.feedToken === null && configuration.google === null) {
@@ -840,9 +860,10 @@ export class CalendarAdapter extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `INSERT INTO meta
              (singleton, state, generation, high_water, mode_fingerprint,
-              google_configured, google_seen, begin_disable_at, purge_completed_at,
+              google_blocked_fingerprint, google_configured, google_seen,
+              begin_disable_at, purge_completed_at,
               sweep_cursor, last_reconciled_at, reconcile_cursor)
-           VALUES (1, 'active', 1, 1, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+           VALUES (1, 'active', 1, 1, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
           fingerprint,
           configuration.google === null ? 0 : 1,
           configuration.google === null ? 0 : 1,
@@ -852,18 +873,27 @@ export class CalendarAdapter extends DurableObject<Env> {
         const googleChanged =
           configuration.google !== null &&
           (!current.googleConfigured || current.modeFingerprint !== fingerprint);
+        const blockedFingerprint =
+          configuration.google === null || googleChanged
+            ? null
+            : current.googleBlockedFingerprint;
         this.ctx.storage.sql.exec(
           `UPDATE meta SET state = 'active', generation = ?, high_water = MAX(high_water, ?),
-                  mode_fingerprint = ?, google_configured = ?, google_seen = MAX(google_seen, ?),
+                  mode_fingerprint = ?, google_blocked_fingerprint = ?,
+                  google_configured = ?, google_seen = MAX(google_seen, ?),
                   begin_disable_at = NULL, purge_completed_at = NULL
            WHERE singleton = 1`,
           generation,
           generation,
           fingerprint,
+          blockedFingerprint,
           configuration.google === null ? 0 : 1,
           configuration.google === null ? 0 : 1,
         );
-        if (googleChanged) this.#requeueProjections({ ...current, generation });
+        if (googleChanged) {
+          this.#requeueProjections({ ...current, generation });
+          this.#requeueConfigurationBlocked(generation, now);
+        }
       }
       const active = this.#readMeta();
       if (active === null) throw new Error("calendar activation failed");
@@ -1002,7 +1032,7 @@ export class CalendarAdapter extends DurableObject<Env> {
                 projection,
                 meta.generation,
                 event.purgeAt,
-                meta.googleConfigured,
+                googleReady(meta),
               );
             }
           }
@@ -1017,7 +1047,7 @@ export class CalendarAdapter extends DurableObject<Env> {
               null,
               meta.generation,
               event.purgeAt,
-              meta.googleConfigured,
+              googleReady(meta),
             )
           ) {
             return null;
@@ -1052,17 +1082,14 @@ export class CalendarAdapter extends DurableObject<Env> {
     return accepted;
   }
 
-  async pokeDay(input: { date: string }): Promise<{ ok: true; drained: number }> {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("bad poke input");
+  async #drainDay(date: string, rounds: number): Promise<{ accepted: number; pending: boolean }> {
     const stub = this.env.RESERVATION_DAYS.getByName(
-      `single-location:${input.date}`,
+      `single-location:${date}`,
     ) as DurableObjectStub<ReservationDay>;
     let accepted = 0;
-    // ponytail: bounded pull loop; anything beyond the budget waits for the
-    // next poke or sweep cycle rather than growing one invocation unboundedly.
-    for (let round = 0; round < 10; round += 1) {
+    for (let round = 0; round < rounds; round += 1) {
       const meta = this.#readMeta();
-      if (meta?.state !== "active") return { ok: true, drained: accepted };
+      if (meta?.state !== "active") return { accepted, pending: false };
       const drained = await withDeadline(
         stub.drainOutbox({
           consumer: "calendar",
@@ -1072,7 +1099,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       );
       if (drained.events.length > 0) {
         const batchAccepted = await this.#acceptEvents(drained.events);
-        if (batchAccepted === null) break;
+        if (batchAccepted === null) return { accepted, pending: true };
         accepted += batchAccepted;
         await withDeadline(
           stub.ackOutbox({
@@ -1082,10 +1109,21 @@ export class CalendarAdapter extends DurableObject<Env> {
           ADAPTER.SWEEP_RPC_DEADLINE_MS,
         );
       }
-      if (!drained.more) break;
+      if (!drained.more) return { accepted, pending: false };
     }
-    if (accepted > 0 && this.#readMeta()?.googleConfigured) await this.#armAlarm(Date.now());
-    return { ok: true, drained: accepted };
+    return { accepted, pending: true };
+  }
+
+  async pokeDay(input: { date: string }): Promise<{ ok: true; drained: number }> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("bad poke input");
+    // ponytail: bounded pull loop; anything beyond the budget waits for the
+    // next poke or sweep cycle rather than growing one invocation unboundedly.
+    const drained = await this.#drainDay(input.date, 10);
+    const meta = this.#readMeta();
+    if (drained.accepted > 0 && meta !== null && googleReady(meta)) {
+      await this.#armAlarm(Date.now());
+    }
+    return { ok: true, drained: drained.accepted };
   }
 
   async feed(input: { token: string }): Promise<CalendarFeedResult> {
@@ -1155,7 +1193,6 @@ export class CalendarAdapter extends DurableObject<Env> {
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
         .toArray()
         .filter(({ reservation_id }) => !wanted.has(reservation_id));
-      let deleteRows = removedRows;
       if (meta.googleSeen) {
         const mutations = sql
           .exec<{ reservation_id: string; operation: string; status: string }>(
@@ -1163,26 +1200,23 @@ export class CalendarAdapter extends DurableObject<Env> {
           )
           .toArray();
         const queued = new Set(mutations.map(({ reservation_id }) => reservation_id));
-        const required = new Set(removedRows.map(({ reservation_id }) => reservation_id));
-        const existingDeletes = removedRows.filter(({ reservation_id }) =>
-          queued.has(reservation_id),
-        );
-        const missingDeletes = removedRows.filter(
-          ({ reservation_id }) => !queued.has(reservation_id),
-        );
+        const required = new Set([
+          ...removedRows.map(({ reservation_id }) => reservation_id),
+          ...prepared.map(({ event }) => event.reservationId),
+        ]);
+        const missing = [...required].filter((reservationId) => !queued.has(reservationId));
         const reclaimable = mutations.filter(
           ({ reservation_id, operation, status }) =>
             operation === "upsert" && status === "failed" && !required.has(reservation_id),
         ).length;
-        if (mutations.length + missingDeletes.length - reclaimable > CALENDAR_ROW_CAP) {
-          this.#record("overflow", "delete");
+        if (mutations.length + missing.length - reclaimable > CALENDAR_ROW_CAP) {
+          this.#record("overflow", "reconcile");
           this.#bump("mutation_overflow");
           return { ok: true as const, projected: 0, removed: 0, deferred: true as const };
         }
-        deleteRows = [...existingDeletes, ...missingDeletes];
       }
       let removed = 0;
-      for (const row of deleteRows) {
+      for (const row of removedRows) {
         if (
           meta.googleSeen &&
           !this.#queueMutation(
@@ -1192,7 +1226,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             null,
             meta.generation,
             row.purge_at,
-            meta.googleConfigured,
+            googleReady(meta),
           )
         ) {
           throw new Error("calendar delete preflight failed");
@@ -1237,16 +1271,19 @@ export class CalendarAdapter extends DurableObject<Env> {
           projection.status,
           input.purgeAt,
         );
-        if (meta.googleSeen) {
-          this.#queueMutation(
+        if (
+          meta.googleSeen &&
+          !this.#queueMutation(
             event.reservationId,
             ids.externalId,
             "upsert",
             projection,
             meta.generation,
             input.purgeAt,
-            meta.googleConfigured,
-          );
+            googleReady(meta),
+          )
+        ) {
+          throw new Error("calendar upsert preflight failed");
         }
         if (existing === undefined) projectionCount += 1;
         projected += 1;
@@ -1274,11 +1311,14 @@ export class CalendarAdapter extends DurableObject<Env> {
       const sql = this.ctx.storage.sql;
       if (meta?.state === "active" && meta.googleConfigured) {
         sql.exec(
+          "UPDATE meta SET google_blocked_fingerprint = NULL WHERE singleton = 1",
+        );
+        this.#requeueConfigurationBlocked(meta.generation, now);
+        sql.exec(
           `UPDATE google_mutations SET desired_version = desired_version + 1,
                   generation = ?, attempt = 0, next_attempt_at = ?, first_attempt_at = NULL,
                   claimed_at = NULL, claimed_version = NULL, status = 'queued'
-           WHERE operation = 'delete' AND status IN ('awaiting-configuration', 'failed')
-                 AND purge_at > ?`,
+           WHERE operation = 'delete' AND status = 'failed' AND purge_at > ?`,
           meta.generation,
           now,
           now,
@@ -1401,9 +1441,35 @@ export class CalendarAdapter extends DurableObject<Env> {
     });
   }
 
-  #settleGoogle(row: MutationRow, outcome: GoogleMutationOutcome, now: number): void {
+  #settleGoogle(
+    row: MutationRow,
+    outcome: GoogleMutationOutcome,
+    now: number,
+    credentialFingerprint: string,
+  ): void {
     this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
+      if (outcome.kind === "configuration") {
+        const meta = this.#readMeta();
+        if (
+          meta?.state === "active" &&
+          meta.googleConfigured &&
+          meta.modeFingerprint === credentialFingerprint
+        ) {
+          sql.exec(
+            "UPDATE meta SET google_blocked_fingerprint = ? WHERE singleton = 1",
+            credentialFingerprint,
+          );
+          sql.exec(
+            `UPDATE google_mutations SET status = 'awaiting-configuration',
+                    claimed_at = NULL, claimed_version = NULL, next_attempt_at = NULL
+             WHERE generation = ? AND status IN ('queued', 'sending')`,
+            meta.generation,
+          );
+          this.#bump("delivery:configuration");
+        }
+        return;
+      }
       const fresh = sql
         .exec<MutationRow>(
           `SELECT reservation_id, external_id, operation, payload_json, desired_version,
@@ -1425,15 +1491,6 @@ export class CalendarAdapter extends DurableObject<Env> {
       if (outcome.kind === "success") {
         sql.exec("DELETE FROM google_mutations WHERE reservation_id = ?", row.reservation_id);
         this.#bump("delivery:success");
-        return;
-      }
-      if (outcome.kind === "configuration") {
-        sql.exec(
-          `UPDATE google_mutations SET status = 'awaiting-configuration', claimed_at = NULL,
-                  claimed_version = NULL, next_attempt_at = NULL WHERE reservation_id = ?`,
-          row.reservation_id,
-        );
-        this.#bump("delivery:configuration");
         return;
       }
       if (outcome.kind === "permanent") {
@@ -1484,6 +1541,8 @@ export class CalendarAdapter extends DurableObject<Env> {
       }
       return;
     }
+    const credentialFingerprint = await sha256Hex(JSON.stringify(credentials));
+    if (this.#readMeta()?.googleBlockedFingerprint === credentialFingerprint) return;
     for (let index = 0; index < ADAPTER.SEND_BATCH; index += 1) {
       const claimNow = Date.now();
       const row = this.#claimGoogle(claimNow);
@@ -1491,7 +1550,12 @@ export class CalendarAdapter extends DurableObject<Env> {
       const token = await getGoogleAccessToken(credentials, fetch, claimNow);
       if (!token.ok) {
         const kind = token.kind === "retryable" ? "retryable" : "configuration";
-        this.#settleGoogle(row, { kind, status: token.status }, Date.now());
+        this.#settleGoogle(
+          row,
+          { kind, status: token.status },
+          Date.now(),
+          credentialFingerprint,
+        );
         return;
       }
       let event: CalendarProjection | null = null;
@@ -1513,7 +1577,12 @@ export class CalendarAdapter extends DurableObject<Env> {
           }
           event = parsed;
         } catch {
-          this.#settleGoogle(row, { kind: "permanent", status: null }, Date.now());
+          this.#settleGoogle(
+            row,
+            { kind: "permanent", status: null },
+            Date.now(),
+            credentialFingerprint,
+          );
           continue;
         }
       }
@@ -1524,7 +1593,8 @@ export class CalendarAdapter extends DurableObject<Env> {
         event,
         row.external_id,
       );
-      this.#settleGoogle(row, outcome, Date.now());
+      this.#settleGoogle(row, outcome, Date.now(), credentialFingerprint);
+      if (outcome.kind === "configuration") return;
     }
   }
 
@@ -1544,6 +1614,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     let cursor = meta.sweepCursor ?? first;
     for (let index = 0; index < ADAPTER.SWEEP_DAY_BATCH && cursor <= final; index += 1) {
       let faulted = false;
+      let retainCursor = false;
       try {
         if (meta.state === "deactivating") {
           await withDeadline(
@@ -1553,7 +1624,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             ADAPTER.SWEEP_RPC_DEADLINE_MS,
           );
         } else {
-          await this.pokeDay({ date: cursor });
+          retainCursor = (await this.#drainDay(cursor, 1)).pending;
         }
       } catch {
         this.#bump("sweep_faults");
@@ -1562,6 +1633,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       const current = this.#readMeta();
       if (current?.state !== meta.state || current.generation !== meta.generation) return;
       if (faulted) break;
+      if (retainCursor) continue;
       cursor = shiftDate(cursor, 1);
     }
     if (cursor <= final) {
