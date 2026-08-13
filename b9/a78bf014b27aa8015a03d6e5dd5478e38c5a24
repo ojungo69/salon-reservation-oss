@@ -1,0 +1,33 @@
+specs/003-line-adapter/spec.md
+  s_a546c8dc2f182a::t_6312e59758a91f 132-134
+specs/003-line-adapter/tasks.md
+  s_a546c8dc2f182a::t_6312e59758a91f 104,109
+test/line-adapter.test.ts
+  s_a546c8dc2f182a::t_75f4e0090b2f8f 831-840,856-861
+  s_a546c8dc2f182a::t_519a40750761b0 847-855
+  s_a546c8dc2f182a::t_1e25e988f93f81 884-895,911-921
+  s_a546c8dc2f182a::t_c0903a412f7307 830,845-846
+  s_a546c8dc2f182a::t_ff08530fcac710 922
+specs/003-line-adapter/plan.md
+  s_a546c8dc2f182a::t_6312e59758a91f 140,147-151
+src/adapter-delivery.ts
+  s_a546c8dc2f182a::t_75f4e0090b2f8f 721-729,740-742,747-763,819,823-824
+  s_a546c8dc2f182a::t_6312e59758a91f 808-810
+  s_a546c8dc2f182a::t_3697139eb7e785 825
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b9a78bf014b27aa8015a03d6e5dd5478e38c5a24",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
