@@ -1,0 +1,26 @@
+specs/003-line-adapter/tasks.md
+  s_a546c8dc2f182a::t_9e8ada88d3a161 128
+docs/LINE-SETUP.md
+  s_a546c8dc2f182a::t_9e8ada88d3a161 99-106,110-113
+specs/003-line-adapter/plan.md
+  s_a546c8dc2f182a::t_9e8ada88d3a161 43
+specs/003-line-adapter/research.md
+  s_a546c8dc2f182a::t_47f83c542c9e72 90,153-156
+  s_a546c8dc2f182a::t_9e8ada88d3a161 146-149,152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "085c80aa692a5ee48da7e42f60ac7fc842f34ebd",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
