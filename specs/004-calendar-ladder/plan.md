@@ -227,7 +227,9 @@ longer present. The projection carries the calendar outbox generation/sequence o
 the authority advances that watermark for both event delivery and replacement, so neither a
 delayed older handoff nor an older replacement can undo newer committed calendar state. Response
 returns only `processedDates`, `nextCursor | null`, and aggregate counts. Repeated calls are
-idempotent. Status exposes last completed reconciliation and next cursor.
+idempotent. With valid Google configuration, reconciliation also requeues retained failed or
+configuration-blocked deletes that no longer have a projection row. Status exposes last completed
+reconciliation and next cursor.
 
 ### 7. Owner and public routes
 
@@ -238,8 +240,9 @@ idempotent. Status exposes last completed reconciliation and next cursor.
 - `POST /api/admin/calendar/reconcile`: owner gate + mutation-origin gate; bounded cursor job.
 - Public `/api/config`, booking responses, customer DOM, and asset paths gain no calendar property.
   Calendar is an operator-only adapter, so no new customer runtime module is needed. The existing
-  privacy response gains a disclosure only while a mode is active or residual cleanup state exists;
-  it disappears after disabled-and-purged.
+  privacy response normally gains a disclosure only while a mode is active or residual cleanup
+  state exists; a rate-limited or unavailable residual lookup conservatively renders conditional
+  disclosure. It disappears after disabled-and-purged when state can be checked.
 
 ### 8. Completion and status changes
 

@@ -104,8 +104,9 @@ authoritative day partitions, applies lazy pending expiry, and returns the next 
 `nextCursor` is `null`; repeating a page is idempotent.
 
 Run reconciliation after first activation, restored credentials, a suspected handoff gap, or a
-target-calendar change. Normal recovery also sweeps the fixed retention/horizon window from the
-calendar authority's alarm.
+target-calendar change. With a valid Google configuration, reconciliation also requeues retained
+failed or configuration-blocked deletes whose local projection is already absent. Normal recovery
+also sweeps the fixed retention/horizon window from the calendar authority's alarm.
 
 ## Disable and recovery boundary
 

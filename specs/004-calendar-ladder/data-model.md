@@ -134,6 +134,8 @@ bounded by touched dates and removed at the parent deadline or adapter purge.
 A newer projection replaces an older queued/failed mutation and increments `desired_version`.
 Settle applies only when both generation and claimed version still match. Delete success removes the
 mutation; upsert success removes it because the projection itself is the desired-state record.
+Owner reconciliation with valid Google configuration resets every retained failed or
+configuration-blocked delete to a new queued version, because its projection row is already absent.
 
 ### `ledger`
 

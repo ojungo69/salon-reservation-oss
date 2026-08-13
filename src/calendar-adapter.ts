@@ -1182,11 +1182,28 @@ export class CalendarAdapter extends DurableObject<Env> {
       throw new Error("bad reconcile cursor");
     }
     if (!this.#hasSchema()) throw new Error("calendar not configured");
-    this.ctx.storage.sql.exec(
-      "UPDATE meta SET last_reconciled_at = ?, reconcile_cursor = ? WHERE singleton = 1",
-      new Date().toISOString(),
-      input.nextCursor,
-    );
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      const meta = this.#readMeta();
+      const sql = this.ctx.storage.sql;
+      if (meta?.state === "active" && meta.googleConfigured) {
+        sql.exec(
+          `UPDATE google_mutations SET desired_version = desired_version + 1,
+                  generation = ?, attempt = 0, next_attempt_at = ?, first_attempt_at = NULL,
+                  claimed_at = NULL, claimed_version = NULL, status = 'queued'
+           WHERE operation = 'delete' AND status IN ('awaiting-configuration', 'failed')
+                 AND purge_at > ?`,
+          meta.generation,
+          now,
+          now,
+        );
+      }
+      sql.exec(
+        "UPDATE meta SET last_reconciled_at = ?, reconcile_cursor = ? WHERE singleton = 1",
+        new Date(now).toISOString(),
+        input.nextCursor,
+      );
+    });
     return { ok: true };
   }
 

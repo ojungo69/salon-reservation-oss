@@ -31,7 +31,7 @@ Google account, or provider network call was used.
 | `html.security.audit.missing-integrity.missing-integrity` at `public/index.html:11` | Semgrep flags Cloudflare Turnstile's evergreen `api.js` URL | **Pre-existing and accepted.** The line is unchanged from base. Turnstile rotates this script continuously, so a fixed SRI digest would break the widget; feature 004 adds no external browser script. |
 | Public reads could force serialized Calendar DO descriptor work (`CWE-770`) | `installationContext` originally acquired the optional descriptor for generic public reads | **Fixed and suppressed.** Descriptor acquisition now occurs only around day operations; `/api/config` performs zero calendar RPC, and public availability is rate-limited before calendar work. |
 | Wrong feed tokens could force unthrottled authority writes (`CWE-770`) | The initial feed path reached the authority without a limiter and activated the descriptor before rejecting the token | **Fixed and suppressed.** The Worker applies `PUBLIC_RATE_LIMITER` before namespace access and preserves a uniform 404; the authority validates and constant-time compares the token before `descriptor()`. |
-| Public privacy reads could force residual Calendar DO lookups (`CWE-770`) | With both local modes absent, every request queried `hasDisclosure()` | **Fixed and suppressed.** The residual lookup now passes through `PUBLIC_RATE_LIMITER`; a limited request serves the static privacy page without namespace access. |
+| Public privacy reads could force residual Calendar DO lookups (`CWE-770`) | With both local modes absent, every request queried `hasDisclosure()` | **Fixed and suppressed.** The residual lookup now passes through `PUBLIC_RATE_LIMITER`; a limited request performs no namespace access, and a limited or unavailable lookup conservatively renders bounded conditional disclosure so cleanup state cannot be hidden. |
 
 Post-remediation source review and focused Workers/DO tests found no remaining reportable attack
 path. Final reportable findings: **0**.
@@ -41,7 +41,7 @@ path. Final reportable findings: **0**.
 ```sh
 semgrep scan --metrics=off --error --config p/default --config p/owasp-top-ten src/ public/
 npx vitest run test/worker.test.ts test/calendar-adapter.test.ts \
-  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|orders events and exposes only an aggregate feed-auth|prunes expired local calendar state" \
+  -t "keeps public config byte-identical|serves only the exact capability|rate-limits public availability|conservatively discloses residual calendar state when its lookup cannot run|orders events and exposes only an aggregate feed-auth|prunes expired local calendar state" \
   --reporter=verbose
 npm run release:audit
 npm audit --audit-level=low

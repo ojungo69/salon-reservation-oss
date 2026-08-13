@@ -68,8 +68,10 @@ expired, and retention-purged reservations leave the feed; completion/no-show bo
 the confirmed schedule entry. Google deletion is retried within a bounded ladder. Removing both
 secrets stops new feed access and provider calls immediately, while local cleanup continues through
 the descriptor-lease and fixed sweep window. The rendered customer disclosure remains visible until
-that residual state is purged, then disappears. See [calendar setup](CALENDAR-SETUP.md) for rotation
-and recovery.
+that residual state is purged, then disappears. If abuse limiting or an authority outage prevents a
+residual-state lookup, the Worker conservatively keeps the bounded, conditional disclosure visible;
+the abuse-limited path performs no Calendar storage work. See [calendar setup](CALENDAR-SETUP.md)
+for rotation and recovery.
 
 Any additional provider adapter must be disabled by default, have a stated purpose and data
 boundary, and update the operator's notice, contracts, security review, and customer rights process

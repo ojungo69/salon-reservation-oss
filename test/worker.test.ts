@@ -3032,7 +3032,7 @@ describe("T035 guided setup API", () => {
     expect(namespaceReads).toBe(0);
   });
 
-  it("rate-limits residual privacy lookup before calendar authority work", async () => {
+  it("conservatively discloses residual calendar state when its lookup cannot run", async () => {
     let namespaceReads = 0;
     const limitedEnv = Object.create(env) as Env;
     Object.defineProperty(limitedEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
@@ -3048,8 +3048,19 @@ describe("T035 guided setup API", () => {
     });
     const response = await worker.fetch(new Request("https://example.test/privacy"), limitedEnv);
     expect(response.status).toBe(200);
-    expect(await response.text()).not.toContain("カレンダー連携を利用する場合");
+    expect(await response.text()).toContain("カレンダー連携を利用する場合");
     expect(namespaceReads).toBe(0);
+
+    const unavailableEnv = Object.create(limitedEnv) as Env;
+    Object.defineProperty(unavailableEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: true }) },
+    });
+    const unavailable = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      unavailableEnv,
+    );
+    expect(await unavailable.text()).toContain("カレンダー連携を利用する場合");
+    expect(namespaceReads).toBe(1);
   });
 
   it("keeps reservation and availability JSON identical through Google retry and terminal failure", async () => {

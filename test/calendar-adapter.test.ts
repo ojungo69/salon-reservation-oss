@@ -970,6 +970,75 @@ describe("calendar projection and feed authority", () => {
     expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 0, failedCount: 0 });
   });
 
+  it("requeues a retained failed delete during reconciliation", async () => {
+    const methods: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init = {}) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") {
+          return Response.json({
+            access_token: "fixture-access-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          });
+        }
+        methods.push(String(init.method));
+        return new Response(null, { status: 204 });
+      }),
+    );
+    const config = await configFor(suiteDate(21));
+    const day = dayStub(config.date);
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await adapterStub().pokeDay({ date: config.date });
+    expect(
+      await day.transitionOwner(config, {
+        commandId: crypto.randomUUID(),
+        date: config.date,
+        reservationId: created.reservationId,
+        action: "cancel",
+      }),
+    ).toMatchObject({ ok: true });
+    await adapterStub().pokeDay({ date: config.date });
+    const authoritative = await day.calendarProjection(config);
+    expect(authoritative).toMatchObject({ ok: true, events: [] });
+
+    for (const status of ["failed", "awaiting-configuration"] as const) {
+      const before = await runInDurableObject(adapterStub(), (_instance, state) => {
+        state.storage.sql.exec(
+          `UPDATE google_mutations SET status = ?, attempt = 7, next_attempt_at = NULL
+           WHERE reservation_id = ?`,
+          status,
+          created.reservationId,
+        );
+        return state.storage.sql
+          .exec<{ desired_version: number }>(
+            "SELECT desired_version FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().desired_version;
+      });
+      await adapterStub().reconcileDay(authoritative);
+      await adapterStub().finishReconcile({ nextCursor: null });
+      await expect(
+        runInDurableObject(adapterStub(), (_instance, state) =>
+          state.storage.sql
+            .exec<{ attempt: number; desired_version: number; status: string }>(
+              `SELECT attempt, desired_version, status FROM google_mutations
+               WHERE reservation_id = ?`,
+              created.reservationId,
+            )
+            .one(),
+        ),
+      ).resolves.toEqual({ attempt: 0, desired_version: before + 1, status: "queued" });
+    }
+
+    await runDurableObjectAlarm(adapterStub());
+    expect(methods).toEqual(["DELETE"]);
+    expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 0, failedCount: 0 });
+  });
+
   it.each([
     [429, null, "queued", "retry"],
     [503, null, "queued", "retry"],

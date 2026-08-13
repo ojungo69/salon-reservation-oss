@@ -80,6 +80,10 @@ still responds.
 `cursor` may be omitted to start at current JST date. It must be a canonical date within the current
 90-day booking horizon. No unknown key is accepted.
 
+Each page replaces the selected days from committed reservation state. With valid Google
+configuration, it also requeues retained failed or configuration-blocked deletes, including rows
+whose schedule projection is already absent.
+
 ### Success
 
 ```json

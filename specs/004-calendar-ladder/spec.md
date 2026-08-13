@@ -114,7 +114,7 @@ redacted diagnostics.
    with incomplete configuration, and the operator sees the configuration problem.
 4. **Given** an outage left mutations pending, **When** the provider recovers and reconciliation
    runs, **Then** current committed reservation state wins and the backlog converges without
-   duplicates.
+   duplicates, including a retained failed delete whose projection row is already absent.
 
 ### Edge Cases
 
@@ -193,6 +193,8 @@ redacted diagnostics.
   reservation or import provider busy time. An outbox event captured before the authoritative day
   projection MUST NOT overwrite that reconciliation if its delivery completes later, and a
   reconciliation snapshot MUST NOT overwrite an event accepted after that snapshot was read.
+  With valid Google configuration, reconciliation MUST requeue retained failed or
+  configuration-blocked deletes even after their projection rows have been removed.
 - **FR-011 (observability)**: Owner-only diagnostics MUST show each mode's configured/active state,
   last successful reconciliation, pending/failed counts, feed authentication-failure count, and a
   bounded redacted terminal ledger. Customer identifiers, reservation identifiers, credential
