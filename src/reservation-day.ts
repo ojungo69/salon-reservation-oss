@@ -80,6 +80,16 @@ export type DayConfig = {
   // Absent on every pre-adapter caller and while the LINE adapter is inactive;
   // deliberately not part of scheduleJson.
   adapter?: DayAdapterDescriptor;
+  // Independent calendar consumer; also transient and excluded from the
+  // pinned schedule so enabling an adapter cannot change availability.
+  calendarAdapter?: DayAdapterDescriptor;
+  // A descriptor lookup timed out. The mutation still records an unbound
+  // calendar outbox event during this bounded window so the active authority
+  // can adopt it durably without outliving a completed disable sweep.
+  calendarRecovery?: {
+    leaseIssuedAt: number;
+    leaseNotAfter: number;
+  };
 };
 
 type TargetDayConfig = DayConfig & {
@@ -150,14 +160,37 @@ export type DayClosureRemoveInput = {
 // that may have been disabled meanwhile. Expired lease → RETRY_CONFIG, and the
 // Worker retries once with a freshly minted projection.
 export type DayAdapterDescriptor = {
-  consumer: "line";
+  consumer: "line" | "calendar";
   generation: number;
   phase: "active" | "deactivating";
   leaseIssuedAt: number;
   leaseNotAfter: number;
 };
 
-export type AdapterEventType = "approve" | "reject" | "reschedule" | "cancel" | "expire";
+const calendarRecoveryDescriptor = (
+  recovery: NonNullable<DayConfig["calendarRecovery"]>,
+): DayAdapterDescriptor => ({
+  consumer: "calendar",
+  generation: 0,
+  phase: "active",
+  leaseIssuedAt: recovery.leaseIssuedAt,
+  leaseNotAfter: recovery.leaseNotAfter,
+});
+
+export type AdapterEventType =
+  | "create"
+  | "approve"
+  | "reject"
+  | "reschedule"
+  | "cancel"
+  | "expire";
+
+export type CalendarReservationStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "cancelled"
+  | "expired";
 
 export type AdapterOutboxEvent = {
   eventId: string;
@@ -167,19 +200,38 @@ export type AdapterOutboxEvent = {
   reservationId: string;
   date: string;
   startTime: string;
+  endTime: string | null;
   serviceLabel: string;
+  reservationStatus: CalendarReservationStatus | null;
   occurredAt: string;
   // The parent partition's retention deadline, carried so a consumer can hold
   // derived rows to exactly the same boundary without reading configuration.
   purgeAt: number;
 };
 
-export type DayDrainInput = { consumer: "line"; limit?: number };
+export type DayDrainInput = { consumer: "line" | "calendar"; limit?: number };
 export type DayDrainResult = { events: AdapterOutboxEvent[]; more: boolean };
 export type DayAckInput = {
-  consumer: "line";
+  consumer: "line" | "calendar";
   events: Array<{ generation: number; eventId: string }>;
 };
+
+export type DayCalendarProjectionResult =
+  | DayFailure
+  | {
+      ok: true;
+      date: string;
+      purgeAt: number;
+      watermark: { generation: number; seq: number };
+      events: Array<{
+        reservationId: string;
+        stampAt: string;
+        startTime: string;
+        endTime: string;
+        serviceLabel: string;
+        status: "pending" | "approved";
+      }>;
+    };
 
 export type DayFailureCode =
   | "BAD_REQUEST"
@@ -496,18 +548,32 @@ const isTargetDayConfig = (config: DayConfig): config is TargetDayConfig => {
   );
 };
 
-const isAdapterDescriptor = (value: DayAdapterDescriptor | undefined): boolean =>
+const isAdapterDescriptor = (
+  value: DayAdapterDescriptor | undefined,
+  consumer: DayAdapterDescriptor["consumer"],
+): boolean =>
   value === undefined ||
   (typeof value === "object" &&
     value !== null &&
-    value.consumer === "line" &&
+    value.consumer === consumer &&
     Number.isSafeInteger(value.generation) &&
     value.generation >= 1 &&
     (value.phase === "active" || value.phase === "deactivating") &&
     Number.isSafeInteger(value.leaseIssuedAt) &&
     value.leaseIssuedAt > 0 &&
     Number.isSafeInteger(value.leaseNotAfter) &&
-    value.leaseNotAfter > value.leaseIssuedAt);
+    value.leaseNotAfter > value.leaseIssuedAt &&
+    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000);
+
+const isCalendarRecovery = (value: DayConfig["calendarRecovery"]): boolean =>
+  value === undefined ||
+  (typeof value === "object" &&
+    value !== null &&
+    Number.isSafeInteger(value.leaseIssuedAt) &&
+    value.leaseIssuedAt > 0 &&
+    Number.isSafeInteger(value.leaseNotAfter) &&
+    value.leaseNotAfter > value.leaseIssuedAt &&
+    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000);
 
 const isDayConfig = (config: DayConfig): boolean => {
   const base =
@@ -531,7 +597,10 @@ const isDayConfig = (config: DayConfig): boolean => {
       (Number.isSafeInteger(config.pendingExpiryMinutes) &&
         config.pendingExpiryMinutes >= 15 &&
         config.pendingExpiryMinutes <= 10080)) &&
-    isAdapterDescriptor(config.adapter);
+    isCalendarRecovery(config.calendarRecovery) &&
+    !(config.calendarRecovery !== undefined && config.calendarAdapter !== undefined) &&
+    isAdapterDescriptor(config.adapter, "line") &&
+    isAdapterDescriptor(config.calendarAdapter, "calendar");
   if (!base) return false;
   if (!hasTargetField(config)) return true;
   return isTargetDayConfig(config);
@@ -977,7 +1046,7 @@ export class ReservationDay extends DurableObject<Env> {
     });
   }
 
-  // ---- LINE adapter outbox (decision records: specs/003-line-adapter/plan.md) ----
+  // ---- Adapter outbox (decision records: specs/003-line-adapter/plan.md) ----
   // Everything below lives in `__`-prefixed tables, which every legacy schema
   // check excludes (`NOT GLOB '__*'` above), so a pre-adapter Worker reads this
   // storage exactly as before. The day alarm stays a plain deleteAll: the
@@ -994,8 +1063,19 @@ export class ReservationDay extends DurableObject<Env> {
     );
   }
 
-  // Called only inside an already-open storage transaction, from an
-  // active-generation event commit — never from reads, drains, or acks.
+  #calendarWatermark(config: DayConfig): { generation: number; seq: number } {
+    const generation = config.calendarAdapter?.generation ?? 0;
+    if (generation === 0 || !this.#adapterOutboxExists()) return { generation, seq: 0 };
+    const seq = this.ctx.storage.sql
+      .exec<{ event_seq: number | null }>(
+        "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
+      )
+      .one().event_seq;
+    return { generation, seq: seq ?? 0 };
+  }
+
+  // Called only inside an already-open storage transaction. Event commits
+  // create/upgrade the schema; drains upgrade a released outbox before reading.
   #ensureAdapterSchema(): void {
     const sql = this.ctx.storage.sql;
     sql.exec(`
@@ -1015,71 +1095,122 @@ export class ReservationDay extends DurableObject<Env> {
         reservation_id TEXT NOT NULL,
         type TEXT NOT NULL,
         start_time TEXT NOT NULL,
+        end_time TEXT,
         service_label TEXT NOT NULL,
+        reservation_status TEXT,
         occurred_at TEXT NOT NULL,
         purge_at INTEGER NOT NULL,
         PRIMARY KEY (consumer, generation, seq)
       )
     `);
+    const columns = new Set(
+      sql
+        .exec<{ name: string }>("PRAGMA table_info('__adapter_outbox')")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    if (!columns.has("end_time")) {
+      sql.exec("ALTER TABLE __adapter_outbox ADD COLUMN end_time TEXT");
+    }
+    if (!columns.has("reservation_status")) {
+      sql.exec("ALTER TABLE __adapter_outbox ADD COLUMN reservation_status TEXT");
+    }
   }
 
   // Records committed reservation changes for the adapter, atomically with the
   // commit itself. No adapter configured → no-op. Deactivating → no new events
   // (disable is an explicit stop; the sweep drains what already exists).
-  // Expired lease → the whole transaction rolls back via RETRY_CONFIG.
+  // An expired LINE lease preserves the released retry contract. Calendar is
+  // optional: a stale or unavailable lease writes generation 0 only inside
+  // the bounded final-pass window; later commits omit the optional event.
   #emitAdapterEvents(
     config: DayConfig,
     events: Array<{
       type: AdapterEventType;
       reservationId: string;
       startTime: string;
+      endTime: string;
       serviceLabel: string;
+      reservationStatus: CalendarReservationStatus;
     }>,
   ): void {
-    const adapter = config.adapter;
-    if (adapter === undefined || events.length === 0) return;
-    if (adapter.phase !== "active") return;
-    if (Date.now() > adapter.leaseNotAfter) throw new AdapterLeaseExpiredError();
-    this.#ensureAdapterSchema();
+    if (events.length === 0) return;
+    const adapters = [
+      config.adapter,
+      config.calendarAdapter,
+      config.calendarRecovery === undefined
+        ? undefined
+        : calendarRecoveryDescriptor(config.calendarRecovery),
+    ].filter(
+      (adapter): adapter is DayAdapterDescriptor => adapter !== undefined,
+    );
+    if (adapters.length === 0) return;
     const sql = this.ctx.storage.sql;
     // A partition's retention boundary is frozen on first write. A later
     // config snapshot may have a different retentionDays value, but events
     // from this partition must keep the boundary already stored with it.
     const purgeAt = this.#readMeta()?.purgeAt ?? config.purgeAt;
-    const row = sql
-      .exec<{ event_seq: number }>(
-        "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
-        adapter.consumer,
-        adapter.generation,
-      )
-      .toArray()[0];
-    let seq = row?.event_seq ?? 0;
     const occurredAt = new Date().toISOString();
-    for (const event of events) {
-      seq += 1;
+    for (const adapter of adapters) {
+      const accepted =
+        adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
+      if (adapter.phase !== "active" || accepted.length === 0) continue;
+      let generation = adapter.generation;
+      const now = Date.now();
+      if (now > adapter.leaseNotAfter) {
+        if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
+        if (
+          adapter.generation === 0 ||
+          now >= adapter.leaseIssuedAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000
+        ) {
+          continue;
+        }
+        generation = 0;
+      }
+      this.#ensureAdapterSchema();
+      let seq =
+        adapter.consumer === "calendar"
+          ? (sql
+              .exec<{ event_seq: number | null }>(
+                "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
+              )
+              .one().event_seq ?? 0)
+          : (sql
+              .exec<{ event_seq: number }>(
+                "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
+                adapter.consumer,
+                adapter.generation,
+              )
+              .toArray()[0]?.event_seq ?? 0);
+      for (const event of accepted) {
+        seq += 1;
+        sql.exec(
+          `INSERT INTO __adapter_outbox
+             (consumer, generation, seq, event_id, reservation_id, type, start_time,
+              end_time, service_label, reservation_status, occurred_at, purge_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          adapter.consumer,
+          generation,
+          seq,
+          `${config.date}#${seq}`,
+          event.reservationId,
+          event.type,
+          event.startTime,
+          event.endTime,
+          event.serviceLabel,
+          event.reservationStatus,
+          occurredAt,
+          purgeAt,
+        );
+      }
       sql.exec(
-        `INSERT INTO __adapter_outbox
-           (consumer, generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
+         ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
         adapter.consumer,
-        adapter.generation,
+        generation,
         seq,
-        `${config.date}#${seq}`,
-        event.reservationId,
-        event.type,
-        event.startTime,
-        event.serviceLabel,
-        occurredAt,
-        purgeAt,
       );
     }
-    sql.exec(
-      `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
-       ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
-      adapter.consumer,
-      adapter.generation,
-      seq,
-    );
   }
 
   // Post-commit handoff: wake the delivery object when this day holds outbox
@@ -1087,22 +1218,42 @@ export class ReservationDay extends DurableObject<Env> {
   // this only shortens the common case. Also serves as the lazy re-poke on
   // next use after a died handoff.
   #adapterHandoff(config: DayConfig): void {
-    if (config.adapter === undefined) return;
-    try {
-      if (!this.#adapterOutboxExists()) return;
-      const pending = this.ctx.storage.sql
-        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox")
-        .toArray()[0];
-      if (pending === undefined || pending.n === 0) return;
-      const stub = this.env.ADAPTER_DELIVERY.getByName("installation");
-      this.ctx.waitUntil(
-        Promise.resolve(stub.pokeDay({ date: config.date })).then(
-          () => undefined,
-          () => undefined,
-        ),
-      );
-    } catch {
-      // The sweep recovers anything a failed poke leaves behind.
+    if (
+      config.adapter === undefined &&
+      config.calendarAdapter === undefined &&
+      config.calendarRecovery === undefined
+    ) {
+      return;
+    }
+    if (!this.#adapterOutboxExists()) return;
+    for (const adapter of [
+      config.adapter,
+      config.calendarAdapter,
+      config.calendarRecovery === undefined
+        ? undefined
+        : calendarRecoveryDescriptor(config.calendarRecovery),
+    ]) {
+      if (adapter === undefined) continue;
+      try {
+        const pending = this.ctx.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM __adapter_outbox WHERE consumer = ?",
+            adapter.consumer,
+          )
+          .toArray()[0]?.n;
+        if (pending === undefined || pending === 0) continue;
+        const namespace =
+          adapter.consumer === "line" ? this.env.ADAPTER_DELIVERY : this.env.CALENDAR_ADAPTER;
+        const stub = namespace.getByName("installation");
+        this.ctx.waitUntil(
+          Promise.resolve(stub.pokeDay({ date: config.date })).then(
+            () => undefined,
+            () => undefined,
+          ),
+        );
+      } catch {
+        // The consumer's sweep recovers anything a failed poke leaves behind.
+      }
     }
   }
 
@@ -1113,7 +1264,7 @@ export class ReservationDay extends DurableObject<Env> {
     if (
       typeof input !== "object" ||
       input === null ||
-      input.consumer !== "line" ||
+      !["line", "calendar"].includes(input.consumer) ||
       (input.limit !== undefined &&
         (!Number.isSafeInteger(input.limit) || input.limit < 1))
     ) {
@@ -1121,6 +1272,7 @@ export class ReservationDay extends DurableObject<Env> {
     }
     const limit = Math.min(input.limit ?? ADAPTER.OUTBOX_DRAIN_BATCH, ADAPTER.OUTBOX_DRAIN_BATCH);
     if (!this.#adapterOutboxExists()) return { events: [], more: false };
+    this.ctx.storage.transactionSync(() => this.#ensureAdapterSchema());
     const rows = this.ctx.storage.sql
       .exec<{
         generation: number;
@@ -1129,11 +1281,14 @@ export class ReservationDay extends DurableObject<Env> {
         reservation_id: string;
         type: string;
         start_time: string;
+        end_time: string | null;
         service_label: string;
+        reservation_status: string | null;
         occurred_at: string;
         purge_at: number;
       }>(
-        `SELECT generation, seq, event_id, reservation_id, type, start_time, service_label, occurred_at, purge_at
+        `SELECT generation, seq, event_id, reservation_id, type, start_time, end_time,
+                service_label, reservation_status, occurred_at, purge_at
          FROM __adapter_outbox WHERE consumer = ?
          ORDER BY generation, seq LIMIT ?`,
         input.consumer,
@@ -1149,14 +1304,22 @@ export class ReservationDay extends DurableObject<Env> {
     for (const row of rows.slice(0, limit)) {
       if (
         !Number.isSafeInteger(row.generation) ||
-        row.generation < 1 ||
+        (row.generation < 1 && !(input.consumer === "calendar" && row.generation === 0)) ||
         !Number.isSafeInteger(row.seq) ||
         row.seq < 1 ||
         row.event_id !== `${meta.date}#${row.seq}` ||
         !UUID.test(row.reservation_id) ||
-        !["approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
+        !["create", "approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
         !TIME.test(row.start_time) ||
+        (row.end_time !== null && !TIME.test(row.end_time)) ||
         !boundedText(row.service_label, 1, 323) ||
+        (row.reservation_status !== null &&
+          !["pending", "approved", "rejected", "cancelled", "expired"].includes(
+            row.reservation_status,
+          )) ||
+        (input.consumer === "calendar" &&
+          (row.end_time === null || row.reservation_status === null)) ||
+        (input.consumer === "line" && row.type === "create") ||
         !TIMESTAMP.test(row.occurred_at) ||
         !Number.isSafeInteger(row.purge_at)
       ) {
@@ -1170,7 +1333,9 @@ export class ReservationDay extends DurableObject<Env> {
         reservationId: row.reservation_id,
         date: meta.date,
         startTime: row.start_time,
+        endTime: row.end_time,
         serviceLabel: row.service_label,
+        reservationStatus: row.reservation_status as CalendarReservationStatus | null,
         occurredAt: row.occurred_at,
         purgeAt: row.purge_at,
       });
@@ -1182,7 +1347,7 @@ export class ReservationDay extends DurableObject<Env> {
     if (
       typeof input !== "object" ||
       input === null ||
-      input.consumer !== "line" ||
+      !["line", "calendar"].includes(input.consumer) ||
       !Array.isArray(input.events) ||
       input.events.length > ADAPTER.OUTBOX_DRAIN_BATCH ||
       !input.events.every(
@@ -1190,7 +1355,8 @@ export class ReservationDay extends DurableObject<Env> {
           typeof event === "object" &&
           event !== null &&
           Number.isSafeInteger(event.generation) &&
-          event.generation >= 1 &&
+          (event.generation >= 1 ||
+            (input.consumer === "calendar" && event.generation === 0)) &&
           typeof event.eventId === "string" &&
           /^\d{4}-\d{2}-\d{2}#\d{1,9}$/.test(event.eventId),
       )
@@ -1218,22 +1384,43 @@ export class ReservationDay extends DurableObject<Env> {
    * to the exact pre-adapter storage shape. On a day that never emitted an
    * event this is a no-op that creates nothing.
    */
-  async purgeConsumer(input: { consumer: "line" }): Promise<{
+  async purgeConsumer(input: {
+    consumer: "line" | "calendar";
+    throughGeneration?: number;
+  }): Promise<{
     ok: true;
     removed: number;
     dropped: boolean;
   }> {
-    if (typeof input !== "object" || input === null || input.consumer !== "line") {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      !["line", "calendar"].includes(input.consumer) ||
+      (input.throughGeneration !== undefined &&
+        (!Number.isSafeInteger(input.throughGeneration) || input.throughGeneration < 1))
+    ) {
       throw new Error("bad purge input");
     }
     if (!this.#adapterOutboxExists()) return { ok: true, removed: 0, dropped: false };
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
-      const removed = sql.exec(
-        "DELETE FROM __adapter_outbox WHERE consumer = ?",
-        input.consumer,
-      ).rowsWritten;
-      sql.exec("DELETE FROM __adapter_meta WHERE consumer = ?", input.consumer);
+      const removed =
+        input.throughGeneration === undefined
+          ? sql.exec("DELETE FROM __adapter_outbox WHERE consumer = ?", input.consumer).rowsWritten
+          : sql.exec(
+              "DELETE FROM __adapter_outbox WHERE consumer = ? AND generation <= ?",
+              input.consumer,
+              input.throughGeneration,
+            ).rowsWritten;
+      if (input.throughGeneration === undefined) {
+        sql.exec("DELETE FROM __adapter_meta WHERE consumer = ?", input.consumer);
+      } else {
+        sql.exec(
+          "DELETE FROM __adapter_meta WHERE consumer = ? AND generation <= ?",
+          input.consumer,
+          input.throughGeneration,
+        );
+      }
       const remaining =
         sql
           .exec<{ n: number }>(
@@ -1635,7 +1822,9 @@ export class ReservationDay extends DurableObject<Env> {
       type: AdapterEventType;
       reservationId: string;
       startTime: string;
+      endTime: string;
       serviceLabel: string;
+      reservationStatus: CalendarReservationStatus;
     }> = [];
     for (const { reservationId } of due) {
       const detail = this.#readDetail(reservationId);
@@ -1674,7 +1863,9 @@ export class ReservationDay extends DurableObject<Env> {
         type: "expire",
         reservationId,
         startTime: jstTime(reservation.startAt),
+        endTime: jstTime(reservation.endAt),
         serviceLabel: bookingServiceLabel(detail.snapshot),
+        reservationStatus: "expired",
       });
     }
     this.#writeState(state);
@@ -2089,6 +2280,20 @@ export class ReservationDay extends DurableObject<Env> {
           (meta?.acceptedCreates ?? 0) + 1,
           meta?.acceptedMutations ?? 0,
         );
+        if (status === "pending" || status === "approved") {
+          const reservation = result.state.reservations.find(({ id }) => id === reservationId);
+          if (reservation === undefined) throw new Error("missing created reservation");
+          this.#emitAdapterEvents(config, [
+            {
+              type: "create",
+              reservationId,
+              startTime: input.startTime,
+              endTime: jstTime(reservation.endAt),
+              serviceLabel: bookingServiceLabel(snapshot),
+              reservationStatus: status,
+            },
+          ]);
+        }
         return response;
       });
     } catch (error) {
@@ -2340,7 +2545,9 @@ export class ReservationDay extends DurableObject<Env> {
               type: input.action,
               reservationId: input.reservationId,
               startTime: response.startTime,
+              endTime: jstTime(current.endAt),
               serviceLabel: bookingServiceLabel(detail.snapshot),
+              reservationStatus: status as CalendarReservationStatus,
             },
           ]);
         }
@@ -2550,7 +2757,9 @@ export class ReservationDay extends DurableObject<Env> {
             type: "cancel",
             reservationId: reservation.id,
             startTime: response.startTime,
+            endTime: jstTime(reservation.endAt),
             serviceLabel: bookingServiceLabel(detail.snapshot),
+            reservationStatus: "cancelled",
           },
         ]);
         return response;
@@ -2790,6 +2999,80 @@ export class ReservationDay extends DurableObject<Env> {
         );
         return response;
       });
+    } catch (error) {
+      if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
+      return failure("TEMPORARILY_UNAVAILABLE");
+    } finally {
+      this.#adapterHandoff(config);
+    }
+  }
+
+  async calendarProjection(config: DayConfig): Promise<DayCalendarProjectionResult> {
+    if (!isDayConfig(config) || !isTargetDayConfig(config)) {
+      return failure("CONFIGURATION_CONFLICT");
+    }
+    try {
+      if (!this.#hasSchema()) {
+        return {
+          ok: true,
+          date: config.date,
+          purgeAt: config.purgeAt,
+          watermark: this.#calendarWatermark(config),
+          events: [],
+        };
+      }
+      this.ctx.storage.transactionSync(() => this.#expire(config));
+      const meta = this.#readMeta();
+      const { state, persisted } = this.#readState();
+      const effective = this.#effectiveConfig(config, meta, persisted);
+      if ("ok" in effective) return effective;
+      if (!isTargetDayConfig(effective)) return failure("CONFIGURATION_CONFLICT");
+      if (meta === null) {
+        return {
+          ok: true,
+          date: effective.date,
+          purgeAt: config.purgeAt,
+          watermark: this.#calendarWatermark(config),
+          events: [],
+        };
+      }
+      const details = this.#readAllDetails();
+      const events = state.reservations
+        .flatMap((reservation) => {
+          const detail = details.get(reservation.id);
+          if (detail === undefined) throw new Error("missing detail");
+          const status: "pending" | "approved" | null =
+            detail.status === "pending"
+              ? "pending"
+              : detail.status === "approved" ||
+                  detail.status === "completed" ||
+                  detail.status === "no_show"
+                ? "approved"
+                : null;
+          if (status === null || detail.snapshot === null) return [];
+          return [
+            {
+              reservationId: reservation.id,
+              stampAt: detail.createdAt,
+              startTime: jstTime(reservation.startAt),
+              endTime: jstTime(reservation.endAt),
+              serviceLabel: bookingServiceLabel(detail.snapshot),
+              status,
+            },
+          ];
+        })
+        .sort(
+          (left, right) =>
+            left.startTime.localeCompare(right.startTime) ||
+            left.reservationId.localeCompare(right.reservationId),
+        );
+      return {
+        ok: true,
+        date: effective.date,
+        purgeAt: meta.purgeAt,
+        watermark: this.#calendarWatermark(config),
+        events,
+      };
     } catch (error) {
       if (error instanceof AdapterLeaseExpiredError) return failure("RETRY_CONFIG");
       return failure("TEMPORARILY_UNAVAILABLE");

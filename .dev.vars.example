@@ -3,3 +3,8 @@ TURNSTILE_SECRET="1x0000000000000000000000000000000AA"
 
 # Generate a local value with: openssl rand -base64 32
 OWNER_TOKEN="replace-with-at-least-32-random-characters"
+
+# Optional calendar adapters. Generate a feed token with `openssl rand -base64 32`
+# and convert it to unpadded base64url. Keep Google OAuth values fictional here.
+# CALENDAR_FEED_TOKEN="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+# GOOGLE_CALENDAR_CREDENTIALS='{"clientId":"fixture.apps.googleusercontent.com","clientSecret":"fixture-only","refreshToken":"fixture-only","calendarId":"fixture@example.invalid"}'

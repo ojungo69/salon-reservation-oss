@@ -52,9 +52,30 @@ provider, external identity provider, CRM, or analytics provider. Its Cloudflare
 use Workers, Durable Objects, Static Assets, Rate Limiting, and Turnstile to process the request;
 placement is not a guarantee of Japan-only residency.
 
-Any future provider adapter must be disabled by default, have a stated purpose and data boundary,
-and update the operator's notice, contracts, security review, and customer rights process before it
-receives personal data. The core booking path must remain usable without such an adapter.
+Two independently optional calendar modes are available. An authenticated iCalendar subscription
+stores and publishes only the reservation start/end, selected service label, pending/approved
+state, stable opaque event UID, and event creation timestamp. Its capability URL grants read access
+to those fields; keep it out of logs, analytics, screenshots, issues, and messages, and rotate its
+dedicated token after suspected disclosure. Optional Google outbound synchronization sends the
+same schedule facts plus a stable, non-reversible event identifier. It does not send the customer
+name/contact, resource, management key, reservation reference, attendee, location, description, or
+management URL. Google then processes the event under the operator's Google configuration and
+terms.
+
+Calendar projections, desired outbound mutations, deduplication evidence, and aggregate operational
+records are bounded and never become the reservation system of record. Rejected, cancelled,
+expired, and retention-purged reservations leave the feed; completion/no-show bookkeeping keeps
+the confirmed schedule entry. Google deletion is retried within a bounded ladder. Removing both
+secrets stops new feed access and provider calls immediately, while local cleanup continues through
+the descriptor-lease and fixed sweep window. The rendered customer disclosure remains visible until
+that residual state is purged, then disappears. If abuse limiting, an authority error, or the 250 ms
+lookup deadline prevents a residual-state answer, the Worker conservatively keeps the bounded,
+conditional disclosure visible; the abuse-limited path performs no Calendar storage work. See
+[calendar setup](CALENDAR-SETUP.md) for rotation and recovery.
+
+Any additional provider adapter must be disabled by default, have a stated purpose and data
+boundary, and update the operator's notice, contracts, security review, and customer rights process
+before it receives personal data. The core booking path remains usable without every adapter.
 
 ## Operator checklist: edit before live use
 

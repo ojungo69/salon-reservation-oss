@@ -397,8 +397,18 @@ describe("lifecycle coordinator recovery", () => {
 });
 
 describe("privacy page state rule", () => {
+  const lineOnlyEnv = Object.create(env) as Env;
+  Object.defineProperties(lineOnlyEnv, {
+    CALENDAR_FEED_TOKEN: { value: undefined },
+    GOOGLE_CALENDAR_CREDENTIALS: { value: undefined },
+    CALENDAR_ADAPTER: {
+      value: {
+        getByName: () => ({ hasDisclosure: () => Promise.resolve(false) }),
+      } as unknown as Env["CALENDAR_ADAPTER"],
+    },
+  });
   // Both public privacy paths share the state-aware Worker handler.
-  const fetchPrivacy = async (customEnv: Env = env): Promise<Response> =>
+  const fetchPrivacy = async (customEnv: Env = lineOnlyEnv): Promise<Response> =>
     worker.fetch(new Request("https://example.test/privacy"), customEnv);
 
   it("serves the asset unchanged until the adapter exists, then discloses per state", async () => {
@@ -416,7 +426,7 @@ describe("privacy page state rule", () => {
     // Before activation, /privacy.html remains the same disclosure-free asset.
     const htmlPath = await worker.fetch(
       new Request("https://example.test/privacy.html"),
-      env,
+      lineOnlyEnv,
     );
     expect(await htmlPath.text()).not.toContain("LINE 連携を利用する場合");
 
@@ -428,7 +438,7 @@ describe("privacy page state rule", () => {
     expect(active).toContain("通知の本文には日時、選択したサービス、予約の状態を含めます。");
     const activeHtmlPath = await worker.fetch(
       new Request("https://example.test/privacy.html"),
-      env,
+      lineOnlyEnv,
     );
     expect(await activeHtmlPath.text()).toContain("LINE 連携を利用する場合");
     // Injected disclosure carries the operational-records paragraph.
@@ -437,7 +447,7 @@ describe("privacy page state rule", () => {
 
     // Missing secret (state active, binding absent): still rendered — data
     // may still be held.
-    const noSecretEnv = Object.create(env) as Env;
+    const noSecretEnv = Object.create(lineOnlyEnv) as Env;
     Object.defineProperty(noSecretEnv, "LINE_MESSAGING_CHANNEL_SECRET", {
       value: undefined,
     });

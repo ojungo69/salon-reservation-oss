@@ -24,6 +24,8 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
   becomes `expired`, and the time it was holding goes back on sale — until now an abandoned request
   blocked its slot until the day itself was purged. The customer's status page and the operator's
   schedule both show the deadline while a request is still waiting.
+- Optional schedule-only iCalendar subscription and Google Calendar outbound adapters, with
+  owner-only reconciliation, bounded retries and retention, and no effect on booking availability.
 
 - `.nvmrc` pinning the exact Node.js version, which CI now reads as its single source of truth.
 - A CI assertion that fails when an installed package has an install script outside the

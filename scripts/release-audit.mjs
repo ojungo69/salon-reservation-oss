@@ -12,6 +12,8 @@ const ALLOWED_NAMED_SECRETS = new Map([
   [".dev.vars.example:OWNER_TOKEN", "replace-with-at-least-32-random-characters"],
   ["vitest.config.ts:TURNSTILE_SECRET", "turnstile-test-secret"],
   ["vitest.config.ts:OWNER_TOKEN", "owner-test-token-0123456789abcdef0123456789"],
+  ["vitest.config.ts:CALENDAR_FEED_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+  ["tests-browser/harness.ts:CALENDAR_FEED_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
 ]);
 const ALLOWED_DEPENDENCY_LICENSES = new Set([
   "0BSD",
@@ -36,6 +38,7 @@ const REQUIRED = new Set([
   "README.md",
   "SECURITY.md",
   "docs/ADAPTER-CONTRACTS.md",
+  "docs/CALENDAR-SETUP.md",
   "docs/CLOUDFLARE.md",
   "docs/PARITY.md",
   "docs/ROADMAP.md",
@@ -57,8 +60,10 @@ const REQUIRED = new Set([
   "scripts/assemble-public-release.sh",
   "scripts/release-audit.mjs",
   "src/installation-config.ts",
+  "src/calendar-adapter.ts",
   "src/worker.ts",
   "test/installation-config.test.ts",
+  "test/calendar-adapter.test.ts",
   "test/journey.test.ts",
   "test/reservation-day.test.ts",
   "test/worker.test.ts",
@@ -156,7 +161,7 @@ const scanText = (label, text, denylist) => {
   const forbiddenRoots = ["home", "Users"].map((name) => new RegExp(`/${name}/[^/\\s]+/`));
   const email = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
   const secretName =
-    "(OWNER_TOKEN|TURNSTILE_SECRET|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
+    "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
   const dotenvSecret = new RegExp(
     `^\\s*(?:export\\s+)?${secretName}\\s*=\\s*(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s#]+))\\s*(?:#.*)?$`,
     "gm",

@@ -6,6 +6,7 @@ import { expect, type Page } from "@playwright/test";
 export const OWNER_TOKEN = "owner-test-token-0123456789abcdef0123456789";
 export const TURNSTILE_SECRET = "turnstile-test-secret";
 export const LINE_MESSAGING_CHANNEL_SECRET = "line-test-channel-secret-0123456789abcdef";
+export const CALENDAR_FEED_TOKEN = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 // An installation refuses to go live on a Cloudflare test site key or a local
 // hostname, both on purpose. The suite therefore uses a non-test key and a
 // reserved .example hostname that Chromium is told to resolve to the dev server.

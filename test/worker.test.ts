@@ -9,8 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   DayConfig,
+  DayCalendarProjectionResult,
   ReservationDay,
 } from "../src/reservation-day.ts";
+import type { CalendarAdapter } from "../src/calendar-adapter.ts";
 import worker from "../src/worker.ts";
 
 const nextOpenJstDate = (minimumOffset = 0) => {
@@ -2881,5 +2883,728 @@ describe("T035 guided setup API", () => {
     expect(JSON.stringify(receipt)).not.toMatch(
       /owner-test-token|turnstile-test-secret|managementKey|customer/i,
     );
+  });
+
+  it("keeps public config byte-identical and avoids calendar RPC", async () => {
+    const noCalendarEnv = Object.create(env) as Env;
+    Object.defineProperty(noCalendarEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
+    Object.defineProperty(noCalendarEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    let namespaceReads = 0;
+    const configuredEnv = Object.create(env) as Env;
+    Object.defineProperty(configuredEnv, "CALENDAR_ADAPTER", {
+      get: () => {
+        namespaceReads += 1;
+        throw new Error("calendar namespace must stay untouched");
+      },
+    });
+
+    const baseline = await worker.fetch(
+      new Request("https://example.test/api/config"),
+      noCalendarEnv,
+    );
+    const configured = await worker.fetch(
+      new Request("https://example.test/api/config"),
+      configuredEnv,
+    );
+    expect(configured.status).toBe(200);
+    expect(await configured.text()).toBe(await baseline.text());
+    expect(namespaceReads).toBe(0);
+  });
+
+  it("serves only the exact capability-authenticated no-store calendar feed", async () => {
+    const token = "A".repeat(43);
+    const valid = await SELF.fetch(
+      `https://example.test/api/adapters/calendar/feed.ics?token=${token}`,
+    );
+    expect(valid.status).toBe(200);
+    expect(valid.headers.get("content-type")).toBe("text/calendar; charset=utf-8");
+    expect(valid.headers.get("cache-control")).toBe("private, no-store");
+    expect(valid.headers.get("x-content-type-options")).toBe("nosniff");
+    const body = await valid.text();
+    expect(body).toContain("BEGIN:VCALENDAR\r\n");
+    expect(body).not.toMatch(/customer|contact|management|reservationId|calendarId/i);
+
+    const failures = await Promise.all(
+      [
+        "/api/adapters/calendar/feed.ics",
+        "/api/adapters/calendar/feed.ics?token=bad",
+        `/api/adapters/calendar/feed.ics?token=${"B".repeat(43)}`,
+        `/api/adapters/calendar/feed.ics?token=${token}&extra=1`,
+        `/api/adapters/calendar/feed.ics?token=${token}&token=${token}`,
+      ].map((path) => SELF.fetch(`https://example.test${path}`)),
+    );
+    failures.push(
+      await SELF.fetch(
+        `https://example.test/api/adapters/calendar/feed.ics?token=${token}`,
+        { method: "POST" },
+      ),
+    );
+    const signatures = await Promise.all(
+      failures.map(async (response) => ({
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        body: await response.text(),
+      })),
+    );
+    expect(new Set(signatures.map(JSON.stringify))).toHaveLength(1);
+    expect(signatures[0]?.status).toBe(404);
+
+    const noCalendarEnv = Object.create(env) as Env;
+    Object.defineProperty(noCalendarEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
+    const absent = await worker.fetch(
+      new Request(`https://example.test/api/adapters/calendar/feed.ics?token=${token}`),
+      noCalendarEnv,
+    );
+    expect({
+      status: absent.status,
+      contentType: absent.headers.get("content-type"),
+      body: await absent.text(),
+    }).toEqual(signatures[0]);
+
+    let limitedNamespaceReads = 0;
+    const limitedEnv = Object.create(env) as Env;
+    Object.defineProperty(limitedEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: false }) },
+    });
+    Object.defineProperty(limitedEnv, "CALENDAR_ADAPTER", {
+      get: () => {
+        limitedNamespaceReads += 1;
+        throw new Error("limited feed must not reach calendar authority");
+      },
+    });
+    const limited = await worker.fetch(
+      new Request(`https://example.test/api/adapters/calendar/feed.ics?token=${token}`),
+      limitedEnv,
+    );
+    expect({
+      status: limited.status,
+      contentType: limited.headers.get("content-type"),
+      body: await limited.text(),
+    }).toEqual(signatures[0]);
+    expect(limitedNamespaceReads).toBe(0);
+
+    let secretValue = token;
+    const calendar = env.CALENDAR_ADAPTER.getByName(
+      "installation",
+    ) as DurableObjectStub<CalendarAdapter>;
+    const mutable = await runInDurableObject(calendar, (instance) => {
+      const objectEnv = (instance as unknown as { env: Env }).env;
+      try {
+        Object.defineProperty(objectEnv, "CALENDAR_FEED_TOKEN", {
+          configurable: true,
+          get: () => secretValue,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(mutable).toBe(true);
+    secretValue = "C".repeat(43);
+    const rotatedEnv = Object.create(env) as Env;
+    Object.defineProperty(rotatedEnv, "CALENDAR_FEED_TOKEN", { value: secretValue });
+    const former = await worker.fetch(
+      new Request(`https://example.test/api/adapters/calendar/feed.ics?token=${token}`),
+      rotatedEnv,
+    );
+    const rotated = await worker.fetch(
+      new Request(`https://example.test/api/adapters/calendar/feed.ics?token=${secretValue}`),
+      rotatedEnv,
+    );
+    expect(former.status).toBe(404);
+    expect(rotated.status).toBe(200);
+    secretValue = token;
+  });
+
+  it("rate-limits public availability before calendar authority work", async () => {
+    let namespaceReads = 0;
+    const limitedEnv = Object.create(env) as Env;
+    Object.defineProperty(limitedEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: false }) },
+    });
+    Object.defineProperty(limitedEnv, "CALENDAR_ADAPTER", {
+      get: () => {
+        namespaceReads += 1;
+        throw new Error("limited availability must not reach calendar authority");
+      },
+    });
+    const response = await worker.fetch(new Request(availabilityUrl()), limitedEnv);
+    expect(response.status).toBe(429);
+    expect(namespaceReads).toBe(0);
+  });
+
+  it("fails open when the optional calendar descriptor stalls", async () => {
+    await enableLiveInstallation();
+    let releaseDescriptor!: (value: null) => void;
+    const descriptor = new Promise<null>((resolve) => {
+      releaseDescriptor = resolve;
+    });
+    const stalledEnv = Object.create(env) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(stalledEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: {
+        getByName: () => ({ descriptor: () => descriptor }),
+      },
+    });
+
+    const responsePromise = worker.fetch(new Request(availabilityUrl()), stalledEnv);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      responsePromise.then(() => "response" as const),
+      new Promise<"stalled">((resolve) => {
+        watchdog = setTimeout(() => resolve("stalled"), 1_000);
+      }),
+    ]);
+    clearTimeout(watchdog);
+    releaseDescriptor(null);
+    const response = await responsePromise;
+
+    expect(outcome).toBe("response");
+    expect(response.status).toBe(200);
+  });
+
+  it("records durable recovery when a descriptor stalls during a committed mutation", async () => {
+    await enableLiveInstallation();
+    const fixture = await publicCreateBody();
+    const dayObject = stubFor();
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(dayObject, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    let releaseDescriptor!: (value: null) => void;
+    const descriptor = new Promise<null>((resolve) => {
+      releaseDescriptor = resolve;
+    });
+    const stalledEnv = Object.create(env) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(stalledEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => ({ descriptor: () => descriptor }) },
+    });
+
+    let response: Response;
+    try {
+      response = await worker.fetch(
+        new Request("https://example.test/api/reservations", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://example.test",
+          },
+          body: JSON.stringify(fixture.body),
+        }),
+        stalledEnv,
+      );
+    } finally {
+      releaseDescriptor(null);
+      await runInDurableObject(dayObject, (instance) => {
+        Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+          configurable: true,
+          value: calendarNamespace,
+        });
+      });
+    }
+
+    expect(response.status).toBe(201);
+    expect(
+      await runInDurableObject(dayObject, (_instance, state) =>
+        state.storage.sql
+          .exec<{ generation: number }>(
+            "SELECT generation FROM __adapter_outbox WHERE consumer = 'calendar'",
+          )
+          .one().generation,
+      ),
+    ).toBe(0);
+  });
+
+  it("conservatively discloses residual calendar state when its lookup cannot run", async () => {
+    let namespaceReads = 0;
+    const limitedEnv = Object.create(env) as Env;
+    Object.defineProperty(limitedEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
+    Object.defineProperty(limitedEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(limitedEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: false }) },
+    });
+    Object.defineProperty(limitedEnv, "CALENDAR_ADAPTER", {
+      get: () => {
+        namespaceReads += 1;
+        throw new Error("limited privacy request must not reach calendar authority");
+      },
+    });
+    const response = await worker.fetch(new Request("https://example.test/privacy"), limitedEnv);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("カレンダー連携を利用する場合");
+    expect(namespaceReads).toBe(0);
+
+    const unavailableEnv = Object.create(limitedEnv) as Env;
+    Object.defineProperty(unavailableEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: true }) },
+    });
+    const unavailable = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      unavailableEnv,
+    );
+    expect(await unavailable.text()).toContain("カレンダー連携を利用する場合");
+    expect(namespaceReads).toBe(1);
+
+    let releaseDisclosure!: (value: false) => void;
+    const disclosure = new Promise<false>((resolve) => {
+      releaseDisclosure = resolve;
+    });
+    const stalledEnv = Object.create(unavailableEnv) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => ({ hasDisclosure: () => disclosure }) },
+    });
+    const responsePromise = worker.fetch(
+      new Request("https://example.test/privacy"),
+      stalledEnv,
+    );
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      responsePromise.then(() => "response" as const),
+      new Promise<"stalled">((resolve) => {
+        watchdog = setTimeout(() => resolve("stalled"), 1_000);
+      }),
+    ]);
+    clearTimeout(watchdog);
+    releaseDisclosure(false);
+    const stalled = await responsePromise;
+
+    expect(outcome).toBe("response");
+    expect(await stalled.text()).toContain("カレンダー連携を利用する場合");
+  });
+
+  it("keeps reservation and availability JSON identical through Google retry and terminal failure", async () => {
+    await enableLiveInstallation();
+    await acceptedPublicCreate({ serviceIds: ["service-cut"] });
+    const availability = availabilityUrl(["service-cut"]);
+    const schedule = `https://example.test/api/admin/schedule?startDate=${day.date}&days=1`;
+    const snapshot = async () => {
+      const [publicResponse, ownerResponse] = await Promise.all([
+        SELF.fetch(availability),
+        SELF.fetch(schedule, { headers: ownerHeaders }),
+      ]);
+      expect(publicResponse.status).toBe(200);
+      expect(ownerResponse.status).toBe(200);
+      return [await publicResponse.text(), await ownerResponse.text()];
+    };
+    const before = await snapshot();
+
+    let calendarStatus = 503;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        const url = String(input);
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({
+            access_token: "fixture-access-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          });
+        }
+        if (url.startsWith("https://www.googleapis.com/calendar/v3/")) {
+          return new Response(null, { status: calendarStatus });
+        }
+        throw new Error(`unexpected outbound request: ${url}`);
+      }),
+    );
+    const calendar = env.CALENDAR_ADAPTER.getByName(
+      "installation",
+    ) as DurableObjectStub<CalendarAdapter>;
+    await calendar.pokeDay({ date: day.date });
+    await runDurableObjectAlarm(calendar);
+    expect(await snapshot()).toEqual(before);
+    expect(await calendar.diagnostics()).toMatchObject({ pendingCount: 1, failedCount: 0 });
+
+    calendarStatus = 400;
+    await runInDurableObject(calendar, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE google_mutations SET next_attempt_at = ? WHERE status = 'queued'",
+        Date.now(),
+      );
+    });
+    await runDurableObjectAlarm(calendar);
+    expect(await snapshot()).toEqual(before);
+    expect(await calendar.diagnostics()).toMatchObject({ pendingCount: 0, failedCount: 1 });
+  });
+
+  it("gates and redacts calendar status for every independent mode", async () => {
+    const fixtureGoogle = JSON.stringify({
+      clientId: "fixture.apps.googleusercontent.com",
+      clientSecret: "fixture-client-secret",
+      refreshToken: "fixture-refresh-token",
+      calendarId: "fixture+calendar@example.invalid",
+    });
+    let authorityFeed: string | undefined;
+    let authorityGoogle: string | undefined;
+    const calendar = env.CALENDAR_ADAPTER.getByName(
+      "installation",
+    ) as DurableObjectStub<CalendarAdapter>;
+    expect(
+      await runInDurableObject(calendar, (instance) => {
+        const objectEnv = (instance as unknown as { env: Env }).env;
+        try {
+          Object.defineProperties(objectEnv, {
+            CALENDAR_FEED_TOKEN: { configurable: true, get: () => authorityFeed },
+            GOOGLE_CALENDAR_CREDENTIALS: {
+              configurable: true,
+              get: () => authorityGoogle,
+            },
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    ).toBe(true);
+    const noCalendarEnv = Object.create(env) as Env;
+    Object.defineProperty(noCalendarEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
+    Object.defineProperty(noCalendarEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    const request = new Request("https://example.test/api/admin/calendar/status", {
+      headers: ownerHeaders,
+    });
+    const off = await worker.fetch(request, noCalendarEnv);
+    expect(off.status).toBe(200);
+    expect(await off.json()).toEqual({
+      ok: true,
+      modes: {
+        ics: { configured: false, active: false },
+        google: { configured: false, active: false },
+      },
+      authority: null,
+    });
+
+    authorityFeed = "A".repeat(43);
+    authorityGoogle = fixtureGoogle;
+
+    const unauthorized = await SELF.fetch(
+      "https://example.test/api/admin/calendar/status",
+    );
+    expect(unauthorized.status).toBe(401);
+    const limitedEnv = Object.create(env) as Env;
+    Object.defineProperty(limitedEnv, "OWNER_RATE_LIMITER", {
+      value: { limit: async () => ({ success: false }) },
+    });
+    expect(
+      (
+        await worker.fetch(
+          new Request("https://example.test/api/admin/calendar/status", {
+            headers: ownerHeaders,
+          }),
+          limitedEnv,
+        )
+      ).status,
+    ).toBe(429);
+    const active = await SELF.fetch(
+      "https://example.test/api/admin/calendar/status",
+      { headers: ownerHeaders },
+    );
+    expect(active.status).toBe(200);
+    const body = await active.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      ok: true,
+      modes: {
+        ics: { configured: true, active: true },
+        google: { configured: true, active: true },
+      },
+      authority: {
+        state: "active",
+        generation: 1,
+        projectionCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(
+      /AAAAAAAA|fixture-access|fixture-refresh|fixture-client-secret|example\.invalid|reservationId|externalId|authorization/i,
+    );
+
+    for (const [feed, google] of [
+      [true, false],
+      [false, true],
+    ] as const) {
+      const mode = Object.create(env) as Env;
+      Object.defineProperty(mode, "CALENDAR_FEED_TOKEN", {
+        value: feed ? "A".repeat(43) : undefined,
+      });
+      Object.defineProperty(mode, "GOOGLE_CALENDAR_CREDENTIALS", {
+        value: google ? fixtureGoogle : undefined,
+      });
+      const response = await worker.fetch(
+        new Request("https://example.test/api/admin/calendar/status", {
+          headers: ownerHeaders,
+        }),
+        mode,
+      );
+      expect(await response.json()).toMatchObject({
+        modes: {
+          ics: { configured: feed, active: feed },
+          google: { configured: google, active: google },
+        },
+      });
+    }
+
+    authorityFeed = undefined;
+    authorityGoogle = undefined;
+    const configuredEnv = Object.create(env) as Env;
+    Object.defineProperty(configuredEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(configuredEnv, "GOOGLE_CALENDAR_CREDENTIALS", {
+      value: fixtureGoogle,
+    });
+    const configuredButInactive = await worker.fetch(
+      new Request("https://example.test/api/admin/calendar/status", {
+        headers: ownerHeaders,
+      }),
+      configuredEnv,
+    );
+    expect(await configuredButInactive.json()).toMatchObject({
+      modes: {
+        ics: { configured: true, active: false },
+        google: { configured: true, active: false },
+      },
+      authority: { state: "deactivating" },
+    });
+    authorityFeed = "A".repeat(43);
+    authorityGoogle = fixtureGoogle;
+  });
+
+  it("reconciles at most seven authoritative days with a canonical cursor", async () => {
+    await enableLiveInstallation();
+    await acceptedPublicCreate({ serviceIds: ["service-cut"] });
+    const response = await jsonRequest(
+      "/api/admin/calendar/reconcile",
+      { cursor: day.date },
+      ownerHeaders,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      processedDates: 7,
+      projected: 1,
+      removed: 0,
+      nextCursor: expect.any(String),
+    });
+    const replay = await jsonRequest(
+      "/api/admin/calendar/reconcile",
+      { cursor: day.date },
+      ownerHeaders,
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      ok: true,
+      processedDates: 7,
+      projected: 1,
+      removed: 0,
+    });
+
+    for (const [body, status] of [
+      [{ cursor: "2026-02-30" }, 400],
+      [{ cursor: day.date, unknown: true }, 400],
+    ] as const) {
+      expect(
+        (
+          await jsonRequest(
+            "/api/admin/calendar/reconcile",
+            body,
+            ownerHeaders,
+          )
+        ).status,
+      ).toBe(status);
+    }
+    expect(
+      (
+        await SELF.fetch("https://example.test/api/admin/calendar/reconcile", {
+          method: "POST",
+          headers: {
+            ...ownerHeaders,
+            "content-type": "application/json",
+            origin: "https://attacker.invalid",
+          },
+          body: JSON.stringify({ cursor: day.date }),
+        })
+      ).status,
+    ).toBe(403);
+
+    const off = Object.create(env) as Env;
+    Object.defineProperty(off, "CALENDAR_FEED_TOKEN", { value: undefined });
+    Object.defineProperty(off, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    const notConfigured = await worker.fetch(
+      new Request("https://example.test/api/admin/calendar/reconcile", {
+        method: "POST",
+        headers: {
+          ...ownerHeaders,
+          "content-type": "application/json",
+          origin: "https://example.test",
+        },
+        body: "{}",
+      }),
+      off,
+    );
+    expect(notConfigured.status).toBe(409);
+  });
+
+  it("keeps a deferred reconciliation date as the next cursor", async () => {
+    await enableLiveInstallation();
+    const deferredDate = new Date(Date.parse(`${day.date}T00:00:00.000Z`) + 2 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const reconcileDay = vi.fn(async (projection: DayCalendarProjectionResult) => ({
+      ok: true as const,
+      projected: 0,
+      removed: 0,
+      ...(projection.date === deferredDate ? { deferred: true as const } : {}),
+    }));
+    const finishReconcile = vi.fn(async () => ({ ok: true as const }));
+    const authority = {
+      descriptor: async () => {
+        const now = Date.now();
+        return {
+          consumer: "calendar" as const,
+          generation: 1,
+          phase: "active" as const,
+          leaseIssuedAt: now,
+          leaseNotAfter: now + 30_000,
+        };
+      },
+      reconcileDay,
+      finishReconcile,
+    };
+    const deferredEnv = Object.create(env) as Env;
+    Object.defineProperty(deferredEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(deferredEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(deferredEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => authority },
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.test/api/admin/calendar/reconcile", {
+        method: "POST",
+        headers: {
+          ...ownerHeaders,
+          "content-type": "application/json",
+          origin: "https://example.test",
+        },
+        body: JSON.stringify({ cursor: day.date }),
+      }),
+      deferredEnv,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      processedDates: 2,
+      projected: 0,
+      removed: 0,
+      nextCursor: deferredDate,
+    });
+    expect(reconcileDay).toHaveBeenCalledTimes(3);
+    expect(finishReconcile).toHaveBeenCalledWith({ nextCursor: deferredDate });
+  });
+
+  it("applies pending expiry while reconciling an authoritative day", async () => {
+    await enableLiveInstallation();
+    const created = await acceptedPublicCreate({ serviceIds: ["service-cut"] });
+    const reservationId = created.result.reservation?.reservationId;
+    expect(reservationId).toEqual(expect.any(String));
+    const calendar = env.CALENDAR_ADAPTER.getByName(
+      "installation",
+    ) as DurableObjectStub<CalendarAdapter>;
+    await calendar.pokeDay({ date: day.date });
+    await runInDurableObject(stubFor(day.date), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE booking_details SET created_at = ? WHERE reservation_id = ?",
+        new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString(),
+        reservationId,
+      );
+    });
+    const reconciled = await jsonRequest(
+      "/api/admin/calendar/reconcile",
+      { cursor: day.date },
+      ownerHeaders,
+    );
+    expect(reconciled.status).toBe(200);
+    const schedule = await SELF.fetch(
+      `https://example.test/api/admin/schedule?startDate=${day.date}&days=1`,
+      { headers: ownerHeaders },
+    );
+    expect(await schedule.json()).toMatchObject({
+      boards: [{ reservations: [{ reservationId, status: "expired" }] }],
+    });
+    const feed = await SELF.fetch(
+      `https://example.test/api/adapters/calendar/feed.ics?token=${"A".repeat(43)}`,
+    );
+    expect(await feed.text()).not.toContain("BEGIN:VEVENT");
+  });
+
+  it("keeps the calendar privacy disclosure through cleanup and removes it after purge", async () => {
+    const token = "A".repeat(43);
+    let feedSecret: string | undefined;
+    let googleSecret: string | undefined;
+    const calendar = env.CALENDAR_ADAPTER.getByName(
+      "installation",
+    ) as DurableObjectStub<CalendarAdapter>;
+    expect(
+      await runInDurableObject(calendar, (instance) => {
+        const objectEnv = (instance as unknown as { env: Env }).env;
+        try {
+          Object.defineProperties(objectEnv, {
+            CALENDAR_FEED_TOKEN: { configurable: true, get: () => feedSecret },
+            GOOGLE_CALENDAR_CREDENTIALS: { configurable: true, get: () => googleSecret },
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    ).toBe(true);
+    const modeEnv = (feed: string | undefined) => {
+      const value = Object.create(env) as Env;
+      Object.defineProperty(value, "CALENDAR_FEED_TOKEN", { value: feed });
+      Object.defineProperty(value, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+      return value;
+    };
+
+    const baselineResponse = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      modeEnv(undefined),
+    );
+    const baseline = await baselineResponse.text();
+    expect(baseline).not.toContain("カレンダー連携を利用する場合");
+    expect(baseline).not.toContain("有効な任意連携がある場合");
+
+    feedSecret = token;
+    expect(await calendar.descriptor()).toMatchObject({ consumer: "calendar", phase: "active" });
+    const active = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      modeEnv(token),
+    );
+    expect(active.headers.get("cache-control")).toBe("no-store");
+    const activeBody = await active.text();
+    expect(activeBody).toContain("カレンダー連携を利用する場合");
+    expect(activeBody).toContain("予定の重複を防ぐ復元不能な識別子、予定作成時刻だけ");
+    expect(activeBody).toContain("専用 URL を知る人は予定を閲覧できます");
+
+    feedSecret = undefined;
+    const residual = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      modeEnv(undefined),
+    );
+    expect(await residual.text()).toContain("安全な削除処理が終わるまでこの案内を表示");
+
+    await runInDurableObject(calendar, (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM accepted_events");
+      state.storage.sql.exec("DELETE FROM projections");
+      state.storage.sql.exec("DELETE FROM google_mutations");
+      state.storage.sql.exec("UPDATE meta SET state = 'disabled' WHERE singleton = 1");
+    });
+    const purged = await worker.fetch(
+      new Request("https://example.test/privacy"),
+      modeEnv(undefined),
+    );
+    expect(await purged.text()).toBe(baseline);
+    feedSecret = token;
   });
 });

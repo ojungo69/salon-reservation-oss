@@ -85,6 +85,20 @@ Object lifecycle migration that permanently destroys its data. It is not part
 of any backout; Cloudflare documents the destructive `deleted` tombstone in
 the [Durable Object class lifecycle guide](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/#delete-a-durable-object-class).
 
+## Backing out a release with the calendar adapter
+
+`CalendarAdapter` follows the same forward-backout boundary. First remove the two optional calendar
+secrets, confirm feed access and new provider calls stop, and wait for
+`/api/admin/calendar/status` to report `disabled`. Then publish a forward build that removes any
+calendar routes or UI-facing disclosure but retains the `CalendarAdapter` implementation, Worker
+export, binding, and live `exports` entry while any namespace data or alarm can remain.
+
+Do not use `wrangler rollback` to select code from before `CalendarAdapter` existed, and do not add a
+destructive deleted-class tombstone. Day outbox columns are additive and nullable for released LINE
+rows; a forward backout leaves them in place. External calendar copies are not rolled back with
+Worker code: cached feed events and Google events on an old or inaccessible target require the
+operator cleanup described in [calendar setup](CALENDAR-SETUP.md).
+
 ## Scope of `release:audit` and `release:audit:public`
 
 `npm run release:audit` runs on every pull request as part of `npm run check`. It verifies the file

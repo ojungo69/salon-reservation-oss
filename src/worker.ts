@@ -14,6 +14,7 @@ import {
   type BookingSnapshot,
   type DayClosureCreateInput,
   type DayClosureRemoveInput,
+  type DayCalendarProjectionResult,
   type DayConfig,
   type DayCreateInput,
   type DayFailure,
@@ -25,15 +26,20 @@ import {
 
 import { AdapterDelivery } from "./adapter-delivery.ts";
 import {
+  CalendarAdapter,
+  parseCalendarFeedToken,
+  parseGoogleCredentials,
+} from "./calendar-adapter.ts";
+import {
   isLineChannelSecret,
   parseWebhookBody,
   readBoundedBytes,
   verifyIdToken,
   verifyWebhookSignature,
 } from "./line-adapter.ts";
-import { ADAPTER } from "./adapter-constants.ts";
+import { ADAPTER, withDeadline } from "./adapter-constants.ts";
 
-export { AdapterDelivery, InstallationConfig, ReservationDay };
+export { AdapterDelivery, CalendarAdapter, InstallationConfig, ReservationDay };
 
 type AppEnv = Env & {
   INSTALLATION_CONFIG: DurableObjectNamespace<InstallationConfig>;
@@ -49,6 +55,8 @@ type InstallationContext = {
   settings: InstallationSettings;
   runtime: ReadinessRuntime;
   line?: LineContext;
+  calendarAdapter?: DayConfig["calendarAdapter"];
+  calendarRecovery?: DayConfig["calendarRecovery"];
 };
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -86,6 +94,8 @@ const ERROR_MESSAGES = {
     "公開ホスト名が設定されていません。設定画面で公開ホスト名を保存してから有効化してください。",
   SECRET_MISSING:
     "LINE のチャネルシークレットが設定されていません。シークレットを登録してから有効化してください。",
+  CALENDAR_NOT_CONFIGURED:
+    "カレンダー連携が設定されていません。任意の連携情報を設定してからやり直してください。",
 } as const;
 
 type PublicErrorCode = keyof typeof ERROR_MESSAGES;
@@ -291,6 +301,16 @@ const installationStub = (env: AppEnv): DurableObjectStub<InstallationConfig> =>
 const adapterDeliveryStub = (env: AppEnv): DurableObjectStub<AdapterDelivery> =>
   env.ADAPTER_DELIVERY.getByName("installation");
 
+const calendarAdapterStub = (env: AppEnv): DurableObjectStub<CalendarAdapter> =>
+  env.CALENDAR_ADAPTER.getByName("installation");
+
+const calendarModes = (env: AppEnv) => ({
+  feed: parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN) !== null,
+  google: parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS) !== null,
+});
+
+const CALENDAR_AUTHORITY_RPC_DEADLINE_MS = 250;
+
 const dayStub = (env: AppEnv, date: string): DurableObjectStub<ReservationDay> =>
   env.RESERVATION_DAYS.getByName(`single-location:${date}`);
 
@@ -322,6 +342,43 @@ const installationContext = async (
     runtime: runtimeFor(env, url, authenticated),
     ...(line === undefined ? {} : { line }),
   };
+};
+
+const withCalendarAdapter = async (
+  env: AppEnv,
+  context: InstallationContext,
+): Promise<InstallationContext> => {
+  if (
+    context.calendarAdapter !== undefined &&
+    Date.now() <= context.calendarAdapter.leaseNotAfter
+  ) {
+    return context;
+  }
+  const modes = calendarModes(env);
+  if (!modes.feed && !modes.google) return context;
+  const {
+    calendarAdapter: _calendarAdapter,
+    calendarRecovery: _calendarRecovery,
+    ...base
+  } = context;
+  try {
+    const calendarAdapter = await withDeadline(
+      calendarAdapterStub(env).descriptor(),
+      CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
+    );
+    return calendarAdapter === null ? base : { ...base, calendarAdapter };
+  } catch {
+    // Calendar is optional and post-commit; a bounded recovery lease keeps
+    // reservation paths available without outliving the final disable sweep.
+    const leaseIssuedAt = Date.now();
+    return {
+      ...base,
+      calendarRecovery: {
+        leaseIssuedAt,
+        leaseNotAfter: leaseIssuedAt + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+      },
+    };
+  }
 };
 
 // The day-side descriptor travels only while events may be committed (active)
@@ -357,10 +414,14 @@ const dayCallWithRetry = async <R>(
   context: InstallationContext,
   invoke: (config: DayConfig) => PromiseLike<R>,
 ): Promise<R> => {
-  const result = await invoke(toDayConfig(date, context));
+  const current = await withCalendarAdapter(env, context);
+  const result = await invoke(toDayConfig(date, current));
   const failed = result as { ok?: unknown; code?: unknown };
   if (failed.ok === false && failed.code === "RETRY_CONFIG") {
-    const fresh = await installationContext(env, url, authenticated);
+    const fresh = await withCalendarAdapter(
+      env,
+      await installationContext(env, url, authenticated),
+    );
     return invoke(toDayConfig(date, fresh));
   }
   return result;
@@ -464,6 +525,12 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     // stored JSON byte-identical.
     pendingExpiryMinutes: settings.pendingExpiryMinutes ?? DEFAULT_PENDING_EXPIRY_MINUTES,
     ...(adapter === undefined ? {} : { adapter }),
+    ...(context.calendarAdapter === undefined
+      ? {}
+      : { calendarAdapter: context.calendarAdapter }),
+    ...(context.calendarRecovery === undefined
+      ? {}
+      : { calendarRecovery: context.calendarRecovery }),
   };
 };
 
@@ -1100,6 +1167,9 @@ const handleAvailability = async (
   }
   const query = availabilityQuery(url);
   if (query === null) return errorResponse(400, "BAD_REQUEST");
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "public-availability")) {
+    return rateLimited();
+  }
   const context = await installationContext(env, url, false);
   if (
     !isActiveSelection(context.settings, query.serviceIds) ||
@@ -2013,6 +2083,157 @@ const handleLineAsset = async (
   return new Response(asset.body, { status: asset.status, headers });
 };
 
+const calendarFeedNotFound = (): Response => errorResponse(404, "BAD_REQUEST");
+
+const handleCalendarFeed = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET") return calendarFeedNotFound();
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "calendar-feed")) {
+    return calendarFeedNotFound();
+  }
+  const configured = parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN);
+  const presented = parseCalendarFeedToken(url.searchParams.get("token"));
+  if (
+    configured === null ||
+    presented === null ||
+    url.search !== `?token=${presented}`
+  ) {
+    return calendarFeedNotFound();
+  }
+  try {
+    const result = await calendarAdapterStub(env).feed({ token: presented });
+    if (!result.ok) return calendarFeedNotFound();
+    return new Response(result.body, {
+      headers: {
+        "cache-control": "private, no-store",
+        "content-type": "text/calendar; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  } catch {
+    return calendarFeedNotFound();
+  }
+};
+
+const handleCalendarStatus = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET" });
+  }
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  const gate = await ownerGate(request, env, "calendar-status");
+  if (gate !== null) return gate;
+  const configured = calendarModes(env);
+  try {
+    const authority = await calendarAdapterStub(env).diagnostics();
+    const active = authority?.state === "active";
+    return json({
+      ok: true,
+      modes: {
+        ics: { configured: configured.feed, active: configured.feed && active },
+        google: { configured: configured.google, active: configured.google && active },
+      },
+      authority,
+    });
+  } catch {
+    return json({
+      ok: true,
+      modes: {
+        ics: { configured: configured.feed, active: false },
+        google: { configured: configured.google, active: false },
+      },
+      authority: "unavailable",
+    });
+  }
+};
+
+const handleCalendarReconcile = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await ownerGate(request, env, "calendar-reconcile");
+  if (gate !== null) return gate;
+  const configured = calendarModes(env);
+  if (!configured.feed && !configured.google) {
+    return errorResponse(409, "CALENDAR_NOT_CONFIGURED");
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (!isObject(parsed.value)) return errorResponse(400, "BAD_REQUEST");
+  const keys = Object.keys(parsed.value);
+  if (
+    (keys.length !== 0 && (keys.length !== 1 || keys[0] !== "cursor")) ||
+    (parsed.value.cursor !== undefined &&
+      (typeof parsed.value.cursor !== "string" ||
+        !DATE.test(parsed.value.cursor) ||
+        parseDateJstToUtcIso(parsed.value.cursor) === null))
+  ) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+
+  try {
+    const context = await withCalendarAdapter(
+      env,
+      await installationContext(env, url, true),
+    );
+    if (context.calendarAdapter === undefined) {
+      return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+    }
+    const today = new Date(Date.now() + JST_OFFSET_MS).toISOString().slice(0, 10);
+    const cursor = (parsed.value.cursor as string | undefined) ?? today;
+    const offset = dayOffset(cursor, Date.now());
+    if (offset === null || offset < 0 || offset >= context.settings.horizonDays) {
+      return errorResponse(400, "BAD_REQUEST");
+    }
+    const pageSize = Math.min(7, context.settings.horizonDays - offset);
+    let processedDates = 0;
+    let projected = 0;
+    let removed = 0;
+    let nextCursor: string | null = null;
+    const authority = calendarAdapterStub(env);
+    for (let index = 0; index < pageSize; index += 1) {
+      const date = addDays(cursor, index);
+      const projection = await dayCallWithRetry<DayCalendarProjectionResult>(
+        env,
+        url,
+        true,
+        date,
+        context,
+        async (config) => dayStub(env, date).calendarProjection(config),
+      );
+      if (!projection.ok) return failureResponse(projection);
+      const reconciled = await authority.reconcileDay(projection);
+      if (reconciled.deferred === true) {
+        nextCursor = date;
+        break;
+      }
+      projected += reconciled.projected;
+      removed += reconciled.removed;
+      processedDates += 1;
+    }
+    if (nextCursor === null && offset + processedDates < context.settings.horizonDays) {
+      nextCursor = addDays(cursor, processedDates);
+    }
+    await authority.finishReconcile({ nextCursor });
+    return json({ ok: true, processedDates, projected, removed, nextCursor });
+  } catch {
+    return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+  }
+};
+
 // Rendered into privacy.html only while the adapter state table says the
 // section exists (active, missing-secret, deactivating): the state rule, not
 // the request, decides — a never-configured installation serves the asset
@@ -2028,6 +2249,17 @@ const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
         連携は予約管理ページからいつでも解除でき、解除すると対応関係と未送信の通知を削除します。予約の保存期限が過ぎたとき、および運営者が連携機能を停止したときも同じように削除します。LINE 側でのデータの取り扱いは LINE の利用規約とプライバシーポリシーに従います。
       </p>`;
 
+const CALENDAR_PRIVACY_SECTION = `<h2>カレンダー連携を利用する場合</h2>
+      <p>
+        この設置で予約枠をカレンダーへ表示する任意連携を有効にしている場合、連携する情報は予約日時、終了日時、選択したサービス名、予約の状態、予定の重複を防ぐ復元不能な識別子、予定作成時刻だけです。お名前、ご連絡先、担当・設備、管理キー、予約番号はカレンダーへ送りません。
+      </p>
+      <p>
+        購読用カレンダーを有効にしている場合、専用 URL を知る人は予定を閲覧できます。URL を公開場所、アクセス解析、問い合わせ、画像へ載せず、漏れた可能性があるときは運営者が専用トークンを交換します。Google カレンダーへの送信を有効にしている場合、予定には元の予約番号から直接戻せない識別子を使い、Google 側での取り扱いは Google の利用規約とプライバシーポリシーに従います。
+      </p>
+      <p>
+        連携用の予定、未送信処理、個人を特定しない件数・失敗理由の記録には件数上限と保存期限があります。連携を停止した後も安全な削除処理が終わるまでこの案内を表示し、処理完了後に表示を終了します。
+      </p>`;
+
 // Both public privacy paths are worker-served, and only a state that actually has
 // a disclosure changes anything: without one the assets response is returned
 // exactly as the platform produced it — same status, same headers, same body —
@@ -2039,7 +2271,28 @@ const handlePrivacyPage = async (
   url: URL,
 ): Promise<Response> => {
   const context = await installationContext(env, url, false);
-  const disclose = linePublicConfig(context) !== null;
+  const discloseLine = linePublicConfig(context) !== null;
+  const modes = calendarModes(env);
+  let discloseCalendar = modes.feed || modes.google;
+  if (!discloseCalendar) {
+    if (await limited(env.PUBLIC_RATE_LIMITER, request, "privacy-disclosure")) {
+      // Do not let abuse controls hide a residual cleanup disclosure. The
+      // inserted copy is conditional, so this conservative fallback is safe.
+      discloseCalendar = true;
+    } else {
+      try {
+        discloseCalendar = await withDeadline(
+          calendarAdapterStub(env).hasDisclosure(),
+          CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
+        );
+      } catch {
+        // Residual state cannot be ruled out. The inserted copy is conditional,
+        // so an unavailable authority must not hide a cleanup disclosure.
+        discloseCalendar = true;
+      }
+    }
+  }
+  const disclose = discloseLine || discloseCalendar;
   const asset = await env.ASSETS.fetch(
     new Request(new URL("/privacy", url.origin), disclose ? { method: request.method } : request),
   );
@@ -2053,7 +2306,9 @@ const handlePrivacyPage = async (
   headers.delete("content-length");
   const body = (await asset.text()).replace(
     "<!-- adapter-disclosure-slot -->",
-    LINE_PRIVACY_SECTION,
+    `${discloseLine ? LINE_PRIVACY_SECTION : ""}${
+      discloseCalendar ? CALENDAR_PRIVACY_SECTION : ""
+    }`,
   );
   return new Response(request.method === "HEAD" ? null : body, {
     status: asset.status,
@@ -2063,6 +2318,9 @@ const handlePrivacyPage = async (
 
 const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   const url = new URL(request.url);
+  if (url.pathname === "/api/adapters/calendar/feed.ics") {
+    return handleCalendarFeed(request, env, url);
+  }
   if (url.pathname === "/api/config") return handleConfig(request, env, url);
   if (url.pathname === "/api/availability") return handleAvailability(request, env, url);
   if (url.pathname === "/api/reservations") return handlePublicCreate(request, env, url);
@@ -2109,6 +2367,12 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   }
   if (url.pathname === "/api/admin/line/status") {
     return handleLineStatus(request, env, url);
+  }
+  if (url.pathname === "/api/admin/calendar/status") {
+    return handleCalendarStatus(request, env, url);
+  }
+  if (url.pathname === "/api/admin/calendar/reconcile") {
+    return handleCalendarReconcile(request, env, url);
   }
   if (url.pathname === "/api/admin/setup/live") return handleLive(request, env, url);
   if (url.pathname === "/api/admin/installation-receipt") {

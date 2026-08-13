@@ -17,6 +17,12 @@ The default deployment flow should not require a D1 database, a database console
 command, or a source edit. Confirm the resources Cloudflare actually reports as created; this
 documentation does not promise a particular account state.
 
+`CalendarAdapter` is an optional installation-singleton SQLite Durable Object. Its binding/export
+is always present so forward upgrades and backouts preserve the namespace, but neither calendar
+mode activates without a valid optional secret. `CALENDAR_FEED_TOKEN` and
+`GOOGLE_CALENDAR_CREDENTIALS` deliberately do not join Wrangler's required-secret list; owner and
+Turnstile remain the only deployment-required secrets. See [calendar setup](CALENDAR-SETUP.md).
+
 The two rate-limit namespace IDs are project-specific rather than Cloudflare's sample values.
 Cloudflare shares counters when another Worker in the same account deliberately reuses an ID, so
 operators with an existing collision must assign two unused positive integers before deployment.
@@ -89,6 +95,15 @@ residency guarantee, or uptime SLA. Account-wide traffic and future platform cha
 limit and stop bookings; monitor the account and reduce scope or choose an appropriate plan before
 relying on the service.
 
+When calendar integration is configured, a booking request obtains one short-lived calendar
+descriptor and performs only a post-commit Durable Object poke; no Google request is on the booking
+transaction. The calendar authority drains at most 32 day events per pull, sends at most eight
+Google mutations per alarm, and sweeps at most 16 day partitions per alarm. An upsert's worst
+convergence path is update, insert, then update, so one send alarm stays below 25 Calendar requests
+plus at most one token exchange. Owner reconciliation reads at most seven days per request. Recheck
+these bounds against the current Workers external/internal subrequest, CPU, connection, Durable
+Object, and alarm limits before production use; the links above remain authoritative.
+
 ## Retention, export, recovery, rollback, and deletion
 
 - **Application retention:** each day object is deleted as a whole after the configured retention
@@ -109,6 +124,11 @@ relying on the service.
   [Worker-code rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
   A code rollback does not undo Durable Object writes, deletion, or a schema change. Keep rollback
   and storage-recovery decisions separate.
+- **Calendar alarms and backout:** one `CalendarAdapter` alarm reconstructs Google retries, claim
+  recovery, day sweep, disable purge, and re-arming from SQLite. Alarm delivery may repeat, so stable
+  event IDs, accepted-event deduplication, desired-version claims, and idempotent delete outcomes
+  are required. Back out only with a forward build that retains the class, binding, export, and
+  schema until cleanup is disabled; a pre-calendar rollback cannot service its namespace.
 - **Deletion:** deleting a Worker, domain route, Turnstile widget, or Durable Object namespace is
   external and potentially irreversible. Export what policy requires, resolve the exact account and
   resource, follow the current Cloudflare deletion guidance, and record what remains recoverable.

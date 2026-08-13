@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
-import { ADAPTER, WORST_CASE_PARTITIONS, fullCycleBoundS } from "./adapter-constants.ts";
+import {
+  ADAPTER,
+  WORST_CASE_PARTITIONS,
+  fullCycleBoundS,
+  withDeadline,
+} from "./adapter-constants.ts";
 import {
   isLineChannelSecret,
   mintChannelToken,
@@ -85,20 +90,6 @@ const dateOffset = (date: string, days: number): string => {
 const digestHex = async (value: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-};
-
-const withDeadline = async <T>(work: PromiseLike<T>, ms: number): Promise<T> => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("rpc deadline")), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 };
 
 const retryKeyCutoff = (now: number): number =>
@@ -355,6 +346,7 @@ export class AdapterDelivery extends DurableObject<Env> {
    * resolve differently by route.
    */
   #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number): string {
+    if (event.type === "create") throw new Error("calendar event reached LINE delivery");
     const sql = this.ctx.storage.sql;
     let disposition: string;
     const occurredAtMs = Date.parse(event.occurredAt);

@@ -21,6 +21,8 @@ application uptime guarantee.
 - Browser-generated 256-bit management keys; only SHA-256 digests are stored
 - Owner-guided configuration with a demo/live latch, legal-copy readiness checks, and a secret-free
   installation receipt
+- Optional schedule-only iCalendar and Google Calendar adapters, disabled by default and excluded
+  from availability decisions
 - Whole-day retention deletion, focused race/security checks, and allowlisted release auditing
 
 ## Deliberate limits
@@ -77,7 +79,8 @@ or a real-data deployment from this private workspace.
 [Cloudflare deployment and operations](docs/CLOUDFLARE.md) covers the exact boundary between the
 demo URL and a custom domain, Workers Builds limitations, rollback, export, recovery, and deletion.
 Review [privacy and retention](docs/PRIVACY.md), then replace every fictional operator notice before
-accepting real bookings.
+accepting real bookings. Optional calendar modes are documented in
+[calendar setup](docs/CALENDAR-SETUP.md).
 
 ## Local verification
 

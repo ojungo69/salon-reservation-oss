@@ -59,7 +59,7 @@ const descriptor = (
   // Evaluated per call so a test that advanced the mocked clock still mints
   // a live lease.
   leaseIssuedAt: Date.now() - 1_000,
-  leaseNotAfter: Date.now() + 30_000,
+  leaseNotAfter: Date.now() + 29_000,
   ...overrides,
 });
 
