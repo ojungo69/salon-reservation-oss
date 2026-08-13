@@ -355,6 +355,7 @@ export class AdapterDelivery extends DurableObject<Env> {
    * resolve differently by route.
    */
   #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number): string {
+    if (event.type === "create") throw new Error("calendar event reached LINE delivery");
     const sql = this.ctx.storage.sql;
     let disposition: string;
     const occurredAtMs = Date.parse(event.occurredAt);

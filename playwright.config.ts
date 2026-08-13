@@ -6,6 +6,7 @@ import { defineConfig, devices } from "@playwright/test";
 import {
   ALLOWED_HOSTNAME,
   BROWSER_ORIGIN,
+  CALENDAR_FEED_TOKEN,
   LINE_MESSAGING_CHANNEL_SECRET,
   OWNER_TOKEN,
   PORT,
@@ -134,6 +135,7 @@ export default defineConfig({
       `--var OWNER_TOKEN:${OWNER_TOKEN}`,
       `--var TURNSTILE_SECRET:${TURNSTILE_SECRET}`,
       `--var LINE_MESSAGING_CHANNEL_SECRET:${LINE_MESSAGING_CHANNEL_SECRET}`,
+      `--var CALENDAR_FEED_TOKEN:${CALENDAR_FEED_TOKEN}`,
     ].join(" "),
     url: `${SERVER_ORIGIN}/api/config`,
     ignoreHTTPSErrors: true,

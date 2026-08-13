@@ -1,0 +1,169 @@
+# Data model: Calendar ladder (S2)
+
+The reservation core remains authoritative. Every calendar row is a disposable, bounded projection
+of a committed reservation event. No customer name, contact, management proof, resource identifier,
+provider credential, response body, or authorization header is stored here.
+
+## ReservationDay additions
+
+### Day calendar descriptor (transient, never pinned)
+
+| Field | Rule |
+|---|---|
+| `consumer` | literal `calendar` |
+| `generation` | positive safe integer minted by `CalendarAdapter` |
+| `phase` | `active` or `deactivating`; only active writes new rows |
+| `leaseIssuedAt` / `leaseNotAfter` | safe integers; window no longer than shared 30-second descriptor bound |
+
+It is optional and independent of the released LINE descriptor. Neither descriptor enters
+`schedule_json`; mode changes apply to current commands without changing a day's pinned catalog.
+
+### `__adapter_outbox` additive columns
+
+| Column | Type | Rule |
+|---|---|---|
+| `end_time` | nullable `TEXT` | canonical `HH:mm`; null is accepted only on pre-S2 LINE rows |
+| `reservation_status` | nullable `TEXT` | `pending`, `approved`, `rejected`, `cancelled`, or `expired`; null only on pre-S2 LINE rows |
+
+Calendar rows require both fields. A `create` event is calendar-only. Existing event types retain
+their meaning. Primary key, per-consumer generation sequence, retention boundary, and LINE rows are
+unchanged.
+
+### Safe day projection (RPC result; not stored)
+
+```text
+date
+purgeAt
+events[]:
+  reservationId       internal transfer only
+  startTime            HH:mm
+  endTime              HH:mm
+  serviceLabel         1..323 bounded text
+  status               pending | approved
+```
+
+The method validates a normal `DayConfig`, applies lazy pending expiry in the same transaction, and
+then maps only active pending/approved details. Worker strips every private owner-list field before
+calling the calendar authority.
+
+## CalendarAdapter SQLite schema
+
+### `meta` (one row)
+
+| Field | Rule |
+|---|---|
+| `state` | `active`, `deactivating`, or `disabled`; no row represents never configured |
+| `generation` | current generation |
+| `high_water` | monotonic across disable/re-enable |
+| `mode_fingerprint` | SHA-256 of the parsed Google credential object or null; never the secret |
+| `google_configured` / `google_seen` | current Google validity and whether cleanup may be required |
+| `begin_disable_at` | epoch ms or null |
+| `purge_completed_at` | epoch ms or null |
+| `sweep_cursor` | canonical date or null |
+| `last_reconciled_at` | canonical UTC timestamp or null |
+| `reconcile_cursor` | next canonical date or null |
+
+State transitions:
+
+```text
+never --valid mode--> active
+active --no valid mode--> deactivating --lease wait + purge sweep--> disabled
+disabled --valid mode--> active (generation = high_water + 1)
+active --Google false→true or fingerprint change--> active + requeue projections
+```
+
+### `accepted_events`
+
+| Field | Rule |
+|---|---|
+| `event_key` | primary key `generation:eventId` |
+| `reservation_id` / `generation` / `seq` | validated source identity and ordering evidence |
+| `accepted_at` / `purge_at` | canonical timestamp and parent deadline |
+
+This table is dedup/order evidence only. Rows are pruned at the parent deadline and a hard cap.
+
+### `projections`
+
+| Field | Rule |
+|---|---|
+| `reservation_id` | internal primary key; never returned in diagnostics/feed/provider body |
+| `external_id` | `sr` + domain-separated SHA-256 hex; provider-valid and non-reversible |
+| `uid` | domain-separated opaque iCalendar UID under `.invalid` |
+| `date`, `start_at`, `end_at` | canonical date/UTC instants; `start_at < end_at` |
+| `service_label` | bounded schedule label only |
+| `status` | `tentative` or `confirmed` |
+| `purge_at` | parent retention deadline |
+
+There is at most one row per reservation. ICS serializes only these rows ordered by start/external ID.
+Terminal source state deletes this row after desired Google absence is recorded.
+
+### `google_mutations`
+
+| Field | Rule |
+|---|---|
+| `reservation_id` | primary key; one latest desire per reservation |
+| `external_id` | stable opaque Google event ID |
+| `operation` | `upsert` or `delete` |
+| `payload_json` | versioned canonical minimal schedule object for upsert; null for delete |
+| `desired_version` | monotonically increments whenever desired state changes |
+| `generation` | current adapter generation |
+| `attempt` / `next_attempt_at` / `first_attempt_at` | bounded absolute retry state |
+| `claimed_at` / `claimed_version` | dead-send lease and stale-outcome guard |
+| `status` | `queued`, `sending`, `awaiting-configuration`, `failed` |
+| `created_at` / `purge_at` | pending-age source and parent deadline |
+
+A newer projection replaces an older queued/failed mutation and increments `desired_version`.
+Settle applies only when both generation and claimed version still match. Delete success removes the
+mutation; upsert success removes it because the projection itself is the desired-state record.
+
+### `ledger`
+
+| Field | Rule |
+|---|---|
+| `entry_id` | autoincrement primary key |
+| `reason` | allowlisted internal code |
+| `operation` | `upsert`, `delete`, `feed-auth`, or `lifecycle` |
+| `http_status` | provider status or null |
+| `occurred_at` | canonical UTC timestamp |
+
+No reservation/external ID or provider body. Capped to the shared ledger limit and time-pruned.
+
+### `counters`
+
+Name/value aggregates for feed authentication failures, dispositions, delivery success, retry,
+terminal reason, sweep faults, overflow, and reconciliation. Names are allowlisted by code; values
+are non-negative integers.
+
+## Secrets (bindings, never database rows)
+
+### `CALENDAR_FEED_TOKEN`
+
+- 43-character unpadded base64url, encoding 32 random bytes.
+- Compared through fixed-length SHA-256 digests.
+- Used only to authenticate the feed URL; rotation invalidates the former URL immediately.
+
+### `GOOGLE_CALENDAR_CREDENTIALS`
+
+Exact JSON object:
+
+```json
+{
+  "clientId": "fixture.apps.googleusercontent.com",
+  "clientSecret": "fixture-only",
+  "refreshToken": "fixture-only",
+  "calendarId": "fixture@example.invalid"
+}
+```
+
+Every string is non-empty and bounded; unknown/missing keys reject the entire binding. This clear
+object exists only in request/alarm memory. Only a digest discriminator may be persisted.
+
+## Retention and bounds
+
+- Projection, accepted event, and mutation rows carry the day partition's frozen `purgeAt`.
+- No provider call begins at/past `purgeAt`; unresolved cleanup is terminalized before local delete.
+- `projections` and `google_mutations` each cap at 2,000 rows. Overflow affects calendar only and is
+  visible in counters/ledger.
+- The ledger uses the released 500-row/30-day bounds; reconciliation/sweep cursors are scalars.
+- When both modes are absent and the final purge sweep completes, projection/mutation/event rows and
+  calendar outbox consumer rows are gone; bounded aggregate diagnostics drain to quiescence.

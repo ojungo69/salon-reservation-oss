@@ -157,3 +157,54 @@ test("an owner status action updates the schedule and survives reload", async ({
   await rowAfterReload.getByRole("button", { name: "詳細を開く" }).click();
   await expect(page.locator("[data-detail-status]")).toContainText("取消済み");
 });
+
+test("calendar diagnostics and reconciliation stay owner-only", async ({ page }) => {
+  await stubTurnstile(page);
+  await signIn(page);
+  const result = await page.evaluate(async (ownerToken) => {
+    const headers = {
+      authorization: `Bearer ${ownerToken}`,
+      "content-type": "application/json",
+    };
+    const status = await fetch("/api/admin/calendar/status", {
+      headers,
+      cache: "no-store",
+    });
+    const reconcile = await fetch("/api/admin/calendar/reconcile", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    return {
+      statusCode: status.status,
+      status: await status.json(),
+      reconcileCode: reconcile.status,
+      reconcile: await reconcile.json(),
+    };
+  }, OWNER_TOKEN);
+  expect(result).toMatchObject({
+    statusCode: 200,
+    status: {
+      ok: true,
+      modes: {
+        ics: { configured: true, active: true },
+        google: { configured: false, active: false },
+      },
+      authority: { state: "active", generation: 1 },
+    },
+    reconcileCode: 200,
+    reconcile: { ok: true, processedDates: 7 },
+  });
+  expect(JSON.stringify(result)).not.toMatch(
+    /AAAAAAAA|reservationId|externalId|calendarId|authorization/i,
+  );
+
+  const calendarRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/calendar/")) calendarRequests.push(request.url());
+  });
+  await page.goto("/");
+  await expect(page.locator("main")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(/calendar|カレンダー/i);
+  expect(calendarRequests).toEqual([]);
+});

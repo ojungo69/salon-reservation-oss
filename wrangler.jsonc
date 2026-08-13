@@ -26,6 +26,10 @@
       {
         "name": "ADAPTER_DELIVERY",
         "class_name": "AdapterDelivery"
+      },
+      {
+        "name": "CALENDAR_ADAPTER",
+        "class_name": "CalendarAdapter"
       }
     ]
   },
@@ -44,6 +48,13 @@
     // tombstone would destroy the namespace and its data. See
     // specs/003-line-adapter/research.md R5 and docs/RELEASING.md.
     "AdapterDelivery": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    // Optional calendar projection and outbound-delivery authority. Back out
+    // only through a forward deployment that retains this namespace until its
+    // data and alarms have drained; never add a deleted-class tombstone.
+    "CalendarAdapter": {
       "type": "durable-object",
       "storage": "sqlite"
     }

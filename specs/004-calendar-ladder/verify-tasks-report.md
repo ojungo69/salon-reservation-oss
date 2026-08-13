@@ -1,0 +1,77 @@
+# Task verification report — feature 004 (S2 calendar ladder)
+
+Verified on 2026-08-13 in `/home/jura/projects/srv-wt-calendar`, branch
+`feat/calendar-ladder`, against base `3a9f72508ae075357da7c8b04a34cf7dc075c404`.
+No deployment or live provider/account was used.
+
+## Final command evidence
+
+| Command | Result |
+|---|---|
+| `specify self check` | Up to date: 0.16.2 |
+| `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
+| `npx vitest run test/calendar-adapter.test.ts --reporter=verbose` | 28/28 passed |
+| focused security regression command in `security-scan.md` | 5/5 passed |
+| focused calendar privacy cleanup test | 1/1 passed |
+| `npm run check` | core 54/54; Workers/DO 200/200; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
+| GitNexus `detect-changes --scope compare --base-ref main` | 21 files, 73 changed symbols, 64 affected flows reviewed; shared validator/call wrapper correctly classified critical blast radius |
+| `git diff --check` | passed |
+
+The Workers pool prints expected unhandled-RPC warnings in tests that deliberately replace a
+Durable Object receiver with an incomplete stub. The browser server prints certificate-unknown
+messages when Chromium rejects Wrangler's self-signed local TLS connection before retrying with the
+configured ignore-HTTPS-errors policy. Both suites completed with exit code 0; neither is a code
+regression. One real privacy-test failure was found during the first full run: the test still
+assumed a public privacy GET initialized Calendar state. The security design intentionally removed
+that stateful public RPC, so the test now explicitly activates the authority before asserting
+residual cleanup disclosure; its focused and full reruns pass.
+
+## Manual completion sweep
+
+`speckit-verify-tasks` is not installed in this repository, so T039 used the specified manual
+equivalent exactly once. Every task is accounted for below.
+
+| Task | Implementation/evidence |
+|---|---|
+| T001 | Current Specify self/integration checks above; constitution and active feature are present in `.specify/`. |
+| T002 | Current primary-mechanism decisions and links are recorded in `research.md`, including the explicit no-deploy decision. |
+| T003 | Pre-edit CRITICAL/LOW GitNexus impact and shared-surface constraints are recorded in `plan.md`. |
+| T004 | Spec, plan, model, contract, quickstart, research, and 16/16 checked requirements exist with no clarification marker. |
+| T005 | Calendar migration/two-consumer/lease/projection/privacy/availability regressions are in `test/reservation-day.test.ts`. |
+| T006 | Generic consumer descriptors, additive outbox fields, calendar-only create, safe projection, and handoff are in `src/reservation-day.ts`. |
+| T007 | Secret/ID/ICS/OAuth/URL/payload/classification pure tests are in `test/calendar-adapter.test.ts`. |
+| T008 | One concrete dependency-free provider implementation and bounded SQLite authority are in `src/calendar-adapter.ts`. |
+| T009 | Binding/export/optional secret fixtures and regenerated types are present; `types:check` and dry-run build pass. |
+| T010 | Optional fail-open descriptor wiring preserves byte-identical public config and zero absent-mode calendar RPC. |
+| T011 | Foundation, LINE regression, and type checks pass within the full command evidence. |
+| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 28-case calendar suite. |
+| T013 | Absent/bad/valid/rotated/exact-query/header/cache/privacy Worker feed tests are in `test/worker.test.ts`. |
+| T014 | Calendar acceptance, projection, bounded cleanup, aggregate auth diagnostics, and serializer are implemented. |
+| T015 | Uniform-404 capability route and no-store/nosniff headers are implemented and tested. |
+| T016 | Feed lifecycle bytes are parsed in tests; forbidden customer/contact/proof/reference fields are absent. |
+| T017 | OAuth cache/rotation/redirect/body/schema tests pass. |
+| T018 | Desired-state, claim, retry, convergence, race, and retention tests pass. |
+| T019 | Worker tests prove Google retry/permanent failure leaves reservation/availability JSON unchanged. |
+| T020 | Bounded refresh exchange and credential-fingerprint memory cache are implemented without persistence/logging. |
+| T021 | Deterministic update→insert/409→update/delete Google protocol is implemented against fixed hosts. |
+| T022 | Latest desired state, bounded claims/retries, configuration parking, terminal ledger, and alarm scheduling are implemented. |
+| T023 | Fixture fetch assertions and source/security scans prove zero live network, redirect follow, secret logs, provider reads, or runtime dependency. |
+| T024 | Lifecycle/high-water/disable/purge/re-enable/requeue/redaction tests pass. |
+| T025 | Owner status and bounded reconciliation auth/origin/rate/input/idempotency tests pass. |
+| T026 | Browser owner-only status/reconcile and zero customer calendar trace pass in `tests-browser/owner.spec.ts`. |
+| T027 | Mode transition, leases, consumer purge, fingerprint requeue, status, and quiescent alarms are implemented. |
+| T028 | Redacted owner status and seven-date authoritative reconciliation routes are implemented. |
+| T029 | Invalid/removed credential, response-redaction, and browser evidence pass with fixture-only secrets. |
+| T030 | `docs/CALENDAR-SETUP.md` covers optional setup, OAuth, token/target rotation, recovery, smoke, and no-deploy development. |
+| T031 | Privacy documents and state-dependent Worker disclosure name the exact fields and cleanup lifecycle. |
+| T032 | Cloudflare/release docs cover optional bindings, Free-plan budget, alarms, and forward backout. |
+| T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
+| T034 | Focused, full, type/build/audit, and 34-case browser results are recorded above. |
+| T035 | `security-scan.md` records the complete rule/adversarial review, two fixed candidates, and zero final findings. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; Ponytail removed unused first-release state/columns and kept one concrete provider with no dependency. Focused/full reruns pass. |
+| T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
+| T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
+| T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |
+
+Result: T001–T039 have corresponding implementation/evidence; no false completion found.

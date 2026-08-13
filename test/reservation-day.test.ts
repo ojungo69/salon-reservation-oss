@@ -1224,6 +1224,186 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
   });
 });
 
+describe("S2 calendar outbox substrate", () => {
+  const descriptor = (consumer: "line" | "calendar", expired = false) => ({
+    consumer,
+    generation: 1,
+    phase: "active" as const,
+    leaseIssuedAt: Date.now() - 1_000,
+    leaseNotAfter: Date.now() + (expired ? -1 : 30_000),
+  });
+
+  const configured = (
+    config: TargetDayConfig,
+    options: { line?: boolean; calendar?: boolean; expiredCalendar?: boolean } = {},
+  ) =>
+    ({
+      ...config,
+      ...(options.line ? { adapter: descriptor("line") } : {}),
+      ...(options.calendar
+        ? { calendarAdapter: descriptor("calendar", options.expiredCalendar) }
+        : {}),
+    }) as TargetDayConfig;
+
+  const call = <T>(
+    stub: DurableObjectStub<TargetReservationDay>,
+    method: string,
+    ...args: unknown[]
+  ): Promise<T | { ok: false; code: "NOT_IMPLEMENTED" | "UNEXPECTED_ERROR"; detail?: string }> =>
+    runInDurableObject(stub, async (instance) => {
+      const operation = (instance as unknown as Record<string, unknown>)[method];
+      if (typeof operation !== "function") return { ok: false, code: "NOT_IMPLEMENTED" };
+      try {
+        return (await Reflect.apply(operation, instance, args)) as T;
+      } catch (error) {
+        return {
+          ok: false,
+          code: "UNEXPECTED_ERROR",
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+
+  it("emits calendar create independently and projects only schedule facts", async () => {
+    const stub = stubFor();
+    const calendarDay = configured(day, { line: true, calendar: true });
+    const withoutAdapters = await stub.availability(day, ["service-cut"]);
+    const withAdapters = await stub.availability(calendarDay, ["service-cut"]);
+    expect(JSON.stringify(withAdapters)).toBe(JSON.stringify(withoutAdapters));
+
+    const created = await stub.createPublic(
+      calendarDay,
+      createInput(calendarDay, { serviceIds: ["service-cut"] }),
+    );
+    expect(created).toMatchObject({ ok: true, status: "pending" });
+
+    const calendar = await call<{ events: Array<Record<string, unknown>> }>(
+      stub,
+      "drainOutbox",
+      { consumer: "calendar" },
+    );
+    const line = await call<{ events: Array<Record<string, unknown>> }>(
+      stub,
+      "drainOutbox",
+      { consumer: "line" },
+    );
+    expect(calendar).toMatchObject({
+      events: [
+        {
+          type: "create",
+          reservationId: reservationIdOf(created),
+          startTime: "09:00",
+          endTime: "10:00",
+          serviceLabel: "架空カット",
+          reservationStatus: "pending",
+        },
+      ],
+    });
+    expect(line).toMatchObject({ events: [] });
+
+    const projection = await call<Record<string, unknown>>(
+      stub,
+      "calendarProjection",
+      calendarDay,
+    );
+    expect(projection).toEqual({
+      ok: true,
+      date: day.date,
+      purgeAt: day.purgeAt,
+      events: [
+        {
+          reservationId: reservationIdOf(created),
+          startTime: "09:00",
+          endTime: "10:00",
+          serviceLabel: "架空カット",
+          status: "pending",
+        },
+      ],
+    });
+    const bytes = JSON.stringify(projection);
+    expect(bytes).not.toContain("架空 花子");
+    expect(bytes).not.toContain("hanako@example.invalid");
+    expect(bytes).not.toContain("managementDigest");
+  });
+
+  it("adds calendar columns to a released LINE outbox without losing its row", async () => {
+    const stub = stubFor();
+    const created = await stub.createPublic(day, createInput(day, { serviceIds: ["service-cut"] }));
+    expect(created).toMatchObject({ ok: true });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(`
+        CREATE TABLE __adapter_meta (
+          consumer TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          event_seq INTEGER NOT NULL,
+          PRIMARY KEY (consumer, generation)
+        )
+      `);
+      state.storage.sql.exec(`
+        CREATE TABLE __adapter_outbox (
+          consumer TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          seq INTEGER NOT NULL,
+          event_id TEXT NOT NULL,
+          reservation_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          start_time TEXT NOT NULL,
+          service_label TEXT NOT NULL,
+          occurred_at TEXT NOT NULL,
+          purge_at INTEGER NOT NULL,
+          PRIMARY KEY (consumer, generation, seq)
+        )
+      `);
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES ('line', 1, 1)`,
+      );
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time,
+            service_label, occurred_at, purge_at)
+         VALUES ('line', 1, 1, ?, ?, 'approve', '09:00', '架空カット', ?, ?)`,
+        `${day.date}#1`,
+        reservationIdOf(created),
+        new Date().toISOString(),
+        day.purgeAt,
+      );
+    });
+
+    expect(
+      await call(stub, "transitionOwner", configured(day, { calendar: true }), {
+        commandId: crypto.randomUUID(),
+        date: day.date,
+        reservationId: reservationIdOf(created),
+        action: "approve",
+      }),
+    ).toMatchObject({ ok: true, status: "approved" });
+
+    const migrated = await runInDurableObject(stub, (_instance, state) => ({
+      columns: state.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info('__adapter_outbox')")
+        .toArray()
+        .map(({ name }) => name),
+      lineRows:
+        state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM __adapter_outbox WHERE consumer = 'line'",
+          )
+          .toArray()[0]?.n ?? 0,
+    }));
+    expect(migrated.columns).toEqual(expect.arrayContaining(["end_time", "reservation_status"]));
+    expect(migrated.lineRows).toBe(1);
+  });
+
+  it("rolls back a create committed under an expired calendar lease", async () => {
+    const stub = stubFor();
+    const stale = configured(day, { calendar: true, expiredCalendar: true });
+    expect(
+      await stub.createPublic(stale, createInput(stale, { serviceIds: ["service-cut"] })),
+    ).toEqual({ ok: false, code: "RETRY_CONFIG" });
+    expect(await stub.listOwner(day)).toMatchObject({ ok: true, reservations: [] });
+  });
+});
+
 describe("T012 pending expiry", () => {
   const EXPIRY_MINUTES = 15;
   const START = Date.parse("2025-01-14T15:00:00.000Z");

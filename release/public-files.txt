@@ -16,6 +16,7 @@ LICENSE
 README.md
 SECURITY.md
 docs/ADAPTER-CONTRACTS.md
+docs/CALENDAR-SETUP.md
 docs/CLOUDFLARE.md
 docs/LINE-SETUP.md
 docs/PARITY.md
@@ -48,6 +49,7 @@ scripts/assemble-public-release.sh
 scripts/release-audit.mjs
 src/adapter-constants.ts
 src/adapter-delivery.ts
+src/calendar-adapter.ts
 src/date-parse.ts
 src/installation-config.ts
 src/line-adapter.ts
@@ -55,6 +57,7 @@ src/reservation-core.ts
 src/reservation-day.ts
 src/worker.ts
 test/adapter-delivery.test.ts
+test/calendar-adapter.test.ts
 test/date-parse.test.ts
 test/installation-config.test.ts
 test/journey.test.ts
