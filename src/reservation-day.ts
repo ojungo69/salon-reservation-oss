@@ -83,6 +83,9 @@ export type DayConfig = {
   // Independent calendar consumer; also transient and excluded from the
   // pinned schedule so enabling an adapter cannot change availability.
   calendarAdapter?: DayAdapterDescriptor;
+  // A descriptor lookup timed out. The mutation still records an unbound
+  // calendar outbox event so the active authority can adopt it durably.
+  calendarRecovery?: true;
 };
 
 type TargetDayConfig = DayConfig & {
@@ -158,6 +161,14 @@ export type DayAdapterDescriptor = {
   phase: "active" | "deactivating";
   leaseIssuedAt: number;
   leaseNotAfter: number;
+};
+
+const CALENDAR_RECOVERY_DESCRIPTOR: DayAdapterDescriptor = {
+  consumer: "calendar",
+  generation: 0,
+  phase: "active",
+  leaseIssuedAt: 1,
+  leaseNotAfter: Number.MAX_SAFE_INTEGER,
 };
 
 export type AdapterEventType =
@@ -569,6 +580,8 @@ const isDayConfig = (config: DayConfig): boolean => {
       (Number.isSafeInteger(config.pendingExpiryMinutes) &&
         config.pendingExpiryMinutes >= 15 &&
         config.pendingExpiryMinutes <= 10080)) &&
+    (config.calendarRecovery === undefined || config.calendarRecovery === true) &&
+    !(config.calendarRecovery === true && config.calendarAdapter !== undefined) &&
     isAdapterDescriptor(config.adapter, "line") &&
     isAdapterDescriptor(config.calendarAdapter, "calendar");
   if (!base) return false;
@@ -1037,12 +1050,10 @@ export class ReservationDay extends DurableObject<Env> {
     const generation = config.calendarAdapter?.generation ?? 0;
     if (generation === 0 || !this.#adapterOutboxExists()) return { generation, seq: 0 };
     const seq = this.ctx.storage.sql
-      .exec<{ event_seq: number }>(
-        `SELECT event_seq FROM __adapter_meta
-         WHERE consumer = 'calendar' AND generation = ?`,
-        generation,
+      .exec<{ event_seq: number | null }>(
+        "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
       )
-      .toArray()[0]?.event_seq;
+      .one().event_seq;
     return { generation, seq: seq ?? 0 };
   }
 
@@ -1093,8 +1104,8 @@ export class ReservationDay extends DurableObject<Env> {
   // commit itself. No adapter configured → no-op. Deactivating → no new events
   // (disable is an explicit stop; the sweep drains what already exists).
   // An expired LINE lease preserves the released retry contract. Calendar is
-  // optional: a stale lease skips its event and authoritative reconciliation
-  // recovers it without rolling back the reservation.
+  // optional: a stale or unavailable lease writes generation 0 for the active
+  // authority to adopt without rolling back the reservation.
   #emitAdapterEvents(
     config: DayConfig,
     events: Array<{
@@ -1107,7 +1118,11 @@ export class ReservationDay extends DurableObject<Env> {
     }>,
   ): void {
     if (events.length === 0) return;
-    const adapters = [config.adapter, config.calendarAdapter].filter(
+    const adapters = [
+      config.adapter,
+      config.calendarAdapter,
+      config.calendarRecovery === true ? CALENDAR_RECOVERY_DESCRIPTOR : undefined,
+    ].filter(
       (adapter): adapter is DayAdapterDescriptor => adapter !== undefined,
     );
     if (adapters.length === 0) return;
@@ -1121,19 +1136,26 @@ export class ReservationDay extends DurableObject<Env> {
       const accepted =
         adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
       if (adapter.phase !== "active" || accepted.length === 0) continue;
+      let generation = adapter.generation;
       if (Date.now() > adapter.leaseNotAfter) {
-        if (adapter.consumer === "calendar") continue;
-        throw new AdapterLeaseExpiredError();
+        if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
+        generation = 0;
       }
       this.#ensureAdapterSchema();
-      const row = sql
-        .exec<{ event_seq: number }>(
-          "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
-          adapter.consumer,
-          adapter.generation,
-        )
-        .toArray()[0];
-      let seq = row?.event_seq ?? 0;
+      let seq =
+        adapter.consumer === "calendar"
+          ? (sql
+              .exec<{ event_seq: number | null }>(
+                "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
+              )
+              .one().event_seq ?? 0)
+          : (sql
+              .exec<{ event_seq: number }>(
+                "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
+                adapter.consumer,
+                adapter.generation,
+              )
+              .toArray()[0]?.event_seq ?? 0);
       for (const event of accepted) {
         seq += 1;
         sql.exec(
@@ -1142,7 +1164,7 @@ export class ReservationDay extends DurableObject<Env> {
               end_time, service_label, reservation_status, occurred_at, purge_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           adapter.consumer,
-          adapter.generation,
+          generation,
           seq,
           `${config.date}#${seq}`,
           event.reservationId,
@@ -1159,7 +1181,7 @@ export class ReservationDay extends DurableObject<Env> {
         `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
          ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
         adapter.consumer,
-        adapter.generation,
+        generation,
         seq,
       );
     }
@@ -1170,9 +1192,19 @@ export class ReservationDay extends DurableObject<Env> {
   // this only shortens the common case. Also serves as the lazy re-poke on
   // next use after a died handoff.
   #adapterHandoff(config: DayConfig): void {
-    if (config.adapter === undefined && config.calendarAdapter === undefined) return;
+    if (
+      config.adapter === undefined &&
+      config.calendarAdapter === undefined &&
+      config.calendarRecovery !== true
+    ) {
+      return;
+    }
     if (!this.#adapterOutboxExists()) return;
-    for (const adapter of [config.adapter, config.calendarAdapter]) {
+    for (const adapter of [
+      config.adapter,
+      config.calendarAdapter,
+      config.calendarRecovery === true ? CALENDAR_RECOVERY_DESCRIPTOR : undefined,
+    ]) {
       if (adapter === undefined) continue;
       try {
         const pending = this.ctx.storage.sql
@@ -1244,7 +1276,7 @@ export class ReservationDay extends DurableObject<Env> {
     for (const row of rows.slice(0, limit)) {
       if (
         !Number.isSafeInteger(row.generation) ||
-        row.generation < 1 ||
+        (row.generation < 1 && !(input.consumer === "calendar" && row.generation === 0)) ||
         !Number.isSafeInteger(row.seq) ||
         row.seq < 1 ||
         row.event_id !== `${meta.date}#${row.seq}` ||
@@ -1295,7 +1327,8 @@ export class ReservationDay extends DurableObject<Env> {
           typeof event === "object" &&
           event !== null &&
           Number.isSafeInteger(event.generation) &&
-          event.generation >= 1 &&
+          (event.generation >= 1 ||
+            (input.consumer === "calendar" && event.generation === 0)) &&
           typeof event.eventId === "string" &&
           /^\d{4}-\d{2}-\d{2}#\d{1,9}$/.test(event.eventId),
       )

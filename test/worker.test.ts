@@ -3064,6 +3064,63 @@ describe("T035 guided setup API", () => {
     expect(response.status).toBe(200);
   });
 
+  it("records durable recovery when a descriptor stalls during a committed mutation", async () => {
+    await enableLiveInstallation();
+    const fixture = await publicCreateBody();
+    const dayObject = stubFor();
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(dayObject, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    let releaseDescriptor!: (value: null) => void;
+    const descriptor = new Promise<null>((resolve) => {
+      releaseDescriptor = resolve;
+    });
+    const stalledEnv = Object.create(env) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(stalledEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: { getByName: () => ({ descriptor: () => descriptor }) },
+    });
+
+    let response: Response;
+    try {
+      response = await worker.fetch(
+        new Request("https://example.test/api/reservations", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://example.test",
+          },
+          body: JSON.stringify(fixture.body),
+        }),
+        stalledEnv,
+      );
+    } finally {
+      releaseDescriptor(null);
+      await runInDurableObject(dayObject, (instance) => {
+        Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+          configurable: true,
+          value: calendarNamespace,
+        });
+      });
+    }
+
+    expect(response.status).toBe(201);
+    expect(
+      await runInDurableObject(dayObject, (_instance, state) =>
+        state.storage.sql
+          .exec<{ generation: number }>(
+            "SELECT generation FROM __adapter_outbox WHERE consumer = 'calendar'",
+          )
+          .one().generation,
+      ),
+    ).toBe(0);
+  });
+
   it("conservatively discloses residual calendar state when its lookup cannot run", async () => {
     let namespaceReads = 0;
     const limitedEnv = Object.create(env) as Env;

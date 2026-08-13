@@ -573,6 +573,87 @@ describe("calendar projection and feed authority", () => {
     expect(await adapter.diagnostics()).toMatchObject({ projectionCount: 1 });
   });
 
+  it("recovers descriptor-timeout mutations from the durable calendar outbox", async () => {
+    const config = await configFor(suiteDate(17));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+
+    const created = await day.createPublic(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "pending" });
+    if (!created.ok) throw new Error("fixture create failed");
+    expect(
+      await day.transitionOwner(
+        { ...config, calendarAdapter: undefined, calendarRecovery: true },
+        {
+          commandId: crypto.randomUUID(),
+          date: config.date,
+          reservationId: created.reservationId,
+          action: "approve",
+        },
+      ),
+    ).toMatchObject({ ok: true, status: "approved" });
+
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+    });
+
+    expect(
+      await runInDurableObject(day, (_instance, state) =>
+        state.storage.sql
+          .exec<{ generation: number; seq: number }>(
+            `SELECT generation, seq FROM __adapter_outbox
+             WHERE consumer = 'calendar' ORDER BY seq`,
+          )
+          .toArray(),
+      ),
+    ).toEqual([
+      { generation: 1, seq: 1 },
+      { generation: 0, seq: 2 },
+    ]);
+
+    await expect(
+      runInDurableObject(adapter, (instance, state) => {
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        let firstDigest = true;
+        vi.spyOn(crypto.subtle, "digest").mockImplementation((algorithm, data) => {
+          if (firstDigest) {
+            firstDigest = false;
+            state.storage.sql.exec(
+              "UPDATE meta SET generation = 2, high_water = 2 WHERE singleton = 1",
+            );
+          }
+          return digest(algorithm, data);
+        });
+        return instance.pokeDay({ date: config.date });
+      }),
+    ).resolves.toEqual({ ok: true, drained: 0 });
+    expect(await day.drainOutbox({ consumer: "calendar" })).toMatchObject({
+      events: [{ generation: 0 }, { generation: 1 }],
+    });
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({ ok: true, drained: 2 });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) =>
+        state.storage.sql
+          .exec<{ event_key: string }>(
+            "SELECT event_key FROM accepted_events WHERE event_key LIKE '0:%'",
+          )
+          .one().event_key,
+      ),
+    ).toBe(`0:${config.date}#2`);
+    const feed = await adapter.feed({ token: feedToken });
+    expect(feed.ok && feed.body).toContain("STATUS:CONFIRMED");
+  });
+
   it("keeps authoritative reconciliation ahead of a delayed older event", async () => {
     const config = await configFor(suiteDate(19));
     const adapter = adapterStub();
@@ -1697,6 +1778,65 @@ describe("calendar projection and feed authority", () => {
       });
     }
   }, ADAPTER.SWEEP_RPC_DEADLINE_MS + 10_000);
+
+  it("does not advance an active sweep after deactivation resets its cursor", async () => {
+    const adapter = adapterStub();
+    const reservationDays = env.RESERVATION_DAYS;
+    let feedSecret: string | undefined = feedToken;
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperties((instance as unknown as { env: Env }).env, {
+        CALENDAR_FEED_TOKEN: {
+          configurable: true,
+          get: () => feedSecret,
+        },
+        GOOGLE_CALENDAR_CREDENTIALS: {
+          configurable: true,
+          value: undefined,
+        },
+      });
+    });
+    const descriptor = await adapter.descriptor();
+    if (descriptor === null) throw new Error("calendar fixture did not activate");
+    const date = suiteDate(26);
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET sweep_cursor = ? WHERE singleton = 1", date);
+    });
+
+    let drainStarted = false;
+    let release!: (result: { events: []; more: false }) => void;
+    const blocked = new Promise<{ events: []; more: false }>((resolve) => {
+      release = resolve;
+    });
+    await runInDurableObject(adapter, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "RESERVATION_DAYS", {
+        configurable: true,
+        value: {
+          getByName: (name: string) =>
+            name === `single-location:${date}`
+              ? {
+                  drainOutbox: () => {
+                    drainStarted = true;
+                    return blocked;
+                  },
+                }
+              : reservationDays.getByName(name),
+        },
+      });
+    });
+
+    const alarm = runDurableObjectAlarm(adapter);
+    await vi.waitFor(() => expect(drainStarted).toBe(true));
+    feedSecret = undefined;
+    await expect(adapter.descriptor()).resolves.toBeNull();
+    release({ events: [], more: false });
+    await alarm;
+
+    expect(await adapter.diagnostics()).toMatchObject({
+      state: "deactivating",
+      generation: descriptor.generation,
+      sweepCursor: null,
+    });
+  });
 
   it("preserves a reactivated generation while the final purge is in flight", async () => {
     const adapter = adapterStub();

@@ -154,8 +154,8 @@ provider. Split only if a second provider is approved; no provider interface/fac
   delivery. The required-secret list remains only owner and Turnstile.
 - `CalendarAdapter.descriptor()` returns an active generation/30-second lease when either mode is
   valid. Worker calls it only when a local secret-shape hint says at least one mode may be active;
-  exceptions or a 250 ms local deadline omit the calendar descriptor, so booking continues and the
-  bounded active sweep recovers any missed post-commit handoff.
+  exceptions or a 250 ms local deadline use an unbound recovery marker, so booking continues while
+  its mutation is committed to the existing day outbox for the bounded active sweep.
 - Each alarm/status/feed call re-evaluates both bindings. A transition from zero valid modes starts
   cleanup; a later valid configuration mints a generation above the persistent high-water and
   starts reconciliation/sweep. Google false→true or credential-fingerprint change requeues every
@@ -171,9 +171,9 @@ provider. Split only if a second provider is approved; no provider interface/fac
 - Add nullable `end_time` and `reservation_status` columns with an explicit additive migration.
   Old LINE rows may be null; calendar rows must have canonical values.
 - `#emitAdapterEvents` loops the two optional descriptors within the existing transaction. A stale
-  LINE lease keeps the released one-refresh retry. A stale optional calendar lease skips only that
-  outbox emission; the committed day projection remains available to owner reconciliation, so
-  calendar rotation or disable cannot roll back a reservation.
+  LINE lease keeps the released one-refresh retry. A stale or unavailable optional calendar lease
+  writes generation `0` with the shared calendar sequence; the authority binds it to the current
+  active generation, so calendar rotation or disable cannot roll back a reservation.
 - `#adapterHandoff` independently pokes `ADAPTER_DELIVERY` and `CALENDAR_ADAPTER` after commit.
   The reservation-day retention alarm is untouched.
 
@@ -185,7 +185,8 @@ credential object to detect rotation; no secret/config field is stored. During d
 leases to expire, purges only `calendar` outbox rows at or below the retiring generation over the
 fixed sweep, and clears projection/mutations only after revalidating that generation in the final
 transaction. Every day RPC uses the shared five-second deadline and retries the same cursor on
-failure. The alarm stops when bounded diagnostics have expired.
+failure. State and generation are revalidated after every awaited day RPC before its cursor moves.
+The alarm stops when bounded diagnostics have expired.
 
 Every ingress goes through one desired-state upsert:
 

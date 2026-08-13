@@ -1441,7 +1441,7 @@ describe("S2 calendar outbox substrate", () => {
     expect(migrated.lineRows).toEqual([{ end_time: null, reservation_status: null }]);
   });
 
-  it("commits a booking under an expired optional calendar lease", async () => {
+  it("commits a booking and preserves recovery under an expired optional calendar lease", async () => {
     const stub = stubFor();
     const stale = configured(day, { calendar: true, expiredCalendar: true });
     const created = await stub.createPublic(
@@ -1452,8 +1452,8 @@ describe("S2 calendar outbox substrate", () => {
     expect(startsFor(await stub.availability(day, ["service-cut"]), "resource-chair-a")).not.toContain(
       "09:00",
     );
-    await expect(stub.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
-      events: [],
+    await expect(stub.drainOutbox({ consumer: "calendar" })).resolves.toMatchObject({
+      events: [{ generation: 0, seq: 1, type: "create" }],
       more: false,
     });
     await expect(stub.calendarProjection(day)).resolves.toMatchObject({

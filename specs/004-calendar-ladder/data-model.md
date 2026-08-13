@@ -78,7 +78,16 @@ active --Google false→true or fingerprint change--> active + requeue projectio
 The purge sweep carries the retiring generation into each day transaction. A concurrent
 reactivation therefore preserves newer outbox rows, and final authority cleanup commits only when
 state and generation still match the retiring snapshot. Entering deactivation clears any active
-sweep cursor so the post-lease purge begins at the fixed window boundary.
+sweep cursor so the post-lease purge begins at the fixed window boundary. The sweep also revalidates
+state and generation after every awaited day RPC before it advances that cursor.
+
+Calendar outbox sequence numbers are monotonic across generations within one day. If descriptor
+lookup exceeds its 250 ms budget, or an active lease expires before commit, the day atomically
+writes the event with recovery generation `0`. This is not an authority generation: the adapter
+binds it to the current active generation while accepting it, and leaves it unacknowledged if a
+lifecycle transition races that acceptance. Its accepted-event key remains `0:eventId` so an ack
+retry cannot be adopted twice across reactivation; the accepted generation column records the
+generation that applied it. Normal later events keep the shared sequence order.
 
 ### `accepted_events`
 

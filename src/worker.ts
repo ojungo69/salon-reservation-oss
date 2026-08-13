@@ -56,6 +56,7 @@ type InstallationContext = {
   runtime: ReadinessRuntime;
   line?: LineContext;
   calendarAdapter?: DayConfig["calendarAdapter"];
+  calendarRecovery?: true;
 };
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -355,15 +356,20 @@ const withCalendarAdapter = async (
   }
   const modes = calendarModes(env);
   if (!modes.feed && !modes.google) return context;
+  const {
+    calendarAdapter: _calendarAdapter,
+    calendarRecovery: _calendarRecovery,
+    ...base
+  } = context;
   try {
     const calendarAdapter = await withDeadline(
       calendarAdapterStub(env).descriptor(),
       CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS,
     );
-    return calendarAdapter === null ? context : { ...context, calendarAdapter };
+    return calendarAdapter === null ? base : { ...base, calendarAdapter };
   } catch {
     // Calendar is optional and post-commit; reservation paths stay available.
-    return context;
+    return { ...base, calendarRecovery: true };
   }
 };
 
@@ -514,6 +520,7 @@ const toDayConfig = (date: string, context: InstallationContext): DayConfig => {
     ...(context.calendarAdapter === undefined
       ? {}
       : { calendarAdapter: context.calendarAdapter }),
+    ...(context.calendarRecovery === true ? { calendarRecovery: true as const } : {}),
   };
 };
 

@@ -882,10 +882,15 @@ export class CalendarAdapter extends DurableObject<Env> {
   async #acceptEvents(events: AdapterOutboxEvent[]): Promise<number | null> {
     const now = Date.now();
     this.#pruneRetention(now);
-    if (this.#readMeta()?.state !== "active") return 0;
+    const initialMeta = this.#readMeta();
+    if (initialMeta?.state !== "active") return 0;
     const prepared = await Promise.all(
       events.map(async (event) => ({
-        event,
+        event:
+          event.generation === 0
+            ? { ...event, generation: initialMeta.generation }
+            : event,
+        recovery: event.generation === 0,
         eventKey: `${event.generation}:${event.eventId}`,
         ids: await calendarIdentifiers(event.reservationId),
       })),
@@ -911,6 +916,12 @@ export class CalendarAdapter extends DurableObject<Env> {
     const accepted = this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
       if (meta?.state !== "active") return null;
+      if (
+        meta.generation !== initialMeta.generation &&
+        prepared.some(({ recovery }) => recovery)
+      ) {
+        return null;
+      }
       let accepted = 0;
       const sql = this.ctx.storage.sql;
       for (const { event, eventKey, ids } of prepared) {
@@ -1532,6 +1543,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     const final = shiftDate(dateJst(now), ADAPTER.SWEEP_FUTURE_DAYS);
     let cursor = meta.sweepCursor ?? first;
     for (let index = 0; index < ADAPTER.SWEEP_DAY_BATCH && cursor <= final; index += 1) {
+      let faulted = false;
       try {
         if (meta.state === "deactivating") {
           await withDeadline(
@@ -1545,8 +1557,11 @@ export class CalendarAdapter extends DurableObject<Env> {
         }
       } catch {
         this.#bump("sweep_faults");
-        break;
+        faulted = true;
       }
+      const current = this.#readMeta();
+      if (current?.state !== meta.state || current.generation !== meta.generation) return;
+      if (faulted) break;
       cursor = shiftDate(cursor, 1);
     }
     if (cursor <= final) {

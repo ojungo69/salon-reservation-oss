@@ -131,7 +131,8 @@ redacted diagnostics.
   identifier and converges through update/duplicate handling rather than creating another event.
 - Google reports an event already deleted: deletion is accepted as reconciled, not retried forever.
 - The optional calendar authority stalls while a reservation request is running: its descriptor
-  lookup fails open after a 250 ms local deadline and the bounded sweep recovers missed handoff.
+  lookup fails open after a 250 ms local deadline, the reservation transaction retains an unbound
+  calendar outbox event, and the bounded sweep adopts it under the active generation.
 - A permanent request/configuration error and a transient outage occur simultaneously for different
   reservations: each item is isolated; the transient item retries and the permanent one becomes
   visible without stalling the queue.
