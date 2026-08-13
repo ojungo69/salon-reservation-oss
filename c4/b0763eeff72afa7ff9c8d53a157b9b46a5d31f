@@ -1,0 +1,49 @@
+specs/004-calendar-ladder/quickstart.md
+  s_a546c8dc2f182a::t_09a50b81e602af 30-31
+specs/004-calendar-ladder/research.md
+  s_a546c8dc2f182a::t_09a50b81e602af 29-32,50
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_53c96ddf2d6db7 731,746,767,966-968,976-978,980-981
+  s_a546c8dc2f182a::t_6a01567a01549d 1108,1122,1179
+  s_a546c8dc2f182a::t_7516fbdf758f78 1107,1110-1112,1120-1121,1123,1125-1126,1187
+src/worker.ts
+  s_a546c8dc2f182a::t_00382614dd4ba9 311-312,358,360-365,370-371
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_e4a042d53bc91b 13,15,17,19,40-48,67,69,75,91,93
+specs/004-calendar-ladder/spec.md
+  s_a546c8dc2f182a::t_09a50b81e602af 89-91,133-134,194-195,211-212
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_e4a042d53bc91b 54
+  s_a546c8dc2f182a::t_09a50b81e602af 32
+test/worker.test.ts
+  s_a546c8dc2f182a::t_d01275f55570f8 3035-3065
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_adf82d6ffe2e69 815-828,855-861
+  s_a546c8dc2f182a::t_fd6527e016eebf 813-814
+  s_a546c8dc2f182a::t_28100c1fa5574c 862-865
+  s_a546c8dc2f182a::t_70850ed5cbf1d6 891
+  s_a546c8dc2f182a::t_d01275f55570f8 799-812,829,831-854,866-890,892-899
+  s_a546c8dc2f182a::t_c1a1cb7d75e5aa 706,830,914
+  s_a546c8dc2f182a::t_a966a6968bf822 900-913,915-962
+  s_a546c8dc2f182a::t_1a6487c21bcc9f 233-249
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_09a50b81e602af 83,157-158,192-193
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_09a50b81e602af 104-106,190-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c4b0763eeff72afa7ff9c8d53a157b9b46a5d31f",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
