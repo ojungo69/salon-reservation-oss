@@ -1,0 +1,85 @@
+specs/004-calendar-ladder/research.md
+  s_a546c8dc2f182a::t_858de88754274c 201-202,219-220,231-234
+specs/004-calendar-ladder/verify-tasks-report.md
+  s_a546c8dc2f182a::t_8df6165afe25ae 17
+  s_a546c8dc2f182a::t_a147b21b4a7265 19
+  s_a546c8dc2f182a::t_85310ea71b1a6b 13,31-35,54
+  s_a546c8dc2f182a::t_c938b899dd6601 3-4
+  s_a546c8dc2f182a::t_e7609db1fb8d15 14,77-78
+tests-browser/owner.spec.ts
+  s_a546c8dc2f182a::t_ff19b7ccb6b5cf 165-184,199-204,224,226
+src/worker.ts
+  s_a546c8dc2f182a::t_d18875a26aef4a 2230
+  s_a546c8dc2f182a::t_acb3c8911a3d26 2075
+  s_a546c8dc2f182a::t_3b3fba87e52847 2253-2256
+public/privacy.html
+  s_a546c8dc2f182a::t_d18875a26aef4a 62-65
+specs/004-calendar-ladder/security-scan.md
+  s_a546c8dc2f182a::t_2ea36ca026e51d 6-7,31,34,42,52-62
+specs/004-calendar-ladder/plan.md
+  s_a546c8dc2f182a::t_9bfd8c3824f584 172-174
+test/calendar-adapter.test.ts
+  s_a546c8dc2f182a::t_af977aec1f9075 637-640,666-667
+  s_a546c8dc2f182a::t_1f8fe1e6b063a7 345-356
+  s_a546c8dc2f182a::t_bf420acd8a8574 1012
+  s_a546c8dc2f182a::t_804cd13121dc64 79,481-482,485-486
+  s_a546c8dc2f182a::t_0b3d3dad9fe2cf 35,81-82,107-108,118,172-173,336-339
+  s_a546c8dc2f182a::t_f9f37effdaf529 357-403
+  s_a546c8dc2f182a::t_3f97d01c156ec4 1010,1025,1036,1046
+  s_a546c8dc2f182a::t_65e459f1173256 510
+  s_a546c8dc2f182a::t_a6cb8c92ec3082 561,564,581-583,585-636,641-645,653-655,657-661,664-665,668
+  s_a546c8dc2f182a::t_59b2b06c0a3384 1011,1013
+specs/004-calendar-ladder/data-model.md
+  s_a546c8dc2f182a::t_448664d4fb7d1c 94,100-101
+  s_a546c8dc2f182a::t_9bfd8c3824f584 83-85
+specs/004-calendar-ladder/contracts/calendar-api.md
+  s_a546c8dc2f182a::t_82c0751581ab5e 30-32,96-98,160-161,165-167
+  s_a546c8dc2f182a::t_448664d4fb7d1c 129,139-142
+docs/PRIVACY.md
+  s_a546c8dc2f182a::t_448664d4fb7d1c 66-67
+  s_a546c8dc2f182a::t_d18875a26aef4a 56-63
+  s_a546c8dc2f182a::t_d49e0cc116e5e7 68-72
+src/calendar-adapter.ts
+  s_a546c8dc2f182a::t_411654c42815d9 42,137,151,407,466,534,878,888,896-898,903,1007,1052,1062,1070-1072,1077,1324
+  s_a546c8dc2f182a::t_d7aea758702507 833-834
+  s_a546c8dc2f182a::t_253b760dfd96b5 134,177-178,187,234-237,823-827,829-832,835-844,846,850
+  s_a546c8dc2f182a::t_af977aec1f9075 817,845,973-975
+  s_a546c8dc2f182a::t_cb5ee5eb4bc9ed 962-972,976-983
+test/reservation-day.test.ts
+  s_a546c8dc2f182a::t_7e788728db1960 1414-1417,1432-1437,1440,1443,1446-1461
+  s_a546c8dc2f182a::t_a741cd129d528f 1316
+  s_a546c8dc2f182a::t_a6ea08d249032f 1330-1370
+specs/004-calendar-ladder/quickstart.md
+  s_a546c8dc2f182a::t_8dd9efc33b2b8f 50-53,59-60
+docs/CALENDAR-SETUP.md
+  s_a546c8dc2f182a::t_8fec55dae90a1c 34-41
+test/worker.test.ts
+  s_a546c8dc2f182a::t_999aecef248250 2935-2940,3035-3054,3224-3226,3237-3244
+  s_a546c8dc2f182a::t_b3b6ba6fb5d25f 3227-3236
+  s_a546c8dc2f182a::t_64de3c494a5621 3403
+src/reservation-day.ts
+  s_a546c8dc2f182a::t_9b5de2da3e755a 1090,1092,1137,1139
+  s_a546c8dc2f182a::t_f77bf5c5c3ca30 210,2952
+  s_a546c8dc2f182a::t_d49e0cc116e5e7 2940
+  s_a546c8dc2f182a::t_e64ca8b28e3760 1035-1036,1081-1083,1110-1112,1201
+  s_a546c8dc2f182a::t_aef54ba7f9ae27 2941-2948,2956
+specs/004-calendar-ladder/spec.md
+  s_a546c8dc2f182a::t_c430eeae716df3 7,30-32,164-167
+  s_a546c8dc2f182a::t_448664d4fb7d1c 29,82-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "1d883d592b6d56d9a0bd87b7915ae9072d43641a",
+  "prompts": {},
+  "sessions": {
+    "s_a546c8dc2f182a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff6a4-bf1e-7901-9075-16ec75330b26",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
