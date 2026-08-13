@@ -182,8 +182,8 @@ test.describe("state 2: active", () => {
       await expect(page.locator("main")).toContainText(
         "連携はお客様が予約ごとに自分で選んだ場合",
       );
+      await expectNoAxeViolations(page);
     }
-    await expectNoAxeViolations(page);
   });
 
   test("a saved booking offers the opt-in and walks to the LIFF page", async ({ page }) => {
@@ -249,9 +249,14 @@ test.describe("state 2: active", () => {
   test("a transient status failure keeps a retry action", async ({ page }) => {
     await bookAndRemember(page, "15:00");
     let requests = 0;
+    let releaseFailedRetry = () => {};
+    const failedRetry = new Promise<void>((resolve) => {
+      releaseFailedRetry = resolve;
+    });
     await page.route("**/api/reservations/*/line/status", async (route) => {
       requests += 1;
-      if (requests === 1) {
+      if (requests <= 2) {
+        if (requests === 2) await failedRetry;
         await route.fulfill({
           status: 503,
           contentType: "application/json",
@@ -266,8 +271,16 @@ test.describe("state 2: active", () => {
 
     await page.goto("/bookings");
     const row = page.locator("[data-line-link-row]").first();
-    const retry = row.getByRole("button", { name: "もう一度試す" });
+    let retry = row.getByRole("button", { name: "もう一度試す" });
     await expect(retry).toBeVisible();
+    await retry.click();
+    await expect(row.locator("[data-line-link-status]")).toContainText(
+      "もう一度確認しています",
+    );
+    releaseFailedRetry();
+    retry = row.getByRole("button", { name: "もう一度試す" });
+    await expect(retry).toBeVisible();
+    await expect(retry).toBeFocused();
     await retry.click();
     await expect(row.locator("[data-line-link-status]")).toContainText("LINE で受け取れます");
   });

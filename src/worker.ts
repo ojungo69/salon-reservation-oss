@@ -25,6 +25,7 @@ import {
 
 import { AdapterDelivery } from "./adapter-delivery.ts";
 import {
+  isLineChannelSecret,
   parseWebhookBody,
   readBoundedBytes,
   verifyIdToken,
@@ -251,8 +252,7 @@ const ownerSecretPresent = (env: AppEnv): boolean => {
 };
 
 const lineSecretPresent = (env: AppEnv): boolean => {
-  const value = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
-  return value !== null && value.length >= 16 && value.length <= 128;
+  return isLineChannelSecret(env.LINE_MESSAGING_CHANNEL_SECRET);
 };
 
 const ownerAuthenticated = async (
@@ -2021,7 +2021,7 @@ const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
         連携の運用記録(処理件数や失敗理由と時刻だけの、個人を特定しない記録)は、障害の把握のために一定期間だけ保持し、それぞれの保持期限と件数上限を過ぎたものから自動的に削除します。
       </p>
       <p>
-        この設置では、予約の通知を LINE で受け取る連携を有効にしています。連携はお客様が予約ごとに自分で選んだ場合にだけ行われ、連携した予約について LINE のユーザー識別子と予約の対応、および通知の送信記録を保存します。お名前やご連絡先を LINE に送ることはありません。通知の本文には日時と予約の状態だけを含めます。
+        この設置では、予約の通知を LINE で受け取る連携を有効にしています。連携はお客様が予約ごとに自分で選んだ場合にだけ行われ、連携した予約について LINE のユーザー識別子と予約の対応、および通知の送信記録を保存します。お名前やご連絡先を LINE に送ることはありません。通知の本文には日時、選択したサービス、予約の状態を含めます。
       </p>
       <p>
         連携は予約管理ページからいつでも解除でき、解除すると対応関係と未送信の通知を削除します。予約の保存期限が過ぎたとき、および運営者が連携機能を停止したときも同じように削除します。LINE 側でのデータの取り扱いは LINE の利用規約とプライバシーポリシーに従います。

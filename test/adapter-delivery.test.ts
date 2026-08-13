@@ -1983,20 +1983,20 @@ describe("delivery pipeline", () => {
     expect(calls.push).toHaveLength(0);
   });
 
-  it("accepts without a channel secret, parks as awaiting-configuration, then sends once restored", async () => {
+  it("parks a malformed channel secret as awaiting-configuration, then sends once corrected", async () => {
     const calls = lineApi();
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
 
-    let secretBound = true;
+    let secretValue: string | undefined = `${LINE_TEST_SECRET_BINDING} `;
     const secretMutable = await runInDurableObject(deliveryStub(), (instance) => {
       const envObj = (instance as unknown as { env: Env }).env;
       try {
         Object.defineProperty(envObj, "LINE_MESSAGING_CHANNEL_SECRET", {
           configurable: true,
           enumerable: true,
-          get: () => (secretBound ? LINE_TEST_SECRET_BINDING : undefined),
+          get: () => secretValue,
         });
         return true;
       } catch {
@@ -2009,7 +2009,6 @@ describe("delivery pipeline", () => {
       return;
     }
 
-    secretBound = false;
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([
@@ -2021,7 +2020,7 @@ describe("delivery pipeline", () => {
     expect(calls.token).toHaveLength(0);
     expect(await deliveryRows()).toMatchObject([{ status: "awaiting-configuration" }]);
 
-    secretBound = true;
+    secretValue = LINE_TEST_SECRET_BINDING;
     clearTokenCacheForTests();
     await runDurableObjectAlarm(deliveryStub());
     expect(await deliveryRows()).toEqual([]);

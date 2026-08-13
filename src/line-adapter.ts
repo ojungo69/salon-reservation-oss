@@ -12,6 +12,12 @@ const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const WEBHOOK_EVENT_ID = /^[0-9A-Za-z-]{1,64}$/;
 
+export const isLineChannelSecret = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length >= 16 &&
+  value.length <= 128 &&
+  !/[\s\u0000-\u001f\u007f]/.test(value);
+
 declare global {
   interface Env {
     // Optional by design: the adapter is invisible until configured, so this

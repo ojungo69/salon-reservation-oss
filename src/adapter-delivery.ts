@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { ADAPTER, WORST_CASE_PARTITIONS, fullCycleBoundS } from "./adapter-constants.ts";
 import {
+  isLineChannelSecret,
   mintChannelToken,
   pushMessage,
   serializeMessageV1,
@@ -312,8 +313,7 @@ export class AdapterDelivery extends DurableObject<Env> {
   }
 
   #secretPresent(): boolean {
-    const secret = this.env.LINE_MESSAGING_CHANNEL_SECRET;
-    return typeof secret === "string" && secret.length >= 16 && secret.length <= 128;
+    return isLineChannelSecret(this.env.LINE_MESSAGING_CHANNEL_SECRET);
   }
 
   /**

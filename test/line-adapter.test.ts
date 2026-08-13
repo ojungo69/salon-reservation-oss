@@ -425,6 +425,7 @@ describe("privacy page state rule", () => {
     expect(activeResponse.headers.get("cache-control")).toBe("no-store");
     const active = await activeResponse.text();
     expect(active).toContain("LINE 連携を利用する場合");
+    expect(active).toContain("通知の本文には日時、選択したサービス、予約の状態を含めます。");
     const activeHtmlPath = await worker.fetch(
       new Request("https://example.test/privacy.html"),
       env,

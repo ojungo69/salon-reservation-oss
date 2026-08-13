@@ -1,6 +1,6 @@
 # Production-parity roadmap
 
-**Roadmap document version**: 1.0.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-08-12
+**Roadmap document version**: 1.0.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-08-13
 
 This file records **order only**: the stages in which the remaining production-parity work lands.
 Capability *status* has a single authority — [the production-parity target matrix](PARITY.md) — and
