@@ -3032,6 +3032,37 @@ describe("T035 guided setup API", () => {
     expect(namespaceReads).toBe(0);
   });
 
+  it("fails open when the optional calendar descriptor stalls", async () => {
+    await enableLiveInstallation();
+    let releaseDescriptor!: (value: null) => void;
+    const descriptor = new Promise<null>((resolve) => {
+      releaseDescriptor = resolve;
+    });
+    const stalledEnv = Object.create(env) as Env;
+    Object.defineProperty(stalledEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(stalledEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(stalledEnv, "CALENDAR_ADAPTER", {
+      value: {
+        getByName: () => ({ descriptor: () => descriptor }),
+      },
+    });
+
+    const responsePromise = worker.fetch(new Request(availabilityUrl()), stalledEnv);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      responsePromise.then(() => "response" as const),
+      new Promise<"stalled">((resolve) => {
+        watchdog = setTimeout(() => resolve("stalled"), 1_000);
+      }),
+    ]);
+    clearTimeout(watchdog);
+    releaseDescriptor(null);
+    const response = await responsePromise;
+
+    expect(outcome).toBe("response");
+    expect(response.status).toBe(200);
+  });
+
   it("conservatively discloses residual calendar state when its lookup cannot run", async () => {
     let namespaceReads = 0;
     const limitedEnv = Object.create(env) as Env;

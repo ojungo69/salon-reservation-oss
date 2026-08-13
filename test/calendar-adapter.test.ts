@@ -230,6 +230,23 @@ describe("calendar projection and feed authority", () => {
     managementDigest: "a".repeat(64),
   });
 
+  const fillGoogleMutationQueue = () =>
+    runInDurableObject(adapterStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE rows(value) AS (
+           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 2000
+         )
+         INSERT INTO google_mutations
+           (reservation_id, external_id, operation, payload_json, desired_version, generation,
+            attempt, next_attempt_at, first_attempt_at, claimed_at, claimed_version, status,
+            created_at, purge_at)
+         SELECT printf('10000000-0000-4000-8000-%012d', value), printf('sr%064x', value),
+                'upsert', NULL, 1, 1, 0, NULL, NULL, NULL, NULL, 'failed',
+                '2020-01-01T00:00:00.000Z', ? FROM rows`,
+        SUITE_PURGE_AT,
+      );
+    });
+
   beforeEach(() => {
     clearGoogleTokenCacheForTests();
     vi.useFakeTimers({ toFake: ["Date"], now: SUITE_NOW });
@@ -686,21 +703,7 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(7));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    await runInDurableObject(adapter, (_instance, state) => {
-      state.storage.sql.exec(
-        `WITH RECURSIVE rows(value) AS (
-           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 2000
-         )
-         INSERT INTO google_mutations
-           (reservation_id, external_id, operation, payload_json, desired_version, generation,
-            attempt, next_attempt_at, first_attempt_at, claimed_at, claimed_version, status,
-            created_at, purge_at)
-         SELECT printf('10000000-0000-4000-8000-%012d', value), printf('sr%064x', value),
-                'upsert', NULL, 1, 1, 0, NULL, NULL, NULL, NULL, 'failed',
-                '2020-01-01T00:00:00.000Z', ? FROM rows`,
-        SUITE_PURGE_AT,
-      );
-    });
+    await fillGoogleMutationQueue();
 
     const created = await day.createPublic(config, createInput(config.date));
     expect(created).toMatchObject({ ok: true });
@@ -791,6 +794,170 @@ describe("calendar projection and feed authority", () => {
         expect.objectContaining({ reason: "overflow", operation: "upsert" }),
       ]),
     });
+  });
+
+  it("keeps a cancellation pending until its Google delete fits at capacity", async () => {
+    const config = await configFor(suiteDate(22));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await adapter.pokeDay({ date: config.date });
+
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        "DELETE FROM google_mutations WHERE reservation_id = ?",
+        created.reservationId,
+      );
+    });
+    await runInDurableObject(day, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, end_time,
+            service_label, reservation_status, occurred_at, purge_at)
+         VALUES ('calendar', 1, 2, ?, ?, 'cancel', '09:00', '10:00',
+                 '架空カット', 'cancelled', ?, ?)`,
+        `${config.date}#2`,
+        created.reservationId,
+        new Date().toISOString(),
+        config.purgeAt,
+      );
+      state.storage.sql.exec(
+        "UPDATE __adapter_meta SET event_seq = 2 WHERE consumer = 'calendar' AND generation = 1",
+      );
+    });
+    await fillGoogleMutationQueue();
+
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
+      ok: true,
+      drained: 0,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => ({
+        projection: state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM projections WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().n,
+        mutation: state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().n,
+      })),
+    ).toEqual({ projection: 1, mutation: 0 });
+    await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toMatchObject({
+      events: [{ reservationId: created.reservationId, reservationStatus: "cancelled" }],
+    });
+    await expect(adapter.reconcileDay({
+      ok: true,
+      date: config.date,
+      purgeAt: config.purgeAt,
+      watermark: { generation: 1, seq: 2 },
+      events: [],
+    })).resolves.toEqual({
+      ok: true,
+      projected: 0,
+      removed: 0,
+    });
+
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        `DELETE FROM google_mutations WHERE reservation_id = (
+           SELECT reservation_id FROM google_mutations ORDER BY reservation_id LIMIT 1
+         )`,
+      );
+    });
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
+      ok: true,
+      drained: 1,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) => ({
+        projection: state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM projections WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().n,
+        mutation: state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .toArray()[0]?.operation ?? null,
+      })),
+    ).toEqual({ projection: 0, mutation: "delete" });
+    await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
+      events: [],
+      more: false,
+    });
+  });
+
+  it("keeps a stale projection until reconciliation can retain its delete", async () => {
+    const config = await configFor(suiteDate(23));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const created = await day.createOwner(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true, status: "approved" });
+    if (!created.ok) throw new Error("fixture create failed");
+    await adapter.pokeDay({ date: config.date });
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        "DELETE FROM google_mutations WHERE reservation_id = ?",
+        created.reservationId,
+      );
+    });
+    await fillGoogleMutationQueue();
+    const absent = {
+      ok: true as const,
+      date: config.date,
+      purgeAt: config.purgeAt,
+      watermark: { generation: config.calendarAdapter?.generation ?? 1, seq: 1 },
+      events: [],
+    };
+
+    await expect(adapter.reconcileDay(absent)).resolves.toEqual({
+      ok: true,
+      projected: 0,
+      removed: 0,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) =>
+        state.storage.sql
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM projections WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().n,
+      ),
+    ).toBe(1);
+
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        `DELETE FROM google_mutations WHERE reservation_id = (
+           SELECT reservation_id FROM google_mutations ORDER BY reservation_id LIMIT 1
+         )`,
+      );
+    });
+    await expect(adapter.reconcileDay(absent)).resolves.toEqual({
+      ok: true,
+      projected: 0,
+      removed: 1,
+    });
+    expect(
+      await runInDurableObject(adapter, (_instance, state) =>
+        state.storage.sql
+          .exec<{ operation: string }>(
+            "SELECT operation FROM google_mutations WHERE reservation_id = ?",
+            created.reservationId,
+          )
+          .one().operation,
+      ),
+    ).toBe("delete");
   });
 
   it("converges create, update, and delete on one stable Google event", async () => {

@@ -728,7 +728,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     generation: number,
     purgeAt: number,
     configured: boolean,
-  ): void {
+  ): boolean {
     const sql = this.ctx.storage.sql;
     const existing = sql
       .exec<{ desired_version: number; created_at: string }>(
@@ -743,7 +743,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       if (count >= CALENDAR_ROW_CAP) {
         this.#record("overflow", operation);
         this.#bump("mutation_overflow");
-        return;
+        return false;
       }
     }
     const now = new Date().toISOString();
@@ -764,6 +764,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       existing?.created_at ?? now,
       purgeAt,
     );
+    return true;
   }
 
   #requeueProjections(meta: CalendarMeta): void {
@@ -962,10 +963,9 @@ export class CalendarAdapter extends DurableObject<Env> {
             }
           }
         } else {
-          disposition = "removed";
-          sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
-          if (meta.googleSeen) {
-            this.#queueMutation(
+          if (
+            meta.googleSeen &&
+            !this.#queueMutation(
               event.reservationId,
               ids.externalId,
               "delete",
@@ -973,8 +973,12 @@ export class CalendarAdapter extends DurableObject<Env> {
               meta.generation,
               event.purgeAt,
               meta.googleConfigured,
-            );
+            )
+          ) {
+            return null;
           }
+          disposition = "removed";
+          sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
         }
         sql.exec(
           `INSERT INTO accepted_events
@@ -1100,10 +1104,12 @@ export class CalendarAdapter extends DurableObject<Env> {
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
         .toArray()
         .filter(({ reservation_id }) => !wanted.has(reservation_id));
+      let removed = 0;
+      let fullyApplied = true;
       for (const row of removedRows) {
-        sql.exec("DELETE FROM projections WHERE reservation_id = ?", row.reservation_id);
-        if (meta.googleSeen) {
-          this.#queueMutation(
+        if (
+          meta.googleSeen &&
+          !this.#queueMutation(
             row.reservation_id,
             row.external_id,
             "delete",
@@ -1111,8 +1117,13 @@ export class CalendarAdapter extends DurableObject<Env> {
             meta.generation,
             row.purge_at,
             meta.googleConfigured,
-          );
+          )
+        ) {
+          fullyApplied = false;
+          continue;
         }
+        sql.exec("DELETE FROM projections WHERE reservation_id = ?", row.reservation_id);
+        removed += 1;
       }
       let projected = 0;
       let projectionCount =
@@ -1165,7 +1176,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         if (existing === undefined) projectionCount += 1;
         projected += 1;
       }
-      if (input.purgeAt > now) {
+      if (input.purgeAt > now && fullyApplied) {
         this.#advanceProjectionWatermark(
           input.date,
           input.watermark.generation,
@@ -1173,7 +1184,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           input.purgeAt,
         );
       }
-      return { ok: true as const, projected, removed: removedRows.length };
+      return { ok: true as const, projected, removed };
     });
   }
 

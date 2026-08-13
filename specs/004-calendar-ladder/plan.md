@@ -80,6 +80,7 @@ per installation, one Google target calendar
 | Lost/duplicate handoff | transactional outbox, consumer sequence/generation, accept dedup, desired-state replacement, fixed sweep; dead-poke and duplicate tests |
 | Provider uncertain write | deterministic event ID, update→insert, 409→update, delete 404/410 success; lost-response fixtures |
 | Provider outage/quota | per-row claim, bounded backoff, retryable classification, terminal ledger, no booking wait; 429/5xx/exhaustion tests |
+| Mutation capacity | retain a terminal event's day outbox row or stale projection until its Google delete fits; never evict the only desired-absence record |
 | Configuration gap | no new external call while invalid; retained committed source plus owner cursor reconciliation after restore |
 | Data retention | every projection/mutation carries parent purge boundary; pre-send check, terminalize/delete at boundary, bounded ledger/counters |
 | Disable/rotation race | descriptor lease validated in day transaction; missing configuration stops new descriptors; old-generation rows cancel/purge after the lease window |
@@ -153,7 +154,8 @@ provider. Split only if a second provider is approved; no provider interface/fac
   delivery. The required-secret list remains only owner and Turnstile.
 - `CalendarAdapter.descriptor()` returns an active generation/30-second lease when either mode is
   valid. Worker calls it only when a local secret-shape hint says at least one mode may be active;
-  failures are caught and omit the calendar descriptor, so booking continues.
+  exceptions or a 250 ms local deadline omit the calendar descriptor, so booking continues and the
+  bounded active sweep recovers any missed post-commit handoff.
 - Each alarm/status/feed call re-evaluates both bindings. A transition from zero valid modes starts
   cleanup; a later valid configuration mints a generation above the persistent high-water and
   starts reconciliation/sweep. Google false→true or credential-fingerprint change requeues every
@@ -187,7 +189,8 @@ Every ingress goes through one desired-state upsert:
 
 - pending/approved projection: upsert active ICS row and replace the Google mutation with latest
   complete desired event (if Google configured);
-- rejected/cancelled/expired: remove ICS row and replace mutation with desired absence;
+- rejected/cancelled/expired: retain desired Google absence before removing the ICS row; when the
+  mutation cap is full, keep the outbox event or stale projection for the next sweep/reconciliation;
 - duplicate/lower sequence: no-op;
 - stale generation/past retention/overflow: redacted disposition/terminal record, never booking
   failure.

@@ -308,6 +308,8 @@ const calendarModes = (env: AppEnv) => ({
   google: parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS) !== null,
 });
 
+const CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS = 250;
+
 const dayStub = (env: AppEnv, date: string): DurableObjectStub<ReservationDay> =>
   env.RESERVATION_DAYS.getByName(`single-location:${date}`);
 
@@ -353,12 +355,20 @@ const withCalendarAdapter = async (
   }
   const modes = calendarModes(env);
   if (!modes.feed && !modes.google) return context;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
-    const calendarAdapter = await calendarAdapterStub(env).descriptor();
+    const calendarAdapter = await Promise.race([
+      calendarAdapterStub(env).descriptor(),
+      new Promise<null>((resolve) => {
+        deadline = setTimeout(() => resolve(null), CALENDAR_DESCRIPTOR_RPC_DEADLINE_MS);
+      }),
+    ]);
     return calendarAdapter === null ? context : { ...context, calendarAdapter };
   } catch {
     // Calendar is optional and post-commit; reservation paths stay available.
     return context;
+  } finally {
+    clearTimeout(deadline);
   }
 };
 

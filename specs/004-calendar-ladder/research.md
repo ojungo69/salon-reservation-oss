@@ -26,6 +26,10 @@ a provider registry, or an interface with only one implementation.
 - Cloudflare documents one alarm per Durable Object, at-least-once invocation, and automatic retry
   up to six times. The calendar authority stores all due work and schedules its one alarm, just as
   the released LINE authority does.
+- Workers RPC calls return asynchronous custom thenables that support standard Promise patterns.
+  Reservation paths race the optional descriptor against a 250 ms local deadline; this does not
+  make calendar authoritative or cancel its independent work, and the durable day outbox plus
+  bounded sweep recovers a missed handoff.
 - Calendar volume is bounded by the existing single-location limits. Queues would not remove the
   required transactional outbox or the reconciliation store, so it would add infrastructure and
   tests without deleting code.
@@ -43,6 +47,7 @@ a provider registry, or an interface with only one implementation.
 
 - <https://developers.cloudflare.com/durable-objects/api/alarms/>
 - <https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/>
+- <https://developers.cloudflare.com/workers/runtime-apis/rpc/>
 - <https://developers.cloudflare.com/workers/platform/limits/>
 
 ## R2 — Event shape and reconciliation

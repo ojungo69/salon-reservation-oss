@@ -27,7 +27,8 @@ Expected evidence:
   same 404 and increments only the redacted aggregate;
 - create/approve/reschedule/terminal state converges on one feed UID and one opaque Google event ID;
 - duplicate/dead handoff, lost Google response, 409, delete 404/410, 429/5xx retry, permanent 4xx,
-  configuration removal, retry exhaustion, and reconciliation all have deterministic fixtures;
+  configuration removal, retry exhaustion, mutation-cap delete recovery, stalled descriptor
+  fail-open, and reconciliation all have deterministic fixtures;
 - no calendar payload contains fixture customer name, contact, management key, reservation UUID,
   calendar ID, refresh token, client secret, authorization header, or provider body;
 - availability JSON is byte-identical with modes off/on, during provider outage, and after retry/

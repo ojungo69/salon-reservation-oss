@@ -29,7 +29,7 @@ Google account, or provider network call was used.
 | Candidate | Discovery result | Final disposition |
 |---|---|---|
 | `html.security.audit.missing-integrity.missing-integrity` at `public/index.html:11` | Semgrep flags Cloudflare Turnstile's evergreen `api.js` URL | **Pre-existing and accepted.** The line is unchanged from base. Turnstile rotates this script continuously, so a fixed SRI digest would break the widget; feature 004 adds no external browser script. |
-| Public reads could force serialized Calendar DO descriptor work (`CWE-770`) | `installationContext` originally acquired the optional descriptor for generic public reads | **Fixed and suppressed.** Descriptor acquisition now occurs only around day operations; `/api/config` performs zero calendar RPC, and public availability is rate-limited before calendar work. |
+| Public reads could force serialized Calendar DO descriptor work (`CWE-770`) | `installationContext` originally acquired the optional descriptor for generic public reads; a stalled authority could still delay every day operation | **Fixed and suppressed.** Descriptor acquisition now occurs only around day operations, fails open after a 250 ms local deadline, `/api/config` performs zero calendar RPC, and public availability is rate-limited before calendar work. |
 | Wrong feed tokens could force unthrottled authority writes (`CWE-770`) | The initial feed path reached the authority without a limiter and activated the descriptor before rejecting the token | **Fixed and suppressed.** The Worker applies `PUBLIC_RATE_LIMITER` before namespace access and preserves a uniform 404; the authority validates and constant-time compares the token before `descriptor()`. |
 | Public privacy reads could force residual Calendar DO lookups (`CWE-770`) | With both local modes absent, every request queried `hasDisclosure()` | **Fixed and suppressed.** The residual lookup now passes through `PUBLIC_RATE_LIMITER`; a limited request performs no namespace access, and a limited or unavailable lookup conservatively renders bounded conditional disclosure so cleanup state cannot be hidden. |
 
@@ -51,7 +51,7 @@ rg -n "fetch\\(|authorization|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|co
 
 Semgrep ran 400 rules over 25 tracked files and returned its expected `--error` exit 1 for the one
 unchanged Turnstile finding dispositioned above; feature-004 blocking findings are zero. Results:
-5 focused security regressions passed; 77 allowlisted files passed the release audit; npm reported
+7 focused security regressions passed; 77 allowlisted files passed the release audit; npm reported
 0 vulnerabilities. Source inspection found only the fixed Google OAuth and Calendar HTTPS origins,
 `redirect: "manual"`, bounded response readers, and no calendar credential/body logging.
 

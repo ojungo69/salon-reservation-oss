@@ -86,6 +86,9 @@ external identity, bounded retry, terminal visibility, and unchanged reservation
    operator with a redacted reason and time.
 6. **Given** the ICS feed is disabled, **When** Google synchronization is enabled, **Then** Google
    synchronization still works; the inverse independence also holds.
+7. **Given** the mutation queue is full, **When** a previously mirrored reservation is removed,
+   **Then** its source event or projection remains recoverable until the required Google delete can
+   be retained; the delete is never silently discarded.
 
 ---
 
@@ -127,6 +130,8 @@ redacted diagnostics.
 - An event create succeeded at Google but the response was lost: retry uses the same stable event
   identifier and converges through update/duplicate handling rather than creating another event.
 - Google reports an event already deleted: deletion is accepted as reconciled, not retried forever.
+- The optional calendar authority stalls while a reservation request is running: its descriptor
+  lookup fails open after a 250 ms local deadline and the bounded sweep recovers missed handoff.
 - A permanent request/configuration error and a transient outage occur simultaneously for different
   reservations: each item is isolated; the transient item retries and the permanent one becomes
   visible without stalling the queue.
@@ -186,7 +191,8 @@ redacted diagnostics.
 - **FR-009 (retry and isolation)**: Transient network, rate-limit, and provider-server failures
   MUST retry with bounded backoff. Permanent payload/auth/configuration failures MUST not be
   retried blindly. Exhaustion MUST park the reservation for reconciliation with a redacted reason,
-  provider status where safe, and time. One failed item MUST NOT stall other items.
+  provider status where safe, and time. One failed item MUST NOT stall other items. A full mutation
+  queue MUST retain the source outbox event or existing projection until a required delete fits.
 - **FR-010 (reconciliation)**: The operator MUST be able to reconcile the adapter's projection and
   provider state against current committed reservations after duplicate delivery, missed handoff,
   outage, or configuration gap. Current committed state wins; reconciliation MUST NOT mutate a
@@ -202,7 +208,8 @@ redacted diagnostics.
 - **FR-012 (bounded retention and storage)**: Local calendar events, accepted-event deduplication,
   queue rows, and diagnostics MUST be size- and/or time-bounded and MUST not outlive the source
   reservation's configured retention boundary. Storage pressure MUST degrade only the adapter and
-  become visible; it MUST never reject a reservation.
+  become visible; it MUST never reject a reservation. Optional descriptor acquisition on a
+  reservation path MUST fail open within 250 ms; automatic sweep/reconciliation owns recovery.
 - **FR-013 (fixture-only verification)**: Automated tests MUST use fictional data, fixture
   credentials, and mocked token/Calendar endpoints. CI MUST require no Google or Cloudflare account,
   no network access to Google, and no live deployment. A live provider smoke test remains an
