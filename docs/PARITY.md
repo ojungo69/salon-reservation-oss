@@ -86,7 +86,7 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 
 | Capability | Production task it serves | Status | Current evidence / remaining gap | Roadmap stage / exclusion boundary |
 |---|---|---|---|---|
-| LINE notifications (booking events, push with retry) | Customers hear about acceptance/changes without checking back | Implemented (optional adapter) | Transactional outbox with post-commit handoff and a durable sweep, absolute retry ladder under the 24 h retry key, terminal-failure visibility in the redacted ledger, webhook signature verification and dedup (`src/reservation-day.ts`, `src/adapter-delivery.ts`; tests in `test/adapter-delivery.test.ts`); fixture-only in CI per the [notifications contract](ADAPTER-CONTRACTS.md#notifications) | Stage S1 |
+| LINE notifications (booking events, push with retry) | Customers hear about acceptance/changes without checking back | Implemented (optional adapter) | Transactional outbox with post-commit handoff and a durable sweep, absolute retry ladder under the 24 h retry key, terminal-failure visibility in the redacted ledger, webhook signature verification and dedup (`src/reservation-day.ts`, `src/adapter-delivery.ts`, `src/worker.ts`, `src/line-adapter.ts`; tests in `test/adapter-delivery.test.ts`); fixture-only in CI per the [notifications contract](ADAPTER-CONTRACTS.md#notifications) | Stage S1 |
 | Other notification channels (email, SMS, unspecified providers) | Same task over channels the operator prefers | Deliberately excluded | Seam and contract exist; no concrete channel decided | [Exclusions](#deliberate-exclusions): unspecified providers |
 
 ### Calendar synchronization

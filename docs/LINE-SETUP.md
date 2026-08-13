@@ -12,6 +12,9 @@ ID, channel secret, or LIFF ID to a public repository, issue, or log.
 ## What you create on the LINE side
 
 1. Create a provider in the [LINE Developers console](https://developers.line.biz/).
+   Create both channels below inside this same provider. LINE user IDs are
+   provider-scoped, and channels cannot be moved to a different provider later;
+   channels under different providers cannot share a usable notification subject.
 2. Create a **LINE Mini App** channel for the customer-facing login surface.
    LINE has announced that LIFF and the Mini App are being integrated into a
    single brand and recommends new apps be created as Mini Apps; a classic

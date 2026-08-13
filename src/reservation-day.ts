@@ -255,6 +255,7 @@ export type DayPublicStatusSuccess = {
   ok: true;
   reservationId: string;
   date: string;
+  purgeAt: number;
   startTime: string;
   status: Exclude<BookingStatus, "active">;
   resourceId: string;
@@ -1145,8 +1146,10 @@ export class ReservationDay extends DurableObject<Env> {
     for (const row of rows.slice(0, limit)) {
       if (
         !Number.isSafeInteger(row.generation) ||
+        row.generation < 1 ||
         !Number.isSafeInteger(row.seq) ||
-        typeof row.event_id !== "string" ||
+        row.seq < 1 ||
+        row.event_id !== `${meta.date}#${row.seq}` ||
         !UUID.test(row.reservation_id) ||
         !["approve", "reject", "reschedule", "cancel", "expire"].includes(row.type) ||
         !TIME.test(row.start_time) ||
@@ -2393,6 +2396,7 @@ export class ReservationDay extends DurableObject<Env> {
         ok: true,
         reservationId: reservation.id,
         date: effective.date,
+        purgeAt: meta.purgeAt,
         startTime: jstTime(reservation.startAt),
         status: detail.status,
         resourceId: reservation.resourceId,

@@ -268,6 +268,22 @@ describe("adapter event foundation", () => {
     ).toEqual({ eventSeq: 0 });
   });
 
+  it("refuses an outbox row whose event id does not match its date and sequence", async () => {
+    const reservationId = await createPending();
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await runInDurableObject(dayStub(), (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE __adapter_outbox SET event_id = 'wrong#1' WHERE consumer = 'line'",
+      );
+    });
+
+    await expect(
+      runInDurableObject(dayStub(), (instance) =>
+        instance.drainOutbox({ consumer: "line" }),
+      ),
+    ).rejects.toThrow("corrupt outbox row");
+  });
+
   it("keeps the partition's frozen retention boundary on later adapter events", async () => {
     const reservationId = await createPending();
     await dayStub().transitionOwner(

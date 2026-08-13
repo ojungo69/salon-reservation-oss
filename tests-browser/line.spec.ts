@@ -41,7 +41,7 @@ const lineCommand = async (
   page: Page,
   operation: "settings" | "enable" | "disable",
   expectedLifecycleVersion: number,
-): Promise<void> => {
+): Promise<{ lifecycleVersion: number }> => {
   const result = await page.evaluate(
     async ([op, version, token, identifiers]) => {
       const body: Record<string, unknown> = {
@@ -62,6 +62,37 @@ const lineCommand = async (
     [operation, expectedLifecycleVersion, OWNER_TOKEN, LINE_IDENTIFIERS] as const,
   );
   expect(result.status, JSON.stringify(result.body)).toBe(200);
+  return result.body as { lifecycleVersion: number };
+};
+
+type LineStatus = {
+  phase: "disabled" | "activating" | "active" | "deactivating";
+  lifecycleVersion: number;
+  draft: typeof LINE_IDENTIFIERS | null;
+};
+
+const lineStatus = async (page: Page): Promise<LineStatus> => {
+  const result = await page.evaluate(async (token) => {
+    const response = await fetch("/api/admin/line/status", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return { status: response.status, body: await response.json() };
+  }, OWNER_TOKEN);
+  expect(result.status, JSON.stringify(result.body)).toBe(200);
+  return result.body as LineStatus;
+};
+
+const ensureLineActive = async (page: Page): Promise<void> => {
+  await page.goto("/");
+  const status = await lineStatus(page);
+  if (status.phase === "active") return;
+  expect(status.phase).toBe("disabled");
+  let lifecycleVersion = status.lifecycleVersion;
+  if (status.draft === null) {
+    lifecycleVersion = (await lineCommand(page, "settings", lifecycleVersion)).lifecycleVersion;
+  }
+  await lineCommand(page, "enable", lifecycleVersion);
+  await expect.poll(() => lineStatus(page).then(({ phase }) => phase)).toBe("active");
 };
 
 const configText = (page: Page): Promise<string> =>
@@ -135,10 +166,9 @@ test.describe("state 1: never configured", () => {
 });
 
 test.describe("state 2: active", () => {
-  test("an operator enables the adapter through the owner API", async ({ page }) => {
-    await page.goto("/");
-    await lineCommand(page, "settings", 0);
-    await lineCommand(page, "enable", 1);
+  test.beforeEach(async ({ page }) => ensureLineActive(page));
+
+  test("the owner API exposes the active adapter", async ({ page }) => {
     const config = JSON.parse(await configText(page)) as {
       lineAdapter?: { liffId?: string };
     };
@@ -212,16 +242,63 @@ test.describe("state 2: active", () => {
     }
   });
 
+  test("a transient status failure keeps a retry action", async ({ page }) => {
+    await bookAndRemember(page, "15:00");
+    let requests = 0;
+    await page.route("**/api/reservations/*/line/status", async (route) => {
+      requests += 1;
+      if (requests === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "TEMPORARILY_UNAVAILABLE", message: "現在処理できません。" },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/bookings");
+    const row = page.locator("[data-line-link-row]").first();
+    const retry = row.getByRole("button", { name: "もう一度試す" });
+    await expect(retry).toBeVisible();
+    await retry.click();
+    await expect(row.locator("[data-line-link-status]")).toContainText("LINE で受け取れます");
+  });
+
   test("liff.state in the URL is never read or followed", async ({ page }) => {
     await interceptLineOrigins(page);
-    // A crafted liff.state lands with no stored intent (this is a fresh
-    // context): the page refuses from storage alone, never reads the query,
-    // and never navigates anywhere.
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        "salon-reservation:line-link-intent:v1",
+        JSON.stringify({ nonce: "a".repeat(64), expiresAt: Date.now() + 60_000 }),
+      );
+      const runtime = globalThis as typeof globalThis & {
+        __liffInitCalls: number;
+        liff: { init: () => Promise<void> };
+      };
+      runtime.__liffInitCalls = 0;
+      runtime.liff = {
+        init: () => {
+          runtime.__liffInitCalls += 1;
+          return Promise.resolve();
+        },
+      };
+    });
+    // Even with a valid stored intent, crafted callback state is refused
+    // before the SDK can process it.
     await page.goto("/line.html?liff.state=%2Fadmin%3Fevil%3D1");
     await expect(page.locator("[data-line-status]")).toContainText(
       "予約管理ページからもう一度",
       { timeout: 10_000 },
     );
+    expect(
+      await page.evaluate(
+        () => (globalThis as typeof globalThis & { __liffInitCalls: number }).__liffInitCalls,
+      ),
+    ).toBe(0);
     expect(new URL(page.url()).pathname).toBe("/line.html");
     await expect(page.locator("[data-line-back]")).toBeVisible();
   });
@@ -300,6 +377,8 @@ test.describe("state 2: active", () => {
 });
 
 test.describe("state 3: deactivating (cleanup mode)", () => {
+  test.beforeEach(async ({ page }) => ensureLineActive(page));
+
   test("disable flips the surfaces to cleanup and privacy stays until purge", async ({ page }) => {
     await interceptLineOrigins(page);
     // Leave a provisional link behind, then disable.
@@ -311,7 +390,7 @@ test.describe("state 3: deactivating (cleanup mode)", () => {
       .getByRole("button", { name: "LINE で通知を受け取る" })
       .click();
     await page.waitForURL(`${BROWSER_ORIGIN}/line.html`);
-    await lineCommand(page, "disable", 2);
+    await lineCommand(page, "disable", (await lineStatus(page)).lifecycleVersion);
 
     // The capability is replaced by the cleanup marker; the LIFF surfaces
     // are gone while the opt-in module still serves for cleanup.

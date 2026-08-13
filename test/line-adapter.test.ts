@@ -34,7 +34,6 @@ import {
 const NOW = SUITE_NOW;
 const SUBJECT = `U${"a".repeat(32)}`;
 const OTHER_SUBJECT = `U${"b".repeat(32)}`;
-const ADAPTER_DELIVERY_BINDING = env.ADAPTER_DELIVERY;
 
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -43,6 +42,14 @@ const verifyResponse = (payload: unknown, status = 200): Response =>
     status,
     headers: { "content-type": "application/json" },
   });
+
+const failedResponse = (): Response =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start: (controller) => controller.error(new Error("stream failed")),
+    }),
+    { status: 200 },
+  );
 
 const validClaims = (sub = SUBJECT) => ({
   iss: "https://access.line.me",
@@ -57,10 +64,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  Object.defineProperty(env, "ADAPTER_DELIVERY", {
-    configurable: true,
-    value: ADAPTER_DELIVERY_BINDING,
-  });
   vi.useRealTimers();
   vi.restoreAllMocks();
   // restoreAllMocks does not undo stubGlobal — fetch stubs must not leak.
@@ -83,26 +86,16 @@ describe("webhook signature verification", () => {
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, null, body)).toBe(false);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, "not-base64!!", body)).toBe(false);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, "QUJD", body)).toBe(false);
-    // Non-canonical base64 padding (atob accepts it; re-encode rejects it).
-    if (valid.endsWith("=") && !valid.endsWith("==")) {
-      // Flip to a double-pad spelling of the same payload when single-pad.
-      const stripped = valid.replace(/=+$/, "");
-      const alt = stripped + "==";
-      if (alt !== valid) {
-        expect(await verifyWebhookSignature(LINE_TEST_SECRET, alt, body)).toBe(false);
-      }
-    }
-    // A known non-canonical form: standard alphabet with whitespace is already
-    // refused; padding-bit variants that atob forgives but btoa rewrites.
-    const decoded = atob(valid);
-    // Corrupt the last character before padding so re-encoding diverges while
-    // length/charset stay base64-shaped when possible.
-    const nonCanonical = valid.slice(0, -1) + (valid.endsWith("A") ? "B" : "A");
-    if (nonCanonical !== valid && /^[A-Za-z0-9+/]+={0,2}$/.test(nonCanonical)) {
-      // May fail for different reasons; the property under test is rejection.
-      expect(await verifyWebhookSignature(LINE_TEST_SECRET, nonCanonical, body)).toBe(false);
-    }
-    void decoded;
+    // SHA-256 has one padding character. Set one ignored padding bit in the
+    // preceding base64 character: atob accepts the same bytes, while strict
+    // re-encoding exposes the non-canonical spelling.
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const index = alphabet.indexOf(valid.at(-2) as string);
+    expect(index % 4).toBe(0);
+    const nonCanonical = `${valid.slice(0, -2)}${alphabet[index + 1]}=`;
+    expect(atob(nonCanonical)).toBe(atob(valid));
+    expect(btoa(atob(nonCanonical))).toBe(valid);
+    expect(await verifyWebhookSignature(LINE_TEST_SECRET, nonCanonical, body)).toBe(false);
     const oversized = new Uint8Array(ADAPTER.WEBHOOK_BODY_MAX_BYTES + 1);
     expect(await verifyWebhookSignature(LINE_TEST_SECRET, valid, oversized)).toBe(false);
   });
@@ -322,6 +315,14 @@ describe("ID-token verification", () => {
     });
   });
 
+  it("maps a failed provider response stream to a protocol error", async () => {
+    const { fetcher } = fetcherReturning(failedResponse());
+    await expect(verifyIdToken(token, identifiers.loginChannelId, fetcher)).resolves.toEqual({
+      ok: false,
+      code: "PROTOCOL_ERROR",
+    });
+  });
+
   it("accepts well-formed auth_time and amr then discards them", async () => {
     const { fetcher } = fetcherReturning(
       verifyResponse({
@@ -358,31 +359,40 @@ describe("constants inequalities (T033)", () => {
 
 describe("lifecycle coordinator recovery", () => {
   it("re-arms activation after exhausting stale-generation retries", async () => {
-    const authority = {
-      readMeta: () => Promise.resolve(null),
-      activate: () =>
-        Promise.resolve({ ok: false as const, code: "STALE_GENERATION" as const }),
-    };
+    let originalEnv: Env | null = null;
     await runInDurableObject(installationStub(), (instance) => {
-      const runtimeEnv = (instance as unknown as { env: Env }).env;
-      Object.defineProperty(runtimeEnv, "ADAPTER_DELIVERY", {
-        configurable: true,
-        value: { getByName: () => authority },
+      const holder = instance as unknown as { env: Env };
+      originalEnv = holder.env;
+      const isolatedEnv = Object.create(holder.env) as Env;
+      Object.defineProperty(isolatedEnv, "ADAPTER_DELIVERY", {
+        value: {
+          getByName: () => ({
+            readMeta: () => Promise.resolve(null),
+            activate: () =>
+              Promise.resolve({ ok: false as const, code: "STALE_GENERATION" as const }),
+          }),
+        },
       });
+      holder.env = isolatedEnv;
     });
+    try {
+      await enableLineAdapter();
+      await expect(
+        installationStub().lineAdapterStatus().then(({ phase }) => phase),
+      ).resolves.toBe("activating");
 
-    await enableLineAdapter();
-    await expect(
-      installationStub().lineAdapterStatus().then(({ phase }) => phase),
-    ).resolves.toBe("activating");
-
-    // The command's pre-armed alarm drives a second exhausted retry cycle.
-    vi.setSystemTime(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000 + 1);
-    await runDurableObjectAlarm(installationStub());
-    const alarm = await runInDurableObject(installationStub(), (_instance, state) =>
-      state.storage.getAlarm(),
-    );
-    expect(alarm).not.toBeNull();
+      // The command's pre-armed alarm drives a second exhausted retry cycle.
+      vi.setSystemTime(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000 + 1);
+      await runDurableObjectAlarm(installationStub());
+      const alarm = await runInDurableObject(installationStub(), (_instance, state) =>
+        state.storage.getAlarm(),
+      );
+      expect(alarm).not.toBeNull();
+    } finally {
+      await runInDurableObject(installationStub(), (instance) => {
+        (instance as unknown as { env: Env }).env = originalEnv as Env;
+      });
+    }
   });
 });
 
@@ -574,6 +584,16 @@ describe("token mint and push client", () => {
         tokenFetch(401, { error: "invalid_client" }),
       ),
     ).toEqual({ ok: false, code: "CONFIG_REJECTED" });
+  });
+
+  it("keeps a failed token response stream retryable", async () => {
+    const fetcher = () => Promise.resolve(failedResponse());
+    await expect(
+      mintChannelToken(
+        { generation: 1, channelId: "9876543210", channelSecret: LINE_TEST_SECRET },
+        fetcher,
+      ),
+    ).resolves.toEqual({ ok: false, code: "RETRYABLE" });
   });
 
   it("refuses a token response without Bearer type or a positive expires_in", async () => {
@@ -781,6 +801,15 @@ describe("link flow over HTTP", () => {
     expect(denied.status).toBe(404);
 
     const nonce = await mintIntent(reservationId);
+    const storedPurgeAt = await runInDurableObject(deliveryStub(), (_instance, state) =>
+      state.storage.sql
+        .exec<{ purge_at: number }>(
+          "SELECT purge_at FROM links WHERE reservation_id = ?",
+          reservationId,
+        )
+        .toArray()[0]?.purge_at,
+    );
+    expect(storedPurgeAt).toBe(lineDay.purgeAt);
 
     // A captured token without a live intent is useless.
     const noIntent = await post("/api/adapters/line/link", {

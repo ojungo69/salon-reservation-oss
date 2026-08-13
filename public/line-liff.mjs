@@ -1,8 +1,7 @@
 // LINE 連携ページの手続き。/line.html と一緒に、アダプタが有効なときだけ
 // Worker から配信されます。連携トークンは予約管理ページが sessionStorage に
-// 置いた一時的な値だけを使い、URL からは何も受け取りません。
-// (?liff.state= は LINE ログインが付ける値ですが、このページは一切利用しない
-// ことで外部誘導の余地をなくしています。)
+// 置いた一時的な値だけを使います。このアプリは追加パス付き LIFF URL を
+// 発行しないため、liff.state は SDK 初期化前に拒否します。
 
 const INTENT_STORAGE_KEY = "salon-reservation:line-link-intent:v1";
 
@@ -45,6 +44,13 @@ const run = async () => {
   if (intent === null) {
     show(
       "連携の有効期限が切れたか、手続きの情報が見つかりませんでした。予約管理ページからもう一度お進みください。",
+      true,
+    );
+    return;
+  }
+  if (new URLSearchParams(window.location.search).has("liff.state")) {
+    show(
+      "手続きの情報を確認できませんでした。予約管理ページからもう一度お進みください。",
       true,
     );
     return;

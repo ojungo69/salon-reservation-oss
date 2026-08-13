@@ -430,8 +430,8 @@ const addDays = (date: string, count: number): string =>
     .toISOString()
     .slice(0, 10);
 
-/** The partition's retention deadline: the one boundary every reservation-scoped
- * row — day-side or adapter-side — is held to. */
+/** Candidate retention deadline for a new partition. Once created, the day
+ * freezes and returns its stored deadline to reservation-scoped adapters. */
 const purgeAtFor = (date: string, context: InstallationContext): number => {
   const midnight = parseDateJstToUtcIso(date);
   if (midnight === null) throw new Error("invalid date");
@@ -1697,7 +1697,7 @@ const lineManagementProof = async (
   reservationId: string,
   body: unknown,
 ): Promise<
-  | { ok: true; date: string; status: string }
+  | { ok: true; date: string; status: string; purgeAt: number }
   | { ok: false; response: Response }
 > => {
   if (
@@ -1723,7 +1723,7 @@ const lineManagementProof = async (
           : errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED"),
     };
   }
-  return { ok: true, date, status: result.status };
+  return { ok: true, date, status: result.status, purgeAt: result.purgeAt };
 };
 
 // A hidden LINE surface must be indistinguishable from a path that was never
@@ -1762,7 +1762,7 @@ const lineReservationRoute = async (
   options: { bucket: string; residual: boolean },
   run: (
     context: InstallationContext,
-    proof: { date: string; status: string },
+    proof: { date: string; status: string; purgeAt: number },
   ) => Promise<Response>,
 ): Promise<Response> => {
   const context = await lineRouteGate(env, url, options.residual);
@@ -1780,7 +1780,11 @@ const lineReservationRoute = async (
   if ("response" in parsed) return parsed.response;
   const proof = await lineManagementProof(env, url, context, reservationId, parsed.value);
   if (!proof.ok) return proof.response;
-  return run(context, { date: proof.date, status: proof.status });
+  return run(context, {
+    date: proof.date,
+    status: proof.status,
+    purgeAt: proof.purgeAt,
+  });
 };
 
 const handleLineLinkIntent = async (
@@ -1804,7 +1808,7 @@ const handleLineLinkIntent = async (
         reservationId,
         date: proof.date,
         generation: line.generation,
-        purgeAt: purgeAtFor(proof.date, context),
+        purgeAt: proof.purgeAt,
       });
       if (!minted.ok) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
       return json({

@@ -166,7 +166,9 @@ terminal failure, and read every count and terminal record from the operator dia
   against the LINE Platform (`POST /oauth2/v2.1/verify` with the configured channel ID as
   `client_id`) before any subject is trusted; client-supplied profile data MUST never be trusted
   or stored. Only the minimum stable subject identifier is stored, only after an explicit link,
-  only bound to a reservation whose management proof authorized the link.
+  only bound to a reservation whose management proof authorized the link. The LINE Login or
+  LINE Mini App channel and the Messaging API channel MUST belong to the same LINE provider,
+  because subject identifiers are provider-scoped.
 - **FR-005 (link semantics)**: Link state MUST be single-valued per reservation: same-subject
   re-link (including replayed requests) is a no-op; different-subject link over an existing link
   is refused and surfaced as a conflict; unlink (with management proof) MUST verifiably delete the
@@ -183,8 +185,9 @@ terminal failure, and read every count and terminal record from the operator dia
 - **FR-008 (delivery queueing)**: Deliveries MUST be queued per event × recipient × channel with
   deduplication so redelivered events never double-notify. Retries MUST use bounded exponential
   backoff, carry the same `X-Line-Retry-Key` from the first attempt of a given delivery, retry
-  only on retryable outcomes (5xx / timeout), treat `409` as accepted, and park the delivery as
-  terminally failed after the bound with reason and time visible to the operator. A failing
+  only on retryable outcomes (5xx / timeout), and finish strictly within that retry key's 24-hour
+  validity window. They MUST treat `409` as accepted and park the delivery as terminally failed
+  after the bound with reason and time visible to the operator. A failing
   delivery MUST never affect reservation state, other deliveries, or the booking path.
 - **FR-009 (minimal payloads)**: Outbound messages MUST carry only what the message needs (time,
   service label, state) and MUST NOT include secrets, management keys, links containing a

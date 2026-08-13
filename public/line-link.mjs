@@ -140,7 +140,10 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
       linked = status.linked;
     } catch (error) {
       if (error?.status !== 404) {
-        setRow(row, "LINE 連携の状態を確認できませんでした。", []);
+        setRow(row, "LINE 連携の状態を確認できませんでした。", [
+          button("もう一度試す", "secondary-button", () => renderCard(record, card)),
+        ]);
+        keepFocus(row, card, hadFocus);
         return;
       }
     }

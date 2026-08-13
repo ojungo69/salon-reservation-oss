@@ -24,7 +24,7 @@ export type LineFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 // ---- bounded readers ----
 
-/** Read at most `cap` bytes; null when the stream exceeds it. */
+/** Read at most `cap` bytes; null when the stream exceeds it or fails. */
 export const readBoundedBytes = async (
   stream: ReadableStream<Uint8Array> | null,
   cap: number,
@@ -41,6 +41,8 @@ export const readBoundedBytes = async (
       if (total > cap) return null;
       chunks.push(value);
     }
+  } catch {
+    return null;
   } finally {
     reader.releaseLock();
   }
