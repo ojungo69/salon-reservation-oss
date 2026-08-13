@@ -32,6 +32,7 @@ const credentials: GoogleCalendarCredentials = {
 const projection: CalendarProjection = {
   uid: "opaque@example.invalid",
   externalId: `sr${"a".repeat(64)}`,
+  stampAt: "2026-08-13T00:00:00.678Z",
   startAt: "2026-08-13T01:00:00.000Z",
   endAt: "2026-08-13T02:00:00.000Z",
   serviceLabel: "架空カット,カラー;相談\\確認\n二行目",
@@ -75,8 +76,10 @@ describe("calendar adapter pure contracts", () => {
   });
 
   it("renders a minimal deterministic CRLF calendar without private fields", () => {
-    const body = renderCalendar([projection], Date.parse("2026-08-13T00:00:00.000Z"));
+    const body = renderCalendar([projection]);
     expect(body).toContain("BEGIN:VCALENDAR\r\n");
+    expect(body).toContain("DTSTAMP:20260813T000000Z\r\n");
+    expect(body).not.toContain(".678");
     expect(body).toContain("DTSTART:20260813T010000Z\r\n");
     expect(body).toContain("DTEND:20260813T020000Z\r\n");
     expect(body).toContain("STATUS:TENTATIVE\r\n");
@@ -101,8 +104,8 @@ describe("calendar adapter pure contracts", () => {
       status: "tentative",
       visibility: "private",
       transparency: "opaque",
-      start: { dateTime: projection.startAt, timeZone: "Asia/Tokyo" },
-      end: { dateTime: projection.endAt, timeZone: "Asia/Tokyo" },
+      start: { dateTime: projection.startAt },
+      end: { dateTime: projection.endAt },
     });
     expect(googleEventBody(projection, false)).not.toHaveProperty("id");
     for (const forbidden of ["attendees", "description", "location", "reminders", "extendedProperties"] ) {
@@ -112,6 +115,7 @@ describe("calendar adapter pure contracts", () => {
 
   it("classifies retryable quota failures separately from credentials and payloads", () => {
     expect(classifyGoogleResponse(204)).toBe("success");
+    expect(classifyGoogleResponse(408)).toBe("retryable");
     expect(classifyGoogleResponse(429)).toBe("retryable");
     expect(classifyGoogleResponse(503)).toBe("retryable");
     expect(classifyGoogleResponse(403, ["rateLimitExceeded"])).toBe("retryable");
@@ -165,6 +169,8 @@ describe("calendar adapter pure contracts", () => {
   it("rejects redirects, oversized bodies, and malformed token schemas", async () => {
     const now = Date.parse("2026-08-13T00:00:00.000Z");
     const scenarios: Array<[Response, object]> = [
+      [new Response(null, { status: 408 }), { ok: false, kind: "retryable", status: 408 }],
+      [new Response(null, { status: 429 }), { ok: false, kind: "retryable", status: 429 }],
       [new Response(null, { status: 302 }), { ok: false, kind: "configuration", status: 302 }],
       [new Response("x".repeat(16 * 1024 + 1), { status: 200 }), { ok: false, kind: "protocol", status: 200 }],
       [Response.json({ token_type: "Bearer", expires_in: 3600 }), { ok: false, kind: "protocol", status: 200 }],
@@ -327,9 +333,71 @@ describe("calendar projection and feed authority", () => {
     expect(await adapterStub().feed({ token: "bad" })).toEqual({ ok: false });
     const valid = await adapterStub().feed({ token: feedToken });
     if (!valid.ok) throw new Error("feed fixture failed");
-    expect(valid.body.indexOf("T000000Z")).toBeLessThan(valid.body.lastIndexOf("T020000Z"));
+    const date = config.date.replaceAll("-", "");
+    expect(valid.body.indexOf(`DTSTART:${date}T000000Z\r\n`)).toBeLessThan(
+      valid.body.indexOf(`DTSTART:${date}T020000Z\r\n`),
+    );
     expect(await adapterStub().diagnostics()).toMatchObject({
       counters: { feed_auth_failed: 2 },
+    });
+  });
+
+  it("keeps feed bytes stable across unchanged reads", async () => {
+    const config = await configFor(suiteDate(18));
+    expect(
+      await dayStub(config.date).createPublic(config, createInput(config.date)),
+    ).toMatchObject({ ok: true });
+    await adapterStub().pokeDay({ date: config.date });
+    const first = await adapterStub().feed({ token: feedToken });
+    vi.setSystemTime(SUITE_NOW + 60_000);
+    const second = await adapterStub().feed({ token: feedToken });
+    expect(second).toEqual(first);
+  });
+
+  it("drains every event from one bounded multi-batch handoff", async () => {
+    const config = await configFor(suiteDate(17));
+    const adapter = adapterStub();
+    const day = dayStub(config.date);
+    const calendarNamespace = env.CALENDAR_ADAPTER;
+    await runInDurableObject(day, (instance) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    expect(await day.createPublic(config, createInput(config.date))).toMatchObject({ ok: true });
+    await runInDurableObject(day, (instance, state) => {
+      Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
+        configurable: true,
+        value: calendarNamespace,
+      });
+      for (let seq = 2; seq <= ADAPTER.OUTBOX_DRAIN_BATCH + 1; seq += 1) {
+        state.storage.sql.exec(
+          `INSERT INTO __adapter_outbox
+             (consumer, generation, seq, event_id, reservation_id, type, start_time, end_time,
+              service_label, reservation_status, occurred_at, purge_at)
+           VALUES ('calendar', 1, ?, ?, ?, 'create', '09:00', '10:00',
+                   '架空カット', 'pending', ?, ?)`,
+          seq,
+          `${config.date}#${seq}`,
+          `00000000-0000-4000-8000-${String(seq).padStart(12, "0")}`,
+          new Date().toISOString(),
+          config.purgeAt,
+        );
+      }
+      state.storage.sql.exec(
+        "UPDATE __adapter_meta SET event_seq = ? WHERE consumer = 'calendar' AND generation = 1",
+        ADAPTER.OUTBOX_DRAIN_BATCH + 1,
+      );
+    });
+
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
+      ok: true,
+      drained: ADAPTER.OUTBOX_DRAIN_BATCH + 1,
+    });
+    await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
+      events: [],
+      more: false,
     });
   });
 
@@ -410,11 +478,12 @@ describe("calendar projection and feed authority", () => {
           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 2000
         )
         INSERT INTO projections
-          (reservation_id, external_id, uid, date, start_at, end_at, service_label,
-           status, purge_at)
+          (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
+           service_label, status, purge_at)
         SELECT printf('00000000-0000-4000-8000-%012d', value),
                printf('sr%064x', value), printf('%064x@example.invalid', value),
-               '2099-01-01', '2099-01-01T00:00:00.000Z', '2099-01-01T01:00:00.000Z',
+               '2099-01-01', '2026-08-13T00:00:00.000Z',
+               '2099-01-01T00:00:00.000Z', '2099-01-01T01:00:00.000Z',
                '架空サービス', 'tentative', ?
         FROM rows
       `, SUITE_PURGE_AT);
@@ -438,6 +507,7 @@ describe("calendar projection and feed authority", () => {
       events: [
         {
           reservationId: "00000000-0000-4000-8000-999999999999",
+          stampAt: "2026-08-13T00:00:00.000Z",
           startTime: "09:00",
           endTime: "10:00",
           serviceLabel: "架空カット",
@@ -488,22 +558,11 @@ describe("calendar projection and feed authority", () => {
     expect(accepted).toBe(0);
   });
 
-  it("caps accepted-event evidence and Google mutations without rejecting a projection", async () => {
+  it("preserves live dedup evidence and leaves new adapter work pending at the cap", async () => {
     const config = await configFor(suiteDate(7));
     const adapter = adapterStub();
+    const day = dayStub(config.date);
     await runInDurableObject(adapter, (_instance, state) => {
-      state.storage.sql.exec(
-        `WITH RECURSIVE rows(value) AS (
-           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < ?
-         )
-         INSERT INTO accepted_events
-           (event_key, reservation_id, generation, seq, accepted_at, purge_at)
-         SELECT printf('seed:%d', value),
-                printf('00000000-0000-4000-8000-%012d', value), 1, 1,
-                '2020-01-01T00:00:00.000Z', ? FROM rows`,
-        ADAPTER.WEBHOOK_DEDUP_CAP,
-        SUITE_PURGE_AT,
-      );
       state.storage.sql.exec(
         `WITH RECURSIVE rows(value) AS (
            VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 2000
@@ -519,10 +578,71 @@ describe("calendar projection and feed authority", () => {
       );
     });
 
-    expect(
-      await dayStub(config.date).createPublic(config, createInput(config.date)),
-    ).toMatchObject({ ok: true });
+    const created = await day.createPublic(config, createInput(config.date));
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
+
+    await runInDurableObject(adapter, (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE rows(value) AS (
+           VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < ?
+         )
+         INSERT INTO accepted_events
+           (event_key, reservation_id, generation, seq, accepted_at, purge_at)
+         SELECT printf('seed:%d', value),
+                printf('20000000-0000-4000-8000-%012d', value), 1, 1,
+                '2020-01-01T00:00:00.000Z', ? FROM rows`,
+        ADAPTER.WEBHOOK_DEDUP_CAP - 1,
+        SUITE_PURGE_AT,
+      );
+    });
+    await runInDurableObject(day, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, end_time,
+            service_label, reservation_status, occurred_at, purge_at)
+         VALUES ('calendar', 1, 1, ?, ?, 'create', '09:00', '10:00',
+                 '架空カット', 'pending', ?, ?)`,
+        `${config.date}#1`,
+        created.reservationId,
+        new Date().toISOString(),
+        config.purgeAt,
+      );
+    });
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
+      ok: true,
+      drained: 0,
+    });
+    await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
+      events: [],
+      more: false,
+    });
+
+    await runInDurableObject(day, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO __adapter_outbox
+           (consumer, generation, seq, event_id, reservation_id, type, start_time, end_time,
+            service_label, reservation_status, occurred_at, purge_at)
+         VALUES ('calendar', 1, 2, ?, '00000000-0000-4000-8000-999999999999',
+                 'create', '11:00', '12:00', '架空カラー', 'pending', ?, ?)`,
+        `${config.date}#2`,
+        new Date().toISOString(),
+        config.purgeAt,
+      );
+      state.storage.sql.exec(
+        "UPDATE __adapter_meta SET event_seq = 2 WHERE consumer = 'calendar' AND generation = 1",
+      );
+    });
+    await expect(adapter.pokeDay({ date: config.date })).resolves.toEqual({
+      ok: true,
+      drained: 0,
+    });
+    await expect(day.drainOutbox({ consumer: "calendar" })).resolves.toMatchObject({
+      events: [{ eventId: `${config.date}#2` }],
+      more: false,
+    });
+
     const counts = await runInDurableObject(adapter, (_instance, state) => ({
       accepted: state.storage.sql
         .exec<{ n: number }>("SELECT COUNT(*) AS n FROM accepted_events")
@@ -530,12 +650,22 @@ describe("calendar projection and feed authority", () => {
       mutations: state.storage.sql
         .exec<{ n: number }>("SELECT COUNT(*) AS n FROM google_mutations")
         .one().n,
+      projections: state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections")
+        .one().n,
     }));
-    expect(counts).toEqual({ accepted: ADAPTER.WEBHOOK_DEDUP_CAP, mutations: 2000 });
+    expect(counts).toEqual({
+      accepted: ADAPTER.WEBHOOK_DEDUP_CAP,
+      mutations: 2000,
+      projections: 1,
+    });
     expect(await adapter.diagnostics()).toMatchObject({
       projectionCount: 1,
-      counters: { accepted_evicted: 1, mutation_overflow: 1 },
-      ledger: [{ reason: "overflow", operation: "upsert" }],
+      counters: { accepted_overflow: 1, mutation_overflow: 1 },
+      ledger: expect.arrayContaining([
+        expect.objectContaining({ reason: "overflow", operation: "accept" }),
+        expect.objectContaining({ reason: "overflow", operation: "upsert" }),
+      ]),
     });
   });
 
@@ -877,6 +1007,10 @@ describe("calendar projection and feed authority", () => {
     clearGoogleTokenCacheForTests();
     vi.setSystemTime(SUITE_NOW);
     let calendarCalls = 0;
+    let allowCompletion!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      allowCompletion = resolve;
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (input) => {
@@ -888,10 +1022,7 @@ describe("calendar projection and feed authority", () => {
           });
         }
         calendarCalls += 1;
-        if (calendarCalls === 1) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 30));
-          return new Response(null, { status: 200 });
-        }
+        if (calendarCalls === 1) return firstResponse;
         return new Response(null, { status: 503 });
       }),
     );
@@ -902,7 +1033,7 @@ describe("calendar projection and feed authority", () => {
     if (!created.ok) throw new Error("fixture create failed");
     await adapterStub().pokeDay({ date: raceConfig.date });
     const alarm = runDurableObjectAlarm(adapterStub());
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    await vi.waitFor(() => expect(calendarCalls).toBe(1));
     expect(
       await raceDay.transitionOwner(raceConfig, {
         commandId: crypto.randomUUID(),
@@ -912,6 +1043,7 @@ describe("calendar projection and feed authority", () => {
       }),
     ).toMatchObject({ ok: true, status: "approved" });
     await adapterStub().pokeDay({ date: raceConfig.date });
+    allowCompletion(new Response(null, { status: 200 }));
     await alarm;
     const raced = await runInDurableObject(adapterStub(), (_instance, state) => {
       const row = state.storage.sql

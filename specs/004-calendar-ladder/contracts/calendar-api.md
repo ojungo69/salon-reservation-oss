@@ -27,9 +27,9 @@ END:VCALENDAR\r\n
 
 ### Absent/auth failure
 
-Inactive mode, missing/malformed/wrong token, unexpected query, or unavailable authority all return
-the repository's identical 404 response. No `WWW-Authenticate` challenge or redirect distinguishes
-the cause. Valid authenticated responses are never cached.
+Unsupported method, inactive mode, missing/malformed/wrong token, unexpected query, or unavailable
+authority all return the repository's identical 404 response. No `Allow`, `WWW-Authenticate`, or
+redirect distinguishes the cause. Valid authenticated responses are never cached.
 
 ## `GET /api/admin/calendar/status`
 
@@ -93,8 +93,9 @@ still responds.
 ```
 
 The final page returns `nextCursor: null`. Repeating a page is idempotent and may report zero
-changes. Calendar configuration/authority absence returns `409 CALENDAR_NOT_CONFIGURED`; invalid
-input returns `400 BAD_REQUEST`; a bounded internal failure returns `503 TEMPORARILY_UNAVAILABLE`.
+changes. Calendar configuration absence returns `409 CALENDAR_NOT_CONFIGURED`; calendar-authority
+absence and bounded internal failure return `503 TEMPORARILY_UNAVAILABLE`; invalid input returns
+`400 BAD_REQUEST`.
 
 ## ReservationDay ↔ CalendarAdapter RPC
 
@@ -125,6 +126,7 @@ receives `create`. Ack/purge remain consumer-scoped.
   "events": [
     {
       "reservationId": "00000000-0000-4000-8000-000000000001",
+      "stampAt": "2026-08-13T00:00:00.000Z",
       "startTime": "10:00",
       "endTime": "11:00",
       "serviceLabel": "カット",
@@ -134,8 +136,10 @@ receives `create`. Ack/purge remain consumer-scoped.
 }
 ```
 
-This internal response contains the reservation ID only to match authoritative rows. Worker maps it
-directly into the calendar authority and never returns it from calendar HTTP routes.
+This internal response contains the reservation ID only to match authoritative rows and the
+reservation creation timestamp only to keep `DTSTAMP` stable. Completion/no-show rows retain
+`status: "approved"`; schedule-removing states are absent. Worker maps the response directly into
+the calendar authority and never returns it from calendar HTTP routes.
 
 ## Google fixed HTTP contract
 
@@ -153,11 +157,11 @@ handling and `sendUpdates=none`. The complete event body contains only:
   "status": "tentative",
   "visibility": "private",
   "transparency": "opaque",
-  "start": { "dateTime": "2026-08-13T01:00:00.000Z", "timeZone": "Asia/Tokyo" },
-  "end": { "dateTime": "2026-08-13T02:00:00.000Z", "timeZone": "Asia/Tokyo" }
+  "start": { "dateTime": "2026-08-13T01:00:00.000Z" },
+  "end": { "dateTime": "2026-08-13T02:00:00.000Z" }
 }
 ```
 
-Update omits `id` if Google rejects it on update; insert includes it. No attendees, reminders,
-description, location, extended properties, or contact fields are sent. Response bodies are
-bounded and never persisted.
+Update always omits `id`; insert always includes it. No attendees, reminders, description,
+location, extended properties, or contact fields are sent. Response bodies are bounded and never
+persisted.

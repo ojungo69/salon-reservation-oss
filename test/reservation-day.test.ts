@@ -1313,6 +1313,7 @@ describe("S2 calendar outbox substrate", () => {
       events: [
         {
           reservationId: reservationIdOf(created),
+          stampAt: expect.any(String),
           startTime: "09:00",
           endTime: "10:00",
           serviceLabel: "架空カット",
@@ -1324,6 +1325,47 @@ describe("S2 calendar outbox substrate", () => {
     expect(bytes).not.toContain("架空 花子");
     expect(bytes).not.toContain("hanako@example.invalid");
     expect(bytes).not.toContain("managementDigest");
+  });
+
+  it("keeps completed and no-show schedule facts without emitting a calendar mutation", async () => {
+    for (const [index, action] of (["complete", "no_show"] as const).entries()) {
+      const calendarDay = configured(configFor(`2025-01-${25 + index}`), { calendar: true });
+      const stub = stubFor(calendarDay);
+      const created = await stub.createOwner(
+        calendarDay,
+        createInput(calendarDay, { serviceIds: ["service-cut"] }),
+      );
+      expect(created).toMatchObject({ ok: true, status: "approved" });
+      const initial = await stub.drainOutbox({ consumer: "calendar" });
+      await stub.ackOutbox({
+        consumer: "calendar",
+        events: initial.events.map(({ generation, eventId }) => ({ generation, eventId })),
+      });
+
+      vi.mocked(Date.now).mockReturnValue(Date.parse(`${calendarDay.date}T15:00:00.000Z`));
+      expect(
+        await stub.transitionOwner(calendarDay, {
+          commandId: crypto.randomUUID(),
+          date: calendarDay.date,
+          reservationId: reservationIdOf(created),
+          action,
+        }),
+      ).toMatchObject({ ok: true, status: action === "complete" ? "completed" : "no_show" });
+      await expect(stub.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
+        events: [],
+        more: false,
+      });
+      await expect(stub.calendarProjection(calendarDay)).resolves.toMatchObject({
+        ok: true,
+        events: [
+          {
+            reservationId: reservationIdOf(created),
+            stampAt: expect.any(String),
+            status: "approved",
+          },
+        ],
+      });
+    }
   });
 
   it("adds calendar columns to a released LINE outbox without losing its row", async () => {
@@ -1369,6 +1411,10 @@ describe("S2 calendar outbox substrate", () => {
       );
     });
 
+    await expect(stub.drainOutbox({ consumer: "line" })).resolves.toMatchObject({
+      events: [{ endTime: null, reservationStatus: null }],
+      more: false,
+    });
     expect(
       await call(stub, "transitionOwner", configured(day, { calendar: true }), {
         commandId: crypto.randomUUID(),
@@ -1383,24 +1429,36 @@ describe("S2 calendar outbox substrate", () => {
         .exec<{ name: string }>("PRAGMA table_info('__adapter_outbox')")
         .toArray()
         .map(({ name }) => name),
-      lineRows:
-        state.storage.sql
-          .exec<{ n: number }>(
-            "SELECT COUNT(*) AS n FROM __adapter_outbox WHERE consumer = 'line'",
-          )
-          .toArray()[0]?.n ?? 0,
+      lineRows: state.storage.sql
+        .exec<{ end_time: string | null; reservation_status: string | null }>(
+          `SELECT end_time, reservation_status FROM __adapter_outbox
+           WHERE consumer = 'line'`,
+        )
+        .toArray(),
     }));
     expect(migrated.columns).toEqual(expect.arrayContaining(["end_time", "reservation_status"]));
-    expect(migrated.lineRows).toBe(1);
+    expect(migrated.lineRows).toEqual([{ end_time: null, reservation_status: null }]);
   });
 
-  it("rolls back a create committed under an expired calendar lease", async () => {
+  it("commits a booking under an expired optional calendar lease", async () => {
     const stub = stubFor();
     const stale = configured(day, { calendar: true, expiredCalendar: true });
-    expect(
-      await stub.createPublic(stale, createInput(stale, { serviceIds: ["service-cut"] })),
-    ).toEqual({ ok: false, code: "RETRY_CONFIG" });
-    expect(await stub.listOwner(day)).toMatchObject({ ok: true, reservations: [] });
+    const created = await stub.createPublic(
+      stale,
+      createInput(stale, { serviceIds: ["service-cut"] }),
+    );
+    expect(created).toMatchObject({ ok: true, status: "pending" });
+    expect(startsFor(await stub.availability(day, ["service-cut"]), "resource-chair-a")).not.toContain(
+      "09:00",
+    );
+    await expect(stub.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
+      events: [],
+      more: false,
+    });
+    await expect(stub.calendarProjection(day)).resolves.toMatchObject({
+      ok: true,
+      events: [{ reservationId: reservationIdOf(created), status: "pending" }],
+    });
   });
 });
 

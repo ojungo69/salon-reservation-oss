@@ -53,20 +53,23 @@ use Workers, Durable Objects, Static Assets, Rate Limiting, and Turnstile to pro
 placement is not a guarantee of Japan-only residency.
 
 Two independently optional calendar modes are available. An authenticated iCalendar subscription
-stores and publishes only the reservation start/end, selected service label, and pending/approved
-state. Its capability URL grants read access to those schedule facts; keep it out of logs,
-analytics, screenshots, issues, and messages, and rotate its dedicated token after suspected
-disclosure. Optional Google outbound synchronization sends the same schedule facts plus a stable,
-non-reversible event identifier. It does not send the customer name/contact, resource, management
-key, reservation reference, attendee, location, description, or management URL. Google then
-processes the event under the operator's Google configuration and terms.
+stores and publishes only the reservation start/end, selected service label, pending/approved
+state, stable opaque event UID, and event creation timestamp. Its capability URL grants read access
+to those fields; keep it out of logs, analytics, screenshots, issues, and messages, and rotate its
+dedicated token after suspected disclosure. Optional Google outbound synchronization sends the
+same schedule facts plus a stable, non-reversible event identifier. It does not send the customer
+name/contact, resource, management key, reservation reference, attendee, location, description, or
+management URL. Google then processes the event under the operator's Google configuration and
+terms.
 
 Calendar projections, desired outbound mutations, deduplication evidence, and aggregate operational
-records are bounded and never become the reservation system of record. Terminal reservations leave
-the feed; Google deletion is retried within a bounded ladder. Removing both secrets stops new feed
-access and provider calls immediately, while local cleanup continues through the descriptor-lease
-and fixed sweep window. The rendered customer disclosure remains visible until that residual state
-is purged, then disappears. See [calendar setup](CALENDAR-SETUP.md) for rotation and recovery.
+records are bounded and never become the reservation system of record. Rejected, cancelled,
+expired, and retention-purged reservations leave the feed; completion/no-show bookkeeping keeps
+the confirmed schedule entry. Google deletion is retried within a bounded ladder. Removing both
+secrets stops new feed access and provider calls immediately, while local cleanup continues through
+the descriptor-lease and fixed sweep window. The rendered customer disclosure remains visible until
+that residual state is purged, then disappears. See [calendar setup](CALENDAR-SETUP.md) for rotation
+and recovery.
 
 Any additional provider adapter must be disabled by default, have a stated purpose and data
 boundary, and update the operator's notice, contracts, security review, and customer rights process

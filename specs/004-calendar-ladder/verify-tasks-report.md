@@ -1,7 +1,7 @@
 # Task verification report — feature 004 (S2 calendar ladder)
 
-Verified on 2026-08-13 in `/home/jura/projects/srv-wt-calendar`, branch
-`feat/calendar-ladder`, against base `3a9f72508ae075357da7c8b04a34cf7dc075c404`.
+Verified on 2026-08-13 at `<repository-root>`, branch `feat/calendar-ladder`, against base
+`3a9f72508ae075357da7c8b04a34cf7dc075c404`.
 No deployment or live provider/account was used.
 
 ## Final command evidence
@@ -10,12 +10,13 @@ No deployment or live provider/account was used.
 |---|---|
 | `specify self check` | Up to date: 0.16.2 |
 | `specify integration status` | OK; Codex integration; 0 modified/missing managed files |
-| `npx vitest run test/calendar-adapter.test.ts --reporter=verbose` | 28/28 passed |
+| `npx vitest run test/calendar-adapter.test.ts test/reservation-day.test.ts --reporter=verbose` | 56/56 passed (calendar 30; reservation-day 26) |
+| pinned Semgrep command in `security-scan.md` | 400 rules over 25 tracked files; 1 unchanged Turnstile finding accepted; 0 feature blocking findings |
 | focused security regression command in `security-scan.md` | 5/5 passed |
 | focused calendar privacy cleanup test | 1/1 passed |
-| `npm run check` | core 54/54; Workers/DO 200/200; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
+| `npm run check` | core 54/54; Workers/DO 204/204; typecheck; generated types; Wrangler dry-run build; npm audit 0; release audit 77 files |
 | `npm run test:browser` | 34/34 passed against local HTTPS Wrangler |
-| GitNexus `detect-changes --scope compare --base-ref main` | 21 files, 73 changed symbols, 64 affected flows reviewed; shared validator/call wrapper correctly classified critical blast radius |
+| GitNexus `detect-changes --scope compare --base-ref main --repo salon-reservation-oss-calendar` | 36 files, 302 changed symbols, 70 affected flows reviewed; shared validator/call wrapper correctly classified critical blast radius |
 | `git diff --check` | passed |
 
 The Workers pool prints expected unhandled-RPC warnings in tests that deliberately replace a
@@ -26,6 +27,11 @@ regression. One real privacy-test failure was found during the first full run: t
 assumed a public privacy GET initialized Calendar state. The security design intentionally removed
 that stateful public RPC, so the test now explicitly activates the authority before asserting
 residual cleanup disclosure; its focused and full reruns pass.
+
+PR review follow-up added regressions for a 33-event two-batch handoff, byte-identical repeated ICS
+reads, and completion/no-show reconciliation. Before the corresponding fixes, those tests failed at
+32/33 drained events, a changed `DTSTAMP`, and a missing confirmed projection respectively. The
+focused 56-case run and full check above pass after the fixes.
 
 ## Manual completion sweep
 
@@ -45,7 +51,7 @@ equivalent exactly once. Every task is accounted for below.
 | T009 | Binding/export/optional secret fixtures and regenerated types are present; `types:check` and dry-run build pass. |
 | T010 | Optional fail-open descriptor wiring preserves byte-identical public config and zero absent-mode calendar RPC. |
 | T011 | Foundation, LINE regression, and type checks pass within the full command evidence. |
-| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 28-case calendar suite. |
+| T012 | Projection/dedup/order/retention/overflow/feed authority tests pass in the 30-case calendar suite. |
 | T013 | Absent/bad/valid/rotated/exact-query/header/cache/privacy Worker feed tests are in `test/worker.test.ts`. |
 | T014 | Calendar acceptance, projection, bounded cleanup, aggregate auth diagnostics, and serializer are implemented. |
 | T015 | Uniform-404 capability route and no-store/nosniff headers are implemented and tested. |
@@ -68,8 +74,8 @@ equivalent exactly once. Every task is accounted for below.
 | T032 | Cloudflare/release docs cover optional bindings, Free-plan budget, alarms, and forward backout. |
 | T033 | Sorted manifest/audit required-set changes pass the 77-file secret/email/license/install-script gate. |
 | T034 | Focused, full, type/build/audit, and 34-case browser results are recorded above. |
-| T035 | `security-scan.md` records the complete rule/adversarial review, two fixed candidates, and zero final findings. |
-| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; Ponytail removed unused first-release state/columns and kept one concrete provider with no dependency. Focused/full reruns pass. |
+| T035 | `security-scan.md` records the pinned 400-rule Semgrep run, complete adversarial review, three fixed CWE-770 candidates, one accepted baseline finding, and zero feature-blocking findings. |
+| T036 | Correctness review found the privacy test's obsolete assumption and retention-cleanup visibility gap; PR review then found the multi-batch, stable-stamp, legacy-drain migration, and optional-lease gaps. Ponytail reused the existing bounded LINE loop/schema migrator, added only one stamp column, and kept one concrete provider with no dependency. Focused/full reruns pass. |
 | T037 | GitNexus changed-flow review, complete diff review, scope check, and `git diff --check` pass; only feature files changed. |
 | T038 | Calendar rows are Implemented, S2 is Complete, and inbound availability remains Deliberately excluded. |
 | T039 | This one-time manual evidence sweep found no checked task without implementation or evidence. |

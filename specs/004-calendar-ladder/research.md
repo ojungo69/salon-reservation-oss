@@ -198,7 +198,8 @@ provider cannot reverse the value to the internal reservation identifier.
 **Payload**:
 
 - `summary`: service label only.
-- `start.dateTime` / `end.dateTime`: canonical RFC 3339 instants; `timeZone`: `Asia/Tokyo`.
+- `start.dateTime` / `end.dateTime`: canonical RFC 3339 UTC instants. The redundant `timeZone`
+  field is omitted; Google's documented UTC form uses the `Z` offset alone.
 - `status`: `tentative` or `confirmed`; `visibility`: `private`; `transparency`: `opaque`.
 - no attendees, description, location, conference data, attachments, reminders, contact, or
   extended property containing the reservation ID.
@@ -215,6 +216,8 @@ patch (patch consumes three quota units), and the adapter owns the entire minima
 - Event ID format: <https://developers.google.com/workspace/calendar/api/v3/reference/events>
 - Update: <https://developers.google.com/workspace/calendar/api/v3/reference/events/update>
 - Delete: <https://developers.google.com/workspace/calendar/api/v3/reference/events/delete>
+- Event UTC/time-zone forms:
+  <https://developers.google.com/workspace/calendar/api/concepts/events-calendars>
 
 ## R6 — Retry, terminal classification, and bounded state
 
@@ -225,10 +228,10 @@ they already fit; add only calendar-specific queue/projection caps.
 
 **Classification**:
 
-- retry: network/timeout, token or Calendar 5xx, Calendar 429, and 403 only when a bounded parsed
-  reason is `rateLimitExceeded` or `userRateLimitExceeded`;
-- configuration/authorization: token 4xx, Calendar 401, and non-rate-limit 403 — park visibly until
-  credentials are corrected/reconciliation is requested;
+- retry: network/timeout, token 408/429/5xx, Calendar 408/429/5xx, and 403 only when a bounded
+  parsed reason is `rateLimitExceeded` or `userRateLimitExceeded`;
+- configuration/authorization: other token 4xx, Calendar 401, and non-rate-limit 403 — park visibly
+  until credentials are corrected/reconciliation is requested;
 - permanent payload/not-found target: Calendar 400 and other non-idempotent 4xx — terminal ledger;
 - success/convergence: 2xx, create 409→update, delete 404/410.
 

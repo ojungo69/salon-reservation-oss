@@ -31,13 +31,14 @@ After an authorized deployment, subscribe a calendar client to:
 https://<installation-host>/api/adapters/calendar/feed.ics?token=<43-character-token>
 ```
 
-The URL is a read capability for reservation start/end, service label, and tentative/confirmed
-state. Keep it out of source control, tickets, messages, screenshots, referrers, access analytics,
-and command output. To rotate it, put a newly generated value under the same secret name. The old
-URL returns the same 404 as every inactive or invalid request immediately after the new binding is
-active. Calendar clients may cache prior event bytes even though the feed response is
-`private, no-store`; remove the old subscription where necessary. The feed uses the existing
-public rate limiter before calendar storage work, and a limited request keeps the same uniform 404.
+The URL is a read capability for reservation start/end, service label, tentative/confirmed state,
+stable opaque event UID, and event creation timestamp. Keep it out of source control, tickets,
+messages, screenshots, referrers, access analytics, and command output. To rotate it, put a newly
+generated value under the same secret name. The old URL returns the same 404 as every inactive or
+invalid request immediately after the new binding is active. Calendar clients may cache prior
+event bytes even though the feed response is `private, no-store`; remove the old subscription where
+necessary. The feed uses the existing public rate limiter before calendar storage work, and a
+limited request keeps the same uniform 404.
 
 ## Google outbound synchronization
 

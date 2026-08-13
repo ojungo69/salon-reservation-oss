@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-13
 
-**Status**: Draft
+**Status**: Implemented; PR #48 ready for review
 
 **Input**: Roadmap stage S2 and issue #1's recorded calendar decision: deliver an authenticated
 outbound ICS subscription feed, then an optional outbound Google event synchronization adapter.
@@ -26,8 +26,10 @@ Free-plan target. No deployment or live Google account is needed for implementat
 An operator explicitly enables an ICS feed, copies its private subscription URL, and subscribes to
 it from Google Calendar, Apple Calendar, Outlook, or another standards-compatible client. Pending
 and approved bookings appear with a stable identity, their schedule changes update the same event,
-and terminal bookings disappear. The feed exposes only time, service label, and reservation state;
-it never exposes the customer's name, contact details, management proof, or internal notes.
+and rejection, cancellation, or expiry removes them. Completion and no-show bookkeeping keeps the
+confirmed schedule entry. The feed exposes time, service label, reservation state, and only the
+opaque UID/creation stamp required by the calendar protocol; it never exposes the customer's name,
+contact details, management proof, or internal notes.
 
 **Why this priority**: This is the lowest-cost calendar rung and satisfies the common task of seeing
 bookings in an existing calendar without a provider account or OAuth setup.
@@ -77,8 +79,8 @@ external identity, bounded retry, terminal visibility, and unchanged reservation
    **When** reconciliation runs, **Then** exactly one Google event represents the reservation.
 3. **Given** an existing mirrored reservation is approved or rescheduled, **When** delivery
    succeeds, **Then** the same Google event is updated rather than duplicated.
-4. **Given** an existing mirrored reservation becomes terminal, **When** delivery succeeds or the
-   event was already absent, **Then** the reservation is reconciled as deleted.
+4. **Given** an existing mirrored reservation is rejected, cancelled, or expired, **When** delivery
+   succeeds or the event was already absent, **Then** the reservation is reconciled as deleted.
 5. **Given** Google is unavailable or rate-limits requests, **When** retries reach their bound,
    **Then** the reservation remains unchanged and the unsynchronized mutation is visible to the
    operator with a redacted reason and time.
@@ -159,9 +161,10 @@ redacted diagnostics.
   change its schedule representation. Each reservation MUST have one stable calendar identity
   across feed reads, provider retries, approval, and rescheduling.
 - **FR-004 (schedule facts only)**: Calendar projections MUST contain only the reservation's start,
-  non-inclusive occupied end, configured service label, and tentative/confirmed state. Customer
-  name, contact, management proof, notes, resource identifiers, secrets, and provider credentials
-  MUST never enter a feed, provider event body, log, diagnostic record, or test fixture.
+  non-inclusive occupied end, configured service label, tentative/confirmed state, and the opaque
+  identity/creation stamp required by the calendar protocol. Customer name, contact, management
+  proof, notes, resource identifiers, secrets, and provider credentials MUST never enter a feed,
+  provider event body, log, diagnostic record, or test fixture.
 - **FR-005 (authenticated ICS)**: The feed MUST require a dedicated high-entropy subscription
   credential compatible with URL-based calendar clients, reject missing/invalid credentials
   without disclosing whether an installation or feed exists, support revocation/rotation, and

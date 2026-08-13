@@ -80,7 +80,9 @@ active --Google false→true or fingerprint change--> active + requeue projectio
 | `reservation_id` / `generation` / `seq` | validated source identity and ordering evidence |
 | `accepted_at` / `purge_at` | canonical timestamp and parent deadline |
 
-This table is dedup/order evidence only. Rows are pruned at the parent deadline and a hard cap.
+This table is dedup/order evidence only. Rows are pruned at the parent deadline. At the hard cap,
+live rows are not evicted: new adapter work remains unacknowledged and a bounded overflow record is
+surfaced until retention frees evidence. Reservation commits remain unaffected.
 
 ### `projections`
 
@@ -89,13 +91,14 @@ This table is dedup/order evidence only. Rows are pruned at the parent deadline 
 | `reservation_id` | internal primary key; never returned in diagnostics/feed/provider body |
 | `external_id` | `sr` + domain-separated SHA-256 hex; provider-valid and non-reversible |
 | `uid` | domain-separated opaque iCalendar UID under `.invalid` |
-| `date`, `start_at`, `end_at` | canonical date/UTC instants; `start_at < end_at` |
+| `date`, `stamp_at`, `start_at`, `end_at` | canonical date/UTC instants; immutable feed stamp; `start_at < end_at` |
 | `service_label` | bounded schedule label only |
 | `status` | `tentative` or `confirmed` |
 | `purge_at` | parent retention deadline |
 
 There is at most one row per reservation. ICS serializes only these rows ordered by start/external ID.
-Terminal source state deletes this row after desired Google absence is recorded.
+Rejection, cancellation, expiry, or retention purge deletes this row after desired Google absence
+is recorded. Completion/no-show bookkeeping keeps the confirmed schedule row.
 
 ### `google_mutations`
 

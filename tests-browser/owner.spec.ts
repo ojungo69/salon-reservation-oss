@@ -162,6 +162,26 @@ test("calendar diagnostics and reconciliation stay owner-only", async ({ page })
   await stubTurnstile(page);
   await signIn(page);
   const result = await page.evaluate(async (ownerToken) => {
+    const deniedResponses = await Promise.all([
+      fetch("/api/admin/calendar/status", { cache: "no-store" }),
+      fetch("/api/admin/calendar/status", {
+        headers: { authorization: "Bearer invalid" },
+        cache: "no-store",
+      }),
+      fetch("/api/admin/calendar/reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+      fetch("/api/admin/calendar/reconcile", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer invalid",
+          "content-type": "application/json",
+        },
+        body: "{}",
+      }),
+    ]);
     const headers = {
       authorization: `Bearer ${ownerToken}`,
       "content-type": "application/json",
@@ -176,6 +196,12 @@ test("calendar diagnostics and reconciliation stay owner-only", async ({ page })
       body: "{}",
     });
     return {
+      denied: await Promise.all(
+        deniedResponses.map(async (response) => ({
+          status: response.status,
+          body: await response.text(),
+        })),
+      ),
       statusCode: status.status,
       status: await status.json(),
       reconcileCode: reconcile.status,
@@ -195,8 +221,9 @@ test("calendar diagnostics and reconciliation stay owner-only", async ({ page })
     reconcileCode: 200,
     reconcile: { ok: true, processedDates: 7 },
   });
+  expect(result.denied.map(({ status }) => status)).toEqual([401, 401, 401, 401]);
   expect(JSON.stringify(result)).not.toMatch(
-    /AAAAAAAA|reservationId|externalId|calendarId|authorization/i,
+    /AAAAAAAA|reservationId|externalId|calendarId|authorization|owner-test-token/i,
   );
 
   const calendarRequests: string[] = [];

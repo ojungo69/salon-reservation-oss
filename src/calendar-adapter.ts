@@ -39,6 +39,7 @@ export type GoogleCalendarCredentials = {
 export type CalendarProjection = {
   uid: string;
   externalId: string;
+  stampAt: string;
   startAt: string;
   endAt: string;
   serviceLabel: string;
@@ -130,10 +131,10 @@ export const foldCalendarLine = (value: string): string => {
 const icalTimestamp = (value: string | number): string => {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("invalid calendar timestamp");
-  return date.toISOString().replace(/[-:]/g, "").replace(".000", "");
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 };
 
-export const renderCalendar = (events: CalendarProjection[], now: number): string => {
+export const renderCalendar = (events: CalendarProjection[]): string => {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -147,7 +148,7 @@ export const renderCalendar = (events: CalendarProjection[], now: number): strin
     lines.push(
       "BEGIN:VEVENT",
       `UID:${event.uid}`,
-      `DTSTAMP:${icalTimestamp(now)}`,
+      `DTSTAMP:${icalTimestamp(event.stampAt)}`,
       `DTSTART:${icalTimestamp(event.startAt)}`,
       `DTEND:${icalTimestamp(event.endAt)}`,
       `STATUS:${event.status === "tentative" ? "TENTATIVE" : "CONFIRMED"}`,
@@ -173,8 +174,8 @@ export const googleEventBody = (
   status: event.status,
   visibility: "private",
   transparency: "opaque",
-  start: { dateTime: event.startAt, timeZone: "Asia/Tokyo" },
-  end: { dateTime: event.endAt, timeZone: "Asia/Tokyo" },
+  start: { dateTime: event.startAt },
+  end: { dateTime: event.endAt },
 });
 
 export const classifyGoogleResponse = (
@@ -183,6 +184,7 @@ export const classifyGoogleResponse = (
 ): "success" | "retryable" | "configuration" | "permanent" => {
   if (status >= 200 && status < 300) return "success";
   if (
+    status === 408 ||
     status === 429 ||
     status >= 500 ||
     (status === 403 &&
@@ -229,7 +231,10 @@ export const requestGoogleAccessToken = async (
   if (response.status !== 200) {
     return {
       ok: false,
-      kind: response.status >= 500 ? "retryable" : "configuration",
+      kind:
+        response.status === 408 || response.status === 429 || response.status >= 500
+          ? "retryable"
+          : "configuration",
       status: response.status,
     };
   }
@@ -399,6 +404,7 @@ type ProjectionRow = {
   external_id: string;
   uid: string;
   date: string;
+  stamp_at: string;
   start_at: string;
   end_at: string;
   service_label: string;
@@ -457,6 +463,7 @@ const calendarInstant = (date: string, time: string): string =>
 const projectionFromRow = (row: ProjectionRow): CalendarProjection => ({
   uid: row.uid,
   externalId: row.external_id,
+  stampAt: row.stamp_at,
   startAt: row.start_at,
   endAt: row.end_at,
   serviceLabel: row.service_label,
@@ -524,6 +531,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           external_id TEXT NOT NULL UNIQUE,
           uid TEXT NOT NULL UNIQUE,
           date TEXT NOT NULL,
+          stamp_at TEXT NOT NULL,
           start_at TEXT NOT NULL,
           end_at TEXT NOT NULL,
           service_label TEXT NOT NULL,
@@ -806,19 +814,40 @@ export class CalendarAdapter extends DurableObject<Env> {
     return descriptor;
   }
 
-  async #acceptEvents(events: AdapterOutboxEvent[]): Promise<number> {
+  async #acceptEvents(events: AdapterOutboxEvent[]): Promise<number | null> {
     const now = Date.now();
     this.#pruneRetention(now);
     const meta = this.#readMeta();
     if (meta?.state !== "active") return 0;
     const prepared = await Promise.all(
-      events.map(async (event) => ({ event, ids: await calendarIdentifiers(event.reservationId) })),
+      events.map(async (event) => ({
+        event,
+        eventKey: `${event.generation}:${event.eventId}`,
+        ids: await calendarIdentifiers(event.reservationId),
+      })),
     );
+    const sql = this.ctx.storage.sql;
+    const evidenceCount =
+      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM accepted_events").toArray()[0]?.n ?? 0;
+    const newEvidenceCount = prepared.filter(
+      ({ event, eventKey }) =>
+        event.purgeAt > now &&
+        sql
+          .exec<{ event_key: string }>(
+            "SELECT event_key FROM accepted_events WHERE event_key = ?",
+            eventKey,
+          )
+          .toArray()[0] === undefined,
+    ).length;
+    if (evidenceCount + newEvidenceCount > ACCEPTED_EVENT_CAP) {
+      this.#record("overflow", "accept");
+      this.#bump("accepted_overflow");
+      return null;
+    }
     const accepted = this.ctx.storage.transactionSync(() => {
       let accepted = 0;
       const sql = this.ctx.storage.sql;
-      for (const { event, ids } of prepared) {
-        const eventKey = `${event.generation}:${event.eventId}`;
+      for (const { event, eventKey, ids } of prepared) {
         if (
           sql
             .exec<{ event_key: string }>(
@@ -846,10 +875,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           disposition = "invalid";
         } else if (event.reservationStatus === "pending" || event.reservationStatus === "approved") {
           const existing = sql
-            .exec<{ reservation_id: string }>(
-              "SELECT reservation_id FROM projections WHERE reservation_id = ?",
-              event.reservationId,
-            )
+            .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
             .toArray()[0];
           const count = sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]
             ?.n ?? 0;
@@ -859,6 +885,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             const projection: CalendarProjection = {
               uid: ids.uid,
               externalId: ids.externalId,
+              stampAt: existing?.stamp_at ?? event.occurredAt,
               startAt: calendarInstant(event.date, event.startTime),
               endAt: calendarInstant(event.date, event.endTime),
               serviceLabel: event.serviceLabel,
@@ -866,13 +893,14 @@ export class CalendarAdapter extends DurableObject<Env> {
             };
             sql.exec(
               `INSERT OR REPLACE INTO projections
-                 (reservation_id, external_id, uid, date, start_at, end_at, service_label,
-                  status, purge_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
+                  service_label, status, purge_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               event.reservationId,
               projection.externalId,
               projection.uid,
               event.date,
+              projection.stampAt,
               projection.startAt,
               projection.endAt,
               projection.serviceLabel,
@@ -923,40 +951,36 @@ export class CalendarAdapter extends DurableObject<Env> {
       return accepted;
     });
     this.#pruneRetention(now);
-    const sql = this.ctx.storage.sql;
-    const evidenceCount =
-      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM accepted_events").toArray()[0]?.n ?? 0;
-    if (evidenceCount > ACCEPTED_EVENT_CAP) {
-      const excess = evidenceCount - ACCEPTED_EVENT_CAP;
-      sql.exec(
-        `DELETE FROM accepted_events WHERE event_key IN (
-           SELECT event_key FROM accepted_events ORDER BY accepted_at, event_key LIMIT ?
-         )`,
-        excess,
-      );
-      this.#bump("accepted_evicted", excess);
-    }
     return accepted;
   }
 
   async pokeDay(input: { date: string }): Promise<{ ok: true; drained: number }> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("bad poke input");
-    const meta = this.#readMeta();
-    if (meta?.state !== "active") return { ok: true, drained: 0 };
     const stub = this.env.RESERVATION_DAYS.getByName(
       `single-location:${input.date}`,
     ) as DurableObjectStub<ReservationDay>;
-    const drained = await stub.drainOutbox({
-      consumer: "calendar",
-      limit: ADAPTER.OUTBOX_DRAIN_BATCH,
-    });
-    if (drained.events.length === 0) return { ok: true, drained: 0 };
-    const accepted = await this.#acceptEvents(drained.events);
-    await stub.ackOutbox({
-      consumer: "calendar",
-      events: drained.events.map(({ generation, eventId }) => ({ generation, eventId })),
-    });
-    if (meta.googleConfigured) await this.#armAlarm(Date.now());
+    let accepted = 0;
+    // ponytail: bounded pull loop; anything beyond the budget waits for the
+    // next poke or sweep cycle rather than growing one invocation unboundedly.
+    for (let round = 0; round < 10; round += 1) {
+      const meta = this.#readMeta();
+      if (meta?.state !== "active") return { ok: true, drained: accepted };
+      const drained = await stub.drainOutbox({
+        consumer: "calendar",
+        limit: ADAPTER.OUTBOX_DRAIN_BATCH,
+      });
+      if (drained.events.length > 0) {
+        const batchAccepted = await this.#acceptEvents(drained.events);
+        if (batchAccepted === null) break;
+        accepted += batchAccepted;
+        await stub.ackOutbox({
+          consumer: "calendar",
+          events: drained.events.map(({ generation, eventId }) => ({ generation, eventId })),
+        });
+      }
+      if (!drained.more) break;
+    }
+    if (accepted > 0 && this.#readMeta()?.googleConfigured) await this.#armAlarm(Date.now());
     return { ok: true, drained: accepted };
   }
 
@@ -980,7 +1004,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       )
       .toArray();
     if (rows.length > CALENDAR_ROW_CAP) throw new Error("projection overflow");
-    return { ok: true, body: renderCalendar(rows.map(projectionFromRow), Date.now()) };
+    return { ok: true, body: renderCalendar(rows.map(projectionFromRow)) };
   }
 
   async reconcileDay(input: DayCalendarProjectionResult): Promise<{
@@ -1025,10 +1049,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]?.n ?? 0;
       for (const { event, ids } of prepared) {
         const existing = sql
-          .exec<{ reservation_id: string }>(
-            "SELECT reservation_id FROM projections WHERE reservation_id = ?",
-            event.reservationId,
-          )
+          .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
           .toArray()[0];
         if (existing === undefined && projectionCount >= CALENDAR_ROW_CAP) {
           this.#record("overflow", "reconcile");
@@ -1038,6 +1059,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         const projection: CalendarProjection = {
           uid: ids.uid,
           externalId: ids.externalId,
+          stampAt: existing?.stamp_at ?? event.stampAt,
           startAt: calendarInstant(input.date, event.startTime),
           endAt: calendarInstant(input.date, event.endTime),
           serviceLabel: event.serviceLabel,
@@ -1045,13 +1067,14 @@ export class CalendarAdapter extends DurableObject<Env> {
         };
         sql.exec(
           `INSERT OR REPLACE INTO projections
-             (reservation_id, external_id, uid, date, start_at, end_at, service_label,
-              status, purge_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
+              service_label, status, purge_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           event.reservationId,
           projection.externalId,
           projection.uid,
           input.date,
+          projection.stampAt,
           projection.startAt,
           projection.endAt,
           projection.serviceLabel,
@@ -1298,6 +1321,7 @@ export class CalendarAdapter extends DurableObject<Env> {
             parsed === null ||
             parsed.externalId !== row.external_id ||
             typeof parsed.uid !== "string" ||
+            typeof parsed.stampAt !== "string" ||
             typeof parsed.startAt !== "string" ||
             typeof parsed.endAt !== "string" ||
             typeof parsed.serviceLabel !== "string" ||

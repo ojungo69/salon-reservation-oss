@@ -169,7 +169,9 @@ provider. Split only if a second provider is approved; no provider interface/fac
 - Add nullable `end_time` and `reservation_status` columns with an explicit additive migration.
   Old LINE rows may be null; calendar rows must have canonical values.
 - `#emitAdapterEvents` loops the two optional descriptors within the existing transaction. A stale
-  lease rolls back the whole reservation mutation and uses the existing one-refresh retry.
+  LINE lease keeps the released one-refresh retry. A stale optional calendar lease skips only that
+  outbox emission; the committed day projection remains available to owner reconciliation, so
+  calendar rotation or disable cannot roll back a reservation.
 - `#adapterHandoff` independently pokes `ADAPTER_DELIVERY` and `CALENDAR_ADAPTER` after commit.
   The reservation-day retention alarm is untouched.
 

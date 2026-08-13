@@ -47,15 +47,17 @@ Cloudflare resource.
 
 ## Manual local feed smoke (fictional only)
 
-Generate a disposable local token, keep it outside shell history where practical, and put it in a
-local `.dev.vars` file that is already ignored. Use only the repository's fictional owner and
-Turnstile values. Start `npm run dev`, create a fictional reservation, and request:
+Generate a disposable local token, keep it outside shell history, and put it in a local `.dev.vars`
+file that is already ignored. Use only the repository's fictional owner and Turnstile values.
+Start `npm run dev`, create a fictional reservation, and request from a private local client that
+does not retain browser history, proxy/access logs, screenshots, or analytics:
 
 ```text
 http://localhost:<port>/api/adapters/calendar/feed.ics?token=<local-token>
 ```
 
-Confirm the calendar body contains only schedule facts. Delete `.dev.vars` when finished. This is
+Confirm the calendar body contains only the documented fields. Delete `.dev.vars` and the local
+client history when finished; if the token was retained anywhere, rotate it before reuse. This is
 optional evidence; automated fixtures are authoritative.
 
 ## Security/review gates

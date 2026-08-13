@@ -207,6 +207,7 @@ export type DayCalendarProjectionResult =
       purgeAt: number;
       events: Array<{
         reservationId: string;
+        stampAt: string;
         startTime: string;
         endTime: string;
         serviceLabel: string;
@@ -1031,8 +1032,8 @@ export class ReservationDay extends DurableObject<Env> {
     );
   }
 
-  // Called only inside an already-open storage transaction, from an
-  // active-generation event commit — never from reads, drains, or acks.
+  // Called only inside an already-open storage transaction. Event commits
+  // create/upgrade the schema; drains upgrade a released outbox before reading.
   #ensureAdapterSchema(): void {
     const sql = this.ctx.storage.sql;
     sql.exec(`
@@ -1077,16 +1078,18 @@ export class ReservationDay extends DurableObject<Env> {
   // Records committed reservation changes for the adapter, atomically with the
   // commit itself. No adapter configured → no-op. Deactivating → no new events
   // (disable is an explicit stop; the sweep drains what already exists).
-  // Expired lease → the whole transaction rolls back via RETRY_CONFIG.
+  // An expired LINE lease preserves the released retry contract. Calendar is
+  // optional: a stale lease skips its event and authoritative reconciliation
+  // recovers it without rolling back the reservation.
   #emitAdapterEvents(
     config: DayConfig,
     events: Array<{
       type: AdapterEventType;
       reservationId: string;
       startTime: string;
-      endTime?: string;
+      endTime: string;
       serviceLabel: string;
-      reservationStatus?: CalendarReservationStatus;
+      reservationStatus: CalendarReservationStatus;
     }>,
   ): void {
     if (events.length === 0) return;
@@ -1104,15 +1107,9 @@ export class ReservationDay extends DurableObject<Env> {
       const accepted =
         adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
       if (adapter.phase !== "active" || accepted.length === 0) continue;
-      if (Date.now() > adapter.leaseNotAfter) throw new AdapterLeaseExpiredError();
-      if (
-        adapter.consumer === "calendar" &&
-        accepted.some(
-          ({ endTime, reservationStatus }) =>
-            endTime === undefined || reservationStatus === undefined,
-        )
-      ) {
-        throw new Error("calendar event is incomplete");
+      if (Date.now() > adapter.leaseNotAfter) {
+        if (adapter.consumer === "calendar") continue;
+        throw new AdapterLeaseExpiredError();
       }
       this.#ensureAdapterSchema();
       const row = sql
@@ -1137,9 +1134,9 @@ export class ReservationDay extends DurableObject<Env> {
           event.reservationId,
           event.type,
           event.startTime,
-          event.endTime ?? null,
+          event.endTime,
           event.serviceLabel,
-          event.reservationStatus ?? null,
+          event.reservationStatus,
           occurredAt,
           purgeAt,
         );
@@ -1201,6 +1198,7 @@ export class ReservationDay extends DurableObject<Env> {
     }
     const limit = Math.min(input.limit ?? ADAPTER.OUTBOX_DRAIN_BATCH, ADAPTER.OUTBOX_DRAIN_BATCH);
     if (!this.#adapterOutboxExists()) return { events: [], more: false };
+    this.ctx.storage.transactionSync(() => this.#ensureAdapterSchema());
     const rows = this.ctx.storage.sql
       .exec<{
         generation: number;
@@ -2939,19 +2937,23 @@ export class ReservationDay extends DurableObject<Env> {
         .flatMap((reservation) => {
           const detail = details.get(reservation.id);
           if (detail === undefined) throw new Error("missing detail");
-          if (
-            (detail.status !== "pending" && detail.status !== "approved") ||
-            detail.snapshot === null
-          ) {
-            return [];
-          }
+          const status: "pending" | "approved" | null =
+            detail.status === "pending"
+              ? "pending"
+              : detail.status === "approved" ||
+                  detail.status === "completed" ||
+                  detail.status === "no_show"
+                ? "approved"
+                : null;
+          if (status === null || detail.snapshot === null) return [];
           return [
             {
               reservationId: reservation.id,
+              stampAt: detail.createdAt,
               startTime: jstTime(reservation.startAt),
               endTime: jstTime(reservation.endAt),
               serviceLabel: bookingServiceLabel(detail.snapshot),
-              status: detail.status,
+              status,
             },
           ];
         })

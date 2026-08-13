@@ -2932,6 +2932,12 @@ describe("T035 guided setup API", () => {
         `/api/adapters/calendar/feed.ics?token=${token}&token=${token}`,
       ].map((path) => SELF.fetch(`https://example.test${path}`)),
     );
+    failures.push(
+      await SELF.fetch(
+        `https://example.test/api/adapters/calendar/feed.ics?token=${token}`,
+        { method: "POST" },
+      ),
+    );
     const signatures = await Promise.all(
       failures.map(async (response) => ({
         status: response.status,
@@ -3023,6 +3029,26 @@ describe("T035 guided setup API", () => {
     });
     const response = await worker.fetch(new Request(availabilityUrl()), limitedEnv);
     expect(response.status).toBe(429);
+    expect(namespaceReads).toBe(0);
+  });
+
+  it("rate-limits residual privacy lookup before calendar authority work", async () => {
+    let namespaceReads = 0;
+    const limitedEnv = Object.create(env) as Env;
+    Object.defineProperty(limitedEnv, "CALENDAR_FEED_TOKEN", { value: undefined });
+    Object.defineProperty(limitedEnv, "GOOGLE_CALENDAR_CREDENTIALS", { value: undefined });
+    Object.defineProperty(limitedEnv, "PUBLIC_RATE_LIMITER", {
+      value: { limit: async () => ({ success: false }) },
+    });
+    Object.defineProperty(limitedEnv, "CALENDAR_ADAPTER", {
+      get: () => {
+        namespaceReads += 1;
+        throw new Error("limited privacy request must not reach calendar authority");
+      },
+    });
+    const response = await worker.fetch(new Request("https://example.test/privacy"), limitedEnv);
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("カレンダー連携を利用する場合");
     expect(namespaceReads).toBe(0);
   });
 
@@ -3195,6 +3221,27 @@ describe("T035 guided setup API", () => {
         },
       });
     }
+
+    authorityFeed = undefined;
+    authorityGoogle = undefined;
+    const configuredEnv = Object.create(env) as Env;
+    Object.defineProperty(configuredEnv, "CALENDAR_FEED_TOKEN", { value: "A".repeat(43) });
+    Object.defineProperty(configuredEnv, "GOOGLE_CALENDAR_CREDENTIALS", {
+      value: fixtureGoogle,
+    });
+    const configuredButInactive = await worker.fetch(
+      new Request("https://example.test/api/admin/calendar/status", {
+        headers: ownerHeaders,
+      }),
+      configuredEnv,
+    );
+    expect(await configuredButInactive.json()).toMatchObject({
+      modes: {
+        ics: { configured: true, active: false },
+        google: { configured: true, active: false },
+      },
+      authority: { state: "deactivating" },
+    });
     authorityFeed = "A".repeat(43);
     authorityGoogle = fixtureGoogle;
   });
@@ -3353,7 +3400,7 @@ describe("T035 guided setup API", () => {
     expect(active.headers.get("cache-control")).toBe("no-store");
     const activeBody = await active.text();
     expect(activeBody).toContain("カレンダー連携を利用する場合");
-    expect(activeBody).toContain("予約日時、終了日時、選択したサービス名、予約の状態だけ");
+    expect(activeBody).toContain("予定の重複を防ぐ復元不能な識別子、予定作成時刻だけ");
     expect(activeBody).toContain("専用 URL を知る人は予定を閲覧できます");
 
     feedSecret = undefined;

@@ -2072,9 +2072,7 @@ const handleCalendarFeed = async (
   env: AppEnv,
   url: URL,
 ): Promise<Response> => {
-  if (request.method !== "GET") {
-    return errorResponse(405, "BAD_REQUEST", { allow: "GET" });
-  }
+  if (request.method !== "GET") return calendarFeedNotFound();
   if (await limited(env.PUBLIC_RATE_LIMITER, request, "calendar-feed")) {
     return calendarFeedNotFound();
   }
@@ -2229,7 +2227,7 @@ const LINE_PRIVACY_SECTION = `<h2>LINE 連携を利用する場合</h2>
 
 const CALENDAR_PRIVACY_SECTION = `<h2>カレンダー連携を利用する場合</h2>
       <p>
-        この設置では、予約枠をカレンダーへ表示する任意連携を有効にしています。連携する情報は予約日時、終了日時、選択したサービス名、予約の状態だけです。お名前、ご連絡先、担当・設備、管理キー、予約番号はカレンダーへ送りません。
+        この設置では、予約枠をカレンダーへ表示する任意連携を有効にしています。連携する情報は予約日時、終了日時、選択したサービス名、予約の状態、予定の重複を防ぐ復元不能な識別子、予定作成時刻だけです。お名前、ご連絡先、担当・設備、管理キー、予約番号はカレンダーへ送りません。
       </p>
       <p>
         購読用カレンダーを有効にしている場合、専用 URL を知る人は予定を閲覧できます。URL を公開場所、アクセス解析、問い合わせ、画像へ載せず、漏れた可能性があるときは運営者が専用トークンを交換します。Google カレンダーへの送信を有効にしている場合、予定には元の予約番号から直接戻せない識別子を使い、Google 側での取り扱いは Google の利用規約とプライバシーポリシーに従います。
@@ -2252,7 +2250,10 @@ const handlePrivacyPage = async (
   const discloseLine = linePublicConfig(context) !== null;
   const modes = calendarModes(env);
   let discloseCalendar = modes.feed || modes.google;
-  if (!discloseCalendar) {
+  if (
+    !discloseCalendar &&
+    !(await limited(env.PUBLIC_RATE_LIMITER, request, "privacy-disclosure"))
+  ) {
     try {
       discloseCalendar = await calendarAdapterStub(env).hasDisclosure();
     } catch {
