@@ -475,9 +475,11 @@ const normalizeActor = (
   }
   return {
     subject: value.subject,
-    capabilities: [...new Set(value.capabilities)].sort((left, right) =>
-      left < right ? -1 : left > right ? 1 : 0,
-    ),
+    capabilities: [...new Set(value.capabilities)].sort((left, right) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    }),
   };
 };
 

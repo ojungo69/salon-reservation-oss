@@ -627,7 +627,11 @@ const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!isRecord(value)) throw new Error("Cannot canonicalize unsupported value");
   return `{${Object.keys(value)
-    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+    .sort((left, right) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    })
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
     .join(",")}}`;
 };

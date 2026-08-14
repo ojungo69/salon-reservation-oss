@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -106,7 +106,13 @@ const readManifest = () => {
   if (new Set(paths).size !== paths.length) fail("public manifest has duplicate paths");
   if (
     paths.join("\n") !==
-    [...paths].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)).join("\n")
+    [...paths]
+      .sort((left, right) => {
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+      })
+      .join("\n")
   ) {
     fail("public manifest must be sorted");
   }
@@ -132,16 +138,16 @@ const loadDenylist = (argument) => {
   const defaultPath = join(ROOT, ".release-private-denylist");
   const path = argument === null ? defaultPath : resolve(argument);
   if (argument !== null) {
+    // Explicit --denylist is the private snapshot. The assembler copies it to
+    // mktemp and README requires the live file to stay outside both trees, so
+    // containment under ROOT would reject the documented path.
     let canonical;
     try {
       canonical = realpathSync(path);
     } catch {
       fail("denylist path is not readable");
     }
-    const root = realpathSync(ROOT);
-    if (canonical !== root && !canonical.startsWith(`${root}${sep}`)) {
-      fail("denylist path escapes the repository");
-    }
+    if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
   }
   try {
     const terms = readFileSync(path, "utf8")
