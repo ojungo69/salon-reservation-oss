@@ -14,8 +14,8 @@ if [[ ! -f "$denylist" || ! -r "$denylist" ]]; then
   echo "private denylist does not exist: $denylist" >&2
   exit 66
 fi
-manifest_snapshot=$(mktemp)
-denylist_snapshot=$(mktemp)
+manifest_snapshot=$(TMPDIR=/tmp mktemp)
+denylist_snapshot=$(TMPDIR=/tmp mktemp)
 trap 'rm -f -- "$manifest_snapshot" "$denylist_snapshot"' EXIT
 cp -pP -- "$source_root/release/public-files.txt" "$manifest_snapshot"
 cp -L -- "$denylist" "$denylist_snapshot"

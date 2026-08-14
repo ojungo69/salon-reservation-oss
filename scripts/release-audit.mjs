@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -134,23 +134,38 @@ const readManifest = () => {
   return paths;
 };
 
+const isInside = (canonical, base) =>
+  canonical === base || canonical.startsWith(`${base}${sep}`);
+
 const loadDenylist = (argument) => {
   const defaultPath = join(ROOT, ".release-private-denylist");
   const path = argument === null ? defaultPath : resolve(argument);
+  let source = path;
   if (argument !== null) {
-    // Explicit --denylist is the private snapshot. The assembler copies it to
-    // mktemp and README requires the live file to stay outside both trees, so
-    // containment under ROOT would reject the documented path.
+    // Assembler snapshots with TMPDIR=/tmp mktemp. Live terms stay outside both trees.
+    // After realpath, only the repo and the fixed system temp roots are readable.
     let canonical;
     try {
       canonical = realpathSync(path);
     } catch {
       fail("denylist path is not readable");
     }
+    const root = realpathSync(ROOT);
+    const temps = ["/tmp", "/var/tmp"].flatMap((dir) => {
+      try {
+        return [realpathSync(dir)];
+      } catch {
+        return [];
+      }
+    });
+    if (!isInside(canonical, root) && !temps.some((base) => isInside(canonical, base))) {
+      fail("denylist path is not under the repository or a system temp directory");
+    }
     if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
+    source = canonical;
   }
   try {
-    const terms = readFileSync(path, "utf8")
+    const terms = readFileSync(source, "utf8")
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line !== "" && !line.startsWith("#"));
