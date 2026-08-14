@@ -14,17 +14,16 @@ const rowFor = (card) => {
   const label = document.createElement("p");
   label.className = "section-label";
   label.textContent = "LINE 通知";
-  const status = document.createElement("p");
+  const status = document.createElement("output");
   status.dataset.lineLinkStatus = "";
   status.className = "status";
-  status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   const actions = document.createElement("div");
   actions.dataset.lineLinkActions = "";
   actions.className = "button-row";
   row.append(label, status, actions);
   const summary = card.querySelector("[data-booking-summary]");
-  if (summary) summary.insertAdjacentElement("afterend", row);
+  if (summary) summary.after(row);
   else card.append(row);
   return row;
 };
@@ -58,7 +57,7 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
         for (const target of siblings) {
           if (target.isConnected) target.disabled = false;
         }
-        if (actions !== null && actions.isConnected) actions.removeAttribute("aria-busy");
+        if (actions?.isConnected) actions.removeAttribute("aria-busy");
         if (focusedRow !== null && card !== null) {
           if (element.isConnected && !element.disabled) element.focus();
           else keepFocus(focusedRow, card, true);

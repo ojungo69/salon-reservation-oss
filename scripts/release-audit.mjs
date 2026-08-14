@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,7 +79,7 @@ const readText = (path) => readFileSync(join(ROOT, path), "utf8");
 // For the config files compared byte for byte. Their content is what is being
 // pinned, and a contributor cloning on Windows with core.autocrlf=true would
 // otherwise fail the audit over line endings npm and nvm both ignore.
-const readLines = (path) => readText(path).replace(/\r\n/g, "\n");
+const readLines = (path) => readText(path).replaceAll("\r\n", "\n");
 
 const parseArguments = () => {
   let publicTree = false;
@@ -104,7 +104,16 @@ const readManifest = () => {
   const paths = raw.split("\n").filter(Boolean);
   if (paths.length === 0) fail("public manifest is empty");
   if (new Set(paths).size !== paths.length) fail("public manifest has duplicate paths");
-  if (paths.join("\n") !== [...paths].sort().join("\n")) {
+  if (
+    paths.join("\n") !==
+    [...paths]
+      .sort((left, right) => {
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+      })
+      .join("\n")
+  ) {
     fail("public manifest must be sorted");
   }
   for (const path of paths) {
@@ -125,9 +134,43 @@ const readManifest = () => {
   return paths;
 };
 
+const realpathOrEmpty = (dir) => {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return "";
+  }
+};
+
+const confineDenylistPath = (path) => {
+  // Assembler snapshots with TMPDIR=/tmp mktemp. Live terms stay outside both trees.
+  // After realpath, only the repo and the fixed system temp roots are readable.
+  let canonical;
+  try {
+    canonical = realpathSync(path);
+  } catch {
+    fail("denylist path is not readable");
+  }
+  const root = realpathSync(ROOT);
+  const tmpRoot = realpathOrEmpty("/tmp");
+  const varTmpRoot = realpathOrEmpty("/var/tmp");
+  if (
+    canonical !== root &&
+    !canonical.startsWith(`${root}${sep}`) &&
+    (tmpRoot === "" ||
+      (canonical !== tmpRoot && !canonical.startsWith(`${tmpRoot}${sep}`))) &&
+    (varTmpRoot === "" ||
+      (canonical !== varTmpRoot && !canonical.startsWith(`${varTmpRoot}${sep}`)))
+  ) {
+    fail("denylist path is not under the repository or a system temp directory");
+  }
+  if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
+};
+
 const loadDenylist = (argument) => {
   const defaultPath = join(ROOT, ".release-private-denylist");
   const path = argument === null ? defaultPath : resolve(argument);
+  if (argument !== null) confineDenylistPath(path);
   try {
     const terms = readFileSync(path, "utf8")
       .split("\n")
@@ -158,7 +201,9 @@ const scanText = (label, text, denylist) => {
     ["live payment secret", /\bsk_live_[A-Za-z0-9]{16,}\b/],
     ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
   ];
-  const forbiddenRoots = ["home", "Users"].map((name) => new RegExp(`/${name}/[^/\\s]+/`));
+  const forbiddenRoots = ["home", "Users"].map(
+    (name) => new RegExp(String.raw`/${name}/[^/\s]+/`),
+  );
   const email = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
   const secretName =
     "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
@@ -406,8 +451,16 @@ const auditAuthForms = () => {
   }
 };
 
+const resolveGit = () => {
+  const path = ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"].find((candidate) =>
+    existsSync(candidate),
+  );
+  if (path === undefined) fail("git executable not found in a fixed directory");
+  return path;
+};
+
 const git = (args) =>
-  execFileSync("git", ["-C", ROOT, ...args], {
+  execFileSync(resolveGit(), ["-C", ROOT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
@@ -437,7 +490,7 @@ const auditPublicTree = (paths, denylist) => {
   }
   const metadata = git(["show", "-s", "--format=%an%n%ae%n%cn%n%ce%n%B", "HEAD"]);
   scanText("commit metadata", metadata, denylist);
-  execFileSync("git", ["-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
+  execFileSync(resolveGit(), ["-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
     stdio: ["ignore", "ignore", "pipe"],
   });
 };

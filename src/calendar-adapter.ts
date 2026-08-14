@@ -16,7 +16,7 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 const GOOGLE_KEYS = ["calendarId", "clientId", "clientSecret", "refreshToken"] as const;
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3/calendars";
-const CALENDAR_ORIGINS = ["https://www.googleapis.com"];
+const CALENDAR_ORIGINS = new Set(["https://www.googleapis.com"]);
 const RESPONSE_MAX_BYTES = 16 * 1024;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -114,10 +114,10 @@ export const calendarIdentifiers = async (
 
 export const escapeCalendarText = (value: string): string =>
   value
-    .replaceAll("\\", "\\\\")
-    .replace(/\r\n|\r|\n/g, "\\n")
-    .replaceAll(",", "\\,")
-    .replaceAll(";", "\\;");
+    .replaceAll("\u005c", "\u005c\u005c")
+    .replace(/\r\n|\r|\n/g, "\u005cn")
+    .replaceAll(",", "\u005c,")
+    .replaceAll(";", "\u005c;");
 
 export const foldCalendarLine = (value: string): string => {
   const encoder = new TextEncoder();
@@ -261,7 +261,9 @@ export const requestGoogleAccessToken = async (
   }
   try {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("token response is not an object");
+    }
     const record = parsed as Record<string, unknown>;
     if (
       !boundedSecret(record.access_token, 4_096) ||
@@ -270,7 +272,7 @@ export const requestGoogleAccessToken = async (
       (record.expires_in as number) < 1 ||
       (record.expires_in as number) > 86_400
     ) {
-      throw new Error();
+      throw new Error("token response is missing required fields");
     }
     return {
       ok: true,
@@ -341,7 +343,7 @@ const calendarRequest = async (
 ): Promise<Response | null> => {
   try {
     const target = new URL(url);
-    if (CALENDAR_ORIGINS.includes(target.origin)) {
+    if (CALENDAR_ORIGINS.has(target.origin)) {
       return await fetch(target, {
         ...init,
         redirect: "manual",
@@ -361,31 +363,77 @@ const responseOutcome = async (response: Response): Promise<GoogleMutationOutcom
   return { kind, status: response.status };
 };
 
-export const sendGoogleMutation = async (
+const parseUpsertPayload = (row: {
+  operation: string;
+  payload_json: string | null;
+  external_id: string;
+}): CalendarProjection | null => {
+  if (row.operation !== "upsert") return null;
+  try {
+    const parsed = JSON.parse(row.payload_json ?? "null") as CalendarProjection;
+    if (
+      typeof parsed !== "object" ||
+      parsed?.externalId !== row.external_id ||
+      typeof parsed.uid !== "string" ||
+      typeof parsed.stampAt !== "string" ||
+      typeof parsed.startAt !== "string" ||
+      typeof parsed.endAt !== "string" ||
+      typeof parsed.serviceLabel !== "string" ||
+      (parsed.status !== "tentative" && parsed.status !== "confirmed")
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const acceptedEventDisposition = (
+  event: AdapterOutboxEvent,
+  generation: number,
+  latest: number | undefined,
+  projectedSeq: number | undefined,
+): string => {
+  if (event.generation !== generation) return "stale-generation";
+  if (event.purgeAt <= Date.now()) return "past-retention";
+  if (projectedSeq !== undefined && event.seq <= projectedSeq) return "reconciled";
+  if (latest !== undefined && latest !== null && event.seq <= latest) return "duplicate";
+  if (event.endTime === null || event.reservationStatus === null) return "invalid";
+  return "projected";
+};
+
+const googleHeaders = (accessToken: string): HeadersInit => ({
+  authorization: `Bearer ${accessToken}`,
+  "content-type": "application/json",
+});
+
+const sendGoogleDelete = async (
   credentials: GoogleCalendarCredentials,
   accessToken: string,
-  operation: "upsert" | "delete",
-  event: CalendarProjection | null,
   externalId: string,
   purgeAt: number,
 ): Promise<GoogleMutationOutcome> => {
-  const headers = {
-    authorization: `Bearer ${accessToken}`,
-    "content-type": "application/json",
-  };
-  if (operation === "delete") {
-    if (purgeAt <= Date.now()) return { kind: "expired", status: null };
-    const response = await calendarRequest(googleEventUrl(credentials.calendarId, externalId), {
-      method: "DELETE",
-      headers,
-    });
-    if (response === null) return { kind: "retryable", status: null };
-    if ((response.status >= 200 && response.status < 300) || [404, 410].includes(response.status)) {
-      return { kind: "success", status: response.status };
-    }
-    return responseOutcome(response);
+  if (purgeAt <= Date.now()) return { kind: "expired", status: null };
+  const response = await calendarRequest(googleEventUrl(credentials.calendarId, externalId), {
+    method: "DELETE",
+    headers: googleHeaders(accessToken),
+  });
+  if (response === null) return { kind: "retryable", status: null };
+  if ((response.status >= 200 && response.status < 300) || [404, 410].includes(response.status)) {
+    return { kind: "success", status: response.status };
   }
-  if (event === null) return { kind: "permanent", status: null };
+  return responseOutcome(response);
+};
+
+const sendGoogleUpsert = async (
+  credentials: GoogleCalendarCredentials,
+  accessToken: string,
+  event: CalendarProjection,
+  externalId: string,
+  purgeAt: number,
+): Promise<GoogleMutationOutcome> => {
+  const headers = googleHeaders(accessToken);
   const update = () =>
     calendarRequest(googleEventUrl(credentials.calendarId, externalId), {
       method: "PUT",
@@ -399,6 +447,16 @@ export const sendGoogleMutation = async (
     return { kind: "success", status: first.status };
   }
   if (first.status !== 404) return responseOutcome(first);
+  return insertOrConvergeGoogleEvent(credentials, event, headers, update, purgeAt);
+};
+
+const insertOrConvergeGoogleEvent = async (
+  credentials: GoogleCalendarCredentials,
+  event: CalendarProjection,
+  headers: HeadersInit,
+  update: () => Promise<Response | null>,
+  purgeAt: number,
+): Promise<GoogleMutationOutcome> => {
   if (purgeAt <= Date.now()) return { kind: "expired", status: null };
   const inserted = await calendarRequest(googleEventUrl(credentials.calendarId), {
     method: "POST",
@@ -415,6 +473,21 @@ export const sendGoogleMutation = async (
   const converged = await update();
   if (converged === null) return { kind: "retryable", status: null };
   return responseOutcome(converged);
+};
+
+export const sendGoogleMutation = async (
+  credentials: GoogleCalendarCredentials,
+  accessToken: string,
+  operation: "upsert" | "delete",
+  event: CalendarProjection | null,
+  externalId: string,
+  purgeAt: number,
+): Promise<GoogleMutationOutcome> => {
+  if (operation === "delete") {
+    return sendGoogleDelete(credentials, accessToken, externalId, purgeAt);
+  }
+  if (event === null) return { kind: "permanent", status: null };
+  return sendGoogleUpsert(credentials, accessToken, event, externalId, purgeAt);
 };
 
 type CalendarState = "active" | "deactivating" | "disabled";
@@ -948,6 +1021,75 @@ export class CalendarAdapter extends DurableObject<Env> {
     return descriptor;
   }
 
+  #writeProjectedEvent(
+    sql: DurableObject["ctx"]["storage"]["sql"],
+    meta: CalendarMeta,
+    event: AdapterOutboxEvent,
+    ids: { uid: string; externalId: string },
+  ): "projected" | "overflow" | "removed" | null {
+    if (event.reservationStatus === "pending" || event.reservationStatus === "approved") {
+      const existing = sql
+        .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
+        .toArray()[0];
+      const count =
+        sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]?.n ?? 0;
+      if (existing === undefined && count >= CALENDAR_ROW_CAP) return "overflow";
+      const projection: CalendarProjection = {
+        uid: ids.uid,
+        externalId: ids.externalId,
+        stampAt: existing?.stamp_at ?? event.occurredAt,
+        startAt: calendarInstant(event.date, event.startTime),
+        endAt: calendarInstant(event.date, event.endTime as string),
+        serviceLabel: event.serviceLabel,
+        status: event.reservationStatus === "pending" ? "tentative" : "confirmed",
+      };
+      sql.exec(
+        `INSERT OR REPLACE INTO projections
+           (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
+            service_label, status, purge_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        event.reservationId,
+        projection.externalId,
+        projection.uid,
+        event.date,
+        projection.stampAt,
+        projection.startAt,
+        projection.endAt,
+        projection.serviceLabel,
+        projection.status,
+        event.purgeAt,
+      );
+      if (meta.googleSeen) {
+        this.#queueMutation(
+          event.reservationId,
+          ids.externalId,
+          "upsert",
+          projection,
+          meta.generation,
+          event.purgeAt,
+          googleReady(meta),
+        );
+      }
+      return "projected";
+    }
+    sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
+    if (
+      meta.googleSeen &&
+      !this.#queueMutation(
+        event.reservationId,
+        ids.externalId,
+        "delete",
+        null,
+        meta.generation,
+        event.purgeAt,
+        googleReady(meta),
+      )
+    ) {
+      return null;
+    }
+    return "removed";
+  }
+
   async #acceptEvents(events: AdapterOutboxEvent[]): Promise<number | null> {
     const now = Date.now();
     this.#pruneRetention(now);
@@ -1004,7 +1146,6 @@ export class CalendarAdapter extends DurableObject<Env> {
         ) {
           continue;
         }
-        let disposition = "projected";
         const latest = sql
           .exec<{ seq: number }>(
             `SELECT MAX(seq) AS seq FROM accepted_events
@@ -1021,77 +1162,11 @@ export class CalendarAdapter extends DurableObject<Env> {
             event.generation,
           )
           .toArray()[0]?.seq;
-        if (event.generation !== meta.generation) disposition = "stale-generation";
-        else if (event.purgeAt <= Date.now()) disposition = "past-retention";
-        else if (projectedSeq !== undefined && event.seq <= projectedSeq) {
-          disposition = "reconciled";
-        } else if (latest !== undefined && latest !== null && event.seq <= latest) {
-          disposition = "duplicate";
-        } else if (event.endTime === null || event.reservationStatus === null) {
-          disposition = "invalid";
-        } else if (event.reservationStatus === "pending" || event.reservationStatus === "approved") {
-          const existing = sql
-            .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
-            .toArray()[0];
-          const count = sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]
-            ?.n ?? 0;
-          if (existing === undefined && count >= CALENDAR_ROW_CAP) {
-            disposition = "overflow";
-          } else {
-            const projection: CalendarProjection = {
-              uid: ids.uid,
-              externalId: ids.externalId,
-              stampAt: existing?.stamp_at ?? event.occurredAt,
-              startAt: calendarInstant(event.date, event.startTime),
-              endAt: calendarInstant(event.date, event.endTime),
-              serviceLabel: event.serviceLabel,
-              status: event.reservationStatus === "pending" ? "tentative" : "confirmed",
-            };
-            sql.exec(
-              `INSERT OR REPLACE INTO projections
-                 (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
-                  service_label, status, purge_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              event.reservationId,
-              projection.externalId,
-              projection.uid,
-              event.date,
-              projection.stampAt,
-              projection.startAt,
-              projection.endAt,
-              projection.serviceLabel,
-              projection.status,
-              event.purgeAt,
-            );
-            if (meta.googleSeen) {
-              this.#queueMutation(
-                event.reservationId,
-                ids.externalId,
-                "upsert",
-                projection,
-                meta.generation,
-                event.purgeAt,
-                googleReady(meta),
-              );
-            }
-          }
-        } else {
-          sql.exec("DELETE FROM projections WHERE reservation_id = ?", event.reservationId);
-          if (
-            meta.googleSeen &&
-            !this.#queueMutation(
-              event.reservationId,
-              ids.externalId,
-              "delete",
-              null,
-              meta.generation,
-              event.purgeAt,
-              googleReady(meta),
-            )
-          ) {
-            return null;
-          }
-          disposition = "removed";
+        let disposition = acceptedEventDisposition(event, meta.generation, latest, projectedSeq);
+        if (disposition === "projected") {
+          const written = this.#writeProjectedEvent(sql, meta, event, ids);
+          if (written === null) return null;
+          disposition = written;
         }
         sql.exec(
           `INSERT INTO accepted_events
@@ -1452,7 +1527,7 @@ export class CalendarAdapter extends DurableObject<Env> {
           .toArray()[0];
         if (row === undefined) return null;
         const meta = this.#readMeta();
-        if (row.purge_at <= now || meta === null || row.generation !== meta.generation) {
+        if (row.purge_at <= now || row.generation !== meta?.generation) {
           this.#record(
             row.purge_at <= now ? "past-retention" : "stale-generation",
             row.operation,
@@ -1520,8 +1595,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         )
         .toArray()[0];
       if (
-        fresh === undefined ||
-        fresh.status !== "sending" ||
+        fresh?.status !== "sending" ||
         fresh.generation !== row.generation ||
         fresh.desired_version !== row.desired_version ||
         fresh.claimed_version !== row.desired_version
@@ -1604,33 +1678,15 @@ export class CalendarAdapter extends DurableObject<Env> {
         );
         return;
       }
-      let event: CalendarProjection | null = null;
-      if (row.operation === "upsert") {
-        try {
-          const parsed = JSON.parse(row.payload_json ?? "null") as CalendarProjection;
-          if (
-            typeof parsed !== "object" ||
-            parsed === null ||
-            parsed.externalId !== row.external_id ||
-            typeof parsed.uid !== "string" ||
-            typeof parsed.stampAt !== "string" ||
-            typeof parsed.startAt !== "string" ||
-            typeof parsed.endAt !== "string" ||
-            typeof parsed.serviceLabel !== "string" ||
-            (parsed.status !== "tentative" && parsed.status !== "confirmed")
-          ) {
-            throw new Error("invalid payload");
-          }
-          event = parsed;
-        } catch {
-          this.#settleGoogle(
-            row,
-            { kind: "permanent", status: null },
-            Date.now(),
-            credentialFingerprint,
-          );
-          continue;
-        }
+      const event = parseUpsertPayload(row);
+      if (row.operation === "upsert" && event === null) {
+        this.#settleGoogle(
+          row,
+          { kind: "permanent", status: null },
+          Date.now(),
+          credentialFingerprint,
+        );
+        continue;
       }
       const outcome = await sendGoogleMutation(
         credentials,
@@ -1693,28 +1749,31 @@ export class CalendarAdapter extends DurableObject<Env> {
       await this.#armAlarm(now + ADAPTER.SWEEP_REARM_DELAY_S * 1_000);
       return;
     }
-    if (meta.state === "deactivating") {
-      this.ctx.storage.transactionSync(() => {
-        const current = this.#readMeta();
-        if (current?.state !== "deactivating" || current.generation !== meta.generation) return;
-        const sql = this.ctx.storage.sql;
-        sql.exec("DELETE FROM accepted_events");
-        sql.exec("DELETE FROM projections");
-        sql.exec("DELETE FROM google_mutations");
-        sql.exec("DELETE FROM projection_watermarks");
-        sql.exec("DELETE FROM ledger");
-        sql.exec("DELETE FROM counters");
-        sql.exec(
-          `UPDATE meta SET state = 'disabled', purge_completed_at = ?,
-                  sweep_cursor = NULL, reconcile_cursor = NULL
-           WHERE singleton = 1`,
-          now,
-        );
-      });
-    } else {
+    if (meta.state === "deactivating") this.#finishDeactivating(meta.generation, now);
+    else {
       this.ctx.storage.sql.exec("UPDATE meta SET sweep_cursor = NULL WHERE singleton = 1");
       await this.#armAlarm(now + ADAPTER.SWEEP_REARM_DELAY_S * 1_000);
     }
+  }
+
+  #finishDeactivating(generation: number, now: number): void {
+    this.ctx.storage.transactionSync(() => {
+      const current = this.#readMeta();
+      if (current?.state !== "deactivating" || current.generation !== generation) return;
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM accepted_events");
+      sql.exec("DELETE FROM projections");
+      sql.exec("DELETE FROM google_mutations");
+      sql.exec("DELETE FROM projection_watermarks");
+      sql.exec("DELETE FROM ledger");
+      sql.exec("DELETE FROM counters");
+      sql.exec(
+        `UPDATE meta SET state = 'disabled', purge_completed_at = ?,
+                sweep_cursor = NULL, reconcile_cursor = NULL
+         WHERE singleton = 1`,
+        now,
+      );
+    });
   }
 
   override async alarm(): Promise<void> {

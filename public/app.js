@@ -109,6 +109,17 @@ const staleOwnerSessionError = () => {
   return error;
 };
 
+const createOwnerApi = (getToken) => async (path, options = {}) => {
+  const token = getToken();
+  if (!token) throw staleOwnerSessionError();
+  const response = await api(path, {
+    ...options,
+    headers: { authorization: `Bearer ${token}`, ...options.headers },
+  });
+  if (getToken() !== token) throw staleOwnerSessionError();
+  return response;
+};
+
 const jstToday = () =>
   new Date(Date.now() + 9 * 60 * 60 * 1_000).toISOString().slice(0, 10);
 
@@ -120,8 +131,8 @@ const addDays = (date, amount) =>
 const newManagementKey = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  for (const byte of bytes) binary += String.fromCodePoint(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 };
 
 const digestHex = async (value) => {
@@ -158,6 +169,154 @@ const formatDeadline = (iso) =>
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(iso));
+
+const reviewHelpText = (pending, mode, turnstileToken) => {
+  if (pending) return "前回の受付結果だけを再確認できます。新しい予約は作成しません。";
+  if (mode !== "live") {
+    return "デモ・設定中のため送信できません。実在する方の情報は入力しないでください。";
+  }
+  if (turnstileToken) return "送信時に空き状況をもう一度確認します。";
+  return "内容を確認し、自動送信防止の確認を完了すると送信できます。";
+};
+
+const bookingStatusDescription = (booking, statusLabel) => {
+  if (booking.rejectionReason) {
+    return `${STATUS_LABELS[booking.status] ?? booking.status}（${booking.rejectionReason}）`;
+  }
+  if (booking.expiresAt) {
+    return `${statusLabel}（${formatDeadline(booking.expiresAt)}までに確認されないと期限切れになります）`;
+  }
+  return statusLabel;
+};
+
+const liveButtonLabel = (pendingLive, mode) => {
+  if (pendingLive) return "未確認の切替結果を再確認する";
+  if (mode === "live") return "公開予約を停止してデモに戻す";
+  return "公開予約を有効にする";
+};
+
+const setupHelpText = (authenticated, pending, accepting, setupState) => {
+  if (!authenticated) return "認証すると、各項目の編集と保存ができるようになります。";
+  if (pending) return "前回の結果が未確認です。同じ操作を再送して確認できます。";
+  if (accepting) return "現在は公開予約を受け付けています。設定変更は新しい版として保存されます。";
+  if (setupState.mode === "live") {
+    return "公開設定は有効ですが、保護設定が不足しているため受付は停止中です。要確認の項目を復旧してください。";
+  }
+  if (setupState.readiness.ready) {
+    return "4つの準備が完了しました。内容を確認して公開予約を有効にできます。";
+  }
+  return "要確認の項目を修正して設定を保存してください。";
+};
+
+const firstVisible = (root, selector) =>
+  [...root.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
+
+const collectRejectReason = (detailStatus) => {
+  const reason = window.prompt("お客様にも表示する見送り理由を200文字以内で入力してください。");
+  if (reason === null) return null;
+  if (!reason.trim() || Array.from(reason.trim()).length > 200) {
+    setStatus(detailStatus, "見送り理由を1〜200文字で入力してください。", "error");
+    return null;
+  }
+  return reason.trim();
+};
+
+const collectRescheduleSlot = async (reservation, ownerApi, detailStatus) => {
+  setStatus(detailStatus, "同じ日の空き時間を確認しています。");
+  let available;
+  try {
+    available = await ownerApi(
+      availabilityPath(
+        reservation.date,
+        reservation.services.map(({ id }) => id),
+        reservation.reservationId,
+        "/api/admin/availability",
+      ),
+    );
+  } catch (error) {
+    setStatus(detailStatus, error.message, "error");
+    return null;
+  }
+  const resources = available.resources.filter(({ startTimes }) => startTimes.length);
+  if (!resources.length) {
+    setStatus(detailStatus, "同じ日に移動できる空き時間がありません。", "error");
+    return null;
+  }
+  const resourceId = window.prompt(
+    `移動先の識別子を入力してください。\n${resources.map(({ id, label }) => id + ": " + label).join("\n")}`,
+    resources[0].id,
+  );
+  if (resourceId === null) return null;
+  const resource = resources.find(({ id }) => id === resourceId.trim());
+  if (!resource) {
+    setStatus(detailStatus, "一覧にある担当・設備を選んでください。", "error");
+    return null;
+  }
+  const startTime = window.prompt(
+    `開始時間を入力してください。\n${resource.startTimes.join(" / ")}`,
+    resource.startTimes[0],
+  );
+  if (startTime === null) return null;
+  if (!resource.startTimes.includes(startTime.trim())) {
+    setStatus(detailStatus, "一覧にある開始時間を選んでください。", "error");
+    return null;
+  }
+  return { resourceId: resource.id, startTime: startTime.trim() };
+};
+
+const confirmDestructiveTransition = (action) => {
+  const message =
+    action === "cancel"
+      ? "この予約を取り消します。元に戻せません。続けますか？"
+      : "この予約を無断不来として記録しますか？";
+  return window.confirm(message);
+};
+
+const collectTransitionCommand = async (action, reservation, ownerApi, detailStatus) => {
+  const command = { commandId: crypto.randomUUID(), date: reservation.date, action };
+  if (action === "reject") {
+    const reason = collectRejectReason(detailStatus);
+    if (reason === null) return null;
+    command.reason = reason;
+    return command;
+  }
+  if (action === "reschedule") {
+    const slot = await collectRescheduleSlot(reservation, ownerApi, detailStatus);
+    if (slot === null) return null;
+    command.resourceId = slot.resourceId;
+    command.startTime = slot.startTime;
+    return command;
+  }
+  if (["cancel", "no_show"].includes(action) && !confirmDestructiveTransition(action)) {
+    return null;
+  }
+  return command;
+};
+
+const lookupDuplicateAcknowledgement = async (lookupDate, api, readOwnedRecords) => {
+  const candidates = duplicateCheckCandidates(readOwnedRecords(), lookupDate, Date.now());
+  const statuses = await Promise.all(
+    candidates.map(async (record) => {
+      try {
+        const booking = await api(
+          `/api/reservations/${encodeURIComponent(record.reservationId)}/status`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              date: record.date,
+              managementKey: record.managementKey,
+            }),
+          },
+        );
+        return booking.status;
+      } catch {
+        // A failed lookup never blocks the booking.
+        return null;
+      }
+    }),
+  );
+  return duplicateAcknowledgementNeeded(statuses);
+};
 
 const sourceUrl = (value) => {
   try {
@@ -251,8 +410,8 @@ const clearDraft = () => {
 const availabilityPath = (
   date,
   serviceIds,
-  path = "/api/availability",
   reservationId,
+  path = "/api/availability",
 ) => {
   const query = new URLSearchParams({ date });
   for (const serviceId of serviceIds) query.append("serviceId", serviceId);
@@ -408,13 +567,11 @@ const startCustomer = async () => {
     $("[data-journey-help='details']").textContent = detailsReady
       ? "入力内容を確認しました。予約内容の確認へ進めます。"
       : "お名前、ご連絡先、同意を確認すると内容を確認できます。";
-    $("[data-journey-help='review']").textContent = pending
-      ? "前回の受付結果だけを再確認できます。新しい予約は作成しません。"
-      : config?.mode !== "live"
-        ? "デモ・設定中のため送信できません。実在する方の情報は入力しないでください。"
-        : turnstileToken
-          ? "送信時に空き状況をもう一度確認します。"
-          : "内容を確認し、自動送信防止の確認を完了すると送信できます。";
+    $("[data-journey-help='review']").textContent = reviewHelpText(
+      pending,
+      config?.mode,
+      turnstileToken,
+    );
   };
 
   const setPendingMode = () => {
@@ -865,11 +1022,11 @@ const startCustomer = async () => {
         // Prefer a service checkbox the active filter still shows; when the
         // query hides them all, fall back to any visible input (the filter
         // box itself), because focus() inside a hidden option is a no-op.
-        const visibleInput = (selector) =>
-          [...target.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
         focusWithoutScroll(
           target.matches("fieldset")
-            ? (visibleInput("input[name='serviceIds']") ?? visibleInput("input") ?? target)
+            ? (firstVisible(target, "input[name='serviceIds']") ??
+              firstVisible(target, "input") ??
+              target)
             : target,
         );
       });
@@ -908,35 +1065,10 @@ const startCustomer = async () => {
     if (!retrying && !duplicateAcknowledged) {
       busy = true;
       updateActions();
-      let needsAcknowledgement = false;
       const lookupDate = dateInput.value;
+      let needsAcknowledgement = false;
       try {
-        const candidates = duplicateCheckCandidates(
-          readOwnedRecords(),
-          lookupDate,
-          Date.now(),
-        );
-        const statuses = await Promise.all(
-          candidates.map(async (record) => {
-            try {
-              const booking = await api(
-                `/api/reservations/${encodeURIComponent(record.reservationId)}/status`,
-                {
-                  method: "POST",
-                  body: JSON.stringify({
-                    date: record.date,
-                    managementKey: record.managementKey,
-                  }),
-                },
-              );
-              return booking.status;
-            } catch {
-              // A failed lookup never blocks the booking.
-              return null;
-            }
-          }),
-        );
-        needsAcknowledgement = duplicateAcknowledgementNeeded(statuses);
+        needsAcknowledgement = await lookupDuplicateAcknowledgement(lookupDate, api, readOwnedRecords);
       } finally {
         busy = false;
         updateActions();
@@ -1178,11 +1310,10 @@ const startBookings = async () => {
     $("[data-booking-time]", card).textContent = formatDateTime(booking.date, booking.startTime);
     $("[data-booking-resource]", card).textContent = booking.resourceLabel;
     const statusLabel = STATUS_LABELS[booking.status] ?? "状態を確認できません";
-    $("[data-booking-status-description]", card).textContent = booking.rejectionReason
-      ? `${STATUS_LABELS[booking.status] ?? booking.status}（${booking.rejectionReason}）`
-      : booking.expiresAt
-        ? `${statusLabel}（${formatDeadline(booking.expiresAt)}までに確認されないと期限切れになります）`
-        : statusLabel;
+    $("[data-booking-status-description]", card).textContent = bookingStatusDescription(
+      booking,
+      statusLabel,
+    );
     $("[data-booking-allowed-actions]", card).textContent = booking.allowedActions.includes("cancel")
       ? "このページから取り消せます"
       : "現在利用できる操作はありません";
@@ -1304,7 +1435,7 @@ const startBookings = async () => {
     lineAdapter &&
     (typeof lineAdapter.liffId === "string" || lineAdapter.cleanup === true)
   ) {
-    import("/line-link.mjs")
+    import("./line-link.mjs")
       .then((module) => {
         enhanceLineCard = module.enhanceBookingCards({
           mode: typeof lineAdapter.liffId === "string" ? "capability" : "cleanup",
@@ -1388,16 +1519,7 @@ const startAdmin = async () => {
   filterField.append(filterLabel, statusFilter);
   $("[data-operator-toolbar]").insertBefore(filterField, scheduleLive);
 
-  const ownerApi = async (path, options = {}) => {
-    const token = ownerToken;
-    if (!token) throw staleOwnerSessionError();
-    const response = await api(path, {
-      ...options,
-      headers: { authorization: `Bearer ${token}`, ...options.headers },
-    });
-    if (ownerToken !== token) throw staleOwnerSessionError();
-    return response;
-  };
+  const ownerApi = createOwnerApi(() => ownerToken);
 
   const selectedOwnerServiceIds = () =>
     $$("input[name='ownerServiceIds']:checked", ownerServiceList).map(({ value }) => value);
@@ -1791,63 +1913,8 @@ const startAdmin = async () => {
     const key = `reservation:${reservation.reservationId}:${action}`;
     let command = commands.get(key);
     if (!command) {
-      command = { commandId: crypto.randomUUID(), date: reservation.date, action };
-      if (action === "reject") {
-        const reason = window.prompt("お客様にも表示する見送り理由を200文字以内で入力してください。");
-        if (reason === null) return;
-        if (!reason.trim() || Array.from(reason.trim()).length > 200) {
-          setStatus(detailStatus, "見送り理由を1〜200文字で入力してください。", "error");
-          return;
-        }
-        command.reason = reason.trim();
-      } else if (action === "reschedule") {
-        setStatus(detailStatus, "同じ日の空き時間を確認しています。");
-        let available;
-        try {
-          available = await ownerApi(
-            availabilityPath(
-              reservation.date,
-              reservation.services.map(({ id }) => id),
-              "/api/admin/availability",
-              reservation.reservationId,
-            ),
-          );
-        } catch (error) {
-          setStatus(detailStatus, error.message, "error");
-          return;
-        }
-        const resources = available.resources.filter(({ startTimes }) => startTimes.length);
-        if (!resources.length) {
-          setStatus(detailStatus, "同じ日に移動できる空き時間がありません。", "error");
-          return;
-        }
-        const resourceId = window.prompt(
-          `移動先の識別子を入力してください。\n${resources.map(({ id, label }) => `${id}: ${label}`).join("\n")}`,
-          resources[0].id,
-        );
-        if (resourceId === null) return;
-        const resource = resources.find(({ id }) => id === resourceId.trim());
-        if (!resource) {
-          setStatus(detailStatus, "一覧にある担当・設備を選んでください。", "error");
-          return;
-        }
-        const startTime = window.prompt(
-          `開始時間を入力してください。\n${resource.startTimes.join(" / ")}`,
-          resource.startTimes[0],
-        );
-        if (startTime === null) return;
-        if (!resource.startTimes.includes(startTime.trim())) {
-          setStatus(detailStatus, "一覧にある開始時間を選んでください。", "error");
-          return;
-        }
-        command.resourceId = resource.id;
-        command.startTime = startTime.trim();
-      } else if (["cancel", "no_show"].includes(action)) {
-        const message = action === "cancel"
-          ? "この予約を取り消します。元に戻せません。続けますか？"
-          : "この予約を無断不来として記録しますか？";
-        if (!window.confirm(message)) return;
-      }
+      command = await collectTransitionCommand(action, reservation, ownerApi, detailStatus);
+      if (command === null) return;
       commands.set(key, command);
     }
 
@@ -2160,16 +2227,7 @@ const startSetup = async () => {
   receiptDownload.disabled = true;
   receiptCopy.after(receiptDownload);
 
-  const ownerApi = async (path, options = {}) => {
-    const token = ownerToken;
-    if (!token) throw staleOwnerSessionError();
-    const response = await api(path, {
-      ...options,
-      headers: { authorization: `Bearer ${token}`, ...options.headers },
-    });
-    if (ownerToken !== token) throw staleOwnerSessionError();
-    return response;
-  };
+  const ownerApi = createOwnerApi(() => ownerToken);
 
   const labeledControl = (labelText, control) => {
     const row = createElement("div", "field-row");
@@ -2215,7 +2273,7 @@ const startSetup = async () => {
       const grid = createElement("div", "field-grid");
       const id = textInput(service.id, {
         maxLength: 64,
-        pattern: "[A-Za-z0-9][A-Za-z0-9._:\\-]{0,63}",
+        pattern: String.raw`[A-Za-z0-9][A-Za-z0-9._:\-]{0,63}`,
       });
       const label = textInput(service.label, { maxLength: 160 });
       const category = textInput(service.category ?? "", { maxLength: 120, required: false });
@@ -2288,7 +2346,7 @@ const startSetup = async () => {
       const grid = createElement("div", "field-grid");
       const id = textInput(resource.id, {
         maxLength: 64,
-        pattern: "[A-Za-z0-9][A-Za-z0-9._:\\-]{0,63}",
+        pattern: String.raw`[A-Za-z0-9][A-Za-z0-9._:\-]{0,63}`,
       });
       const label = textInput(resource.label, { maxLength: 160 });
       const active = activeSelect(resource.active);
@@ -2380,22 +2438,8 @@ const startSetup = async () => {
     const canSwitchLive = setupState?.mode === "live" || setupState?.readiness?.ready === true;
     liveButton.disabled = !authenticated || Boolean(pendingUpdate) || !canSwitchLive;
     saveButton.textContent = pendingUpdate ? "未確認の保存結果を再確認する" : "設定を保存する";
-    liveButton.textContent = pendingLive
-      ? "未確認の切替結果を再確認する"
-      : setupState?.mode === "live"
-        ? "公開予約を停止してデモに戻す"
-        : "公開予約を有効にする";
-    setupHelp.textContent = !authenticated
-      ? "認証すると、各項目の編集と保存ができるようになります。"
-      : pending
-        ? "前回の結果が未確認です。同じ操作を再送して確認できます。"
-        : accepting
-          ? "現在は公開予約を受け付けています。設定変更は新しい版として保存されます。"
-          : setupState.mode === "live"
-            ? "公開設定は有効ですが、保護設定が不足しているため受付は停止中です。要確認の項目を復旧してください。"
-          : setupState.readiness.ready
-            ? "4つの準備が完了しました。内容を確認して公開予約を有効にできます。"
-            : "要確認の項目を修正して設定を保存してください。";
+    liveButton.textContent = liveButtonLabel(pendingLive, setupState?.mode);
+    setupHelp.textContent = setupHelpText(authenticated, pending, accepting, setupState);
   };
 
   const renderSetupState = (state) => {
@@ -2792,8 +2836,10 @@ const starters = {
 
 const starter = starters[document.body.dataset.page];
 if (starter) {
-  starter().catch(() => {
-    const status = $("[role='status']");
+  try {
+    await starter();
+  } catch {
+    const status = $("output");
     setStatus(status, "画面を準備できませんでした。再読み込みしてお試しください。", "error");
-  });
+  }
 }

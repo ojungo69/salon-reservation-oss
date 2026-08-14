@@ -121,15 +121,18 @@ side-effect-free; adapters persist results and expose only safe projections.
 
 This development workspace is not a publication artifact. The original publisher must keep its
 private-name denylist outside both repositories. The isolated assembler requires it, snapshots it
-privately, creates the one root commit, and uses that snapshot for content and commit-metadata
-scans:
+into `/tmp`, creates the one root commit, and uses that snapshot for content and commit-metadata
+scans. A later `--denylist` path must resolve under the repository, `/tmp`, or `/var/tmp`:
 
 ```bash
 ./scripts/assemble-public-release.sh /new/release/tree /absolute/private-denylist
 cd /new/release/tree
 npm ci
 npm run check
-npm run release:audit:public -- --denylist /absolute/private-denylist
+denylist_snapshot=$(TMPDIR=/tmp mktemp)
+cp -L -- /absolute/private-denylist "$denylist_snapshot"
+npm run release:audit:public -- --denylist "$denylist_snapshot"
+rm -f -- "$denylist_snapshot"
 ```
 
 Never commit the raw denylist or a hash derived from its terms. Forks without private-source

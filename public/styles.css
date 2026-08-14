@@ -294,6 +294,11 @@ code,
   font-size: 1.05rem;
 }
 
+output.mode-notice,
+output.status {
+  display: block;
+}
+
 .mode-notice {
   max-width: 74ch;
   margin: 1.25rem 0 0;

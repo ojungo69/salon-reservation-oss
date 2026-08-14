@@ -39,6 +39,24 @@ const readIntent = () => {
   }
 };
 
+const applyLocationName = (config) => {
+  if (typeof config?.locationName === "string" && config.locationName.length > 0) {
+    for (const element of document.querySelectorAll("[data-location-name]")) {
+      element.textContent = config.locationName;
+    }
+  }
+};
+
+const loadLineConfig = async () => {
+  const configResponse = await fetch("/api/config", {
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+  });
+  if (!configResponse.ok) return null;
+  return configResponse.json();
+};
+
 const run = async () => {
   const intent = readIntent();
   if (intent === null) {
@@ -56,28 +74,19 @@ const run = async () => {
     return;
   }
 
-  const configResponse = await fetch("/api/config", {
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: { accept: "application/json" },
-  });
-  if (!configResponse.ok) {
+  const config = await loadLineConfig();
+  if (config === null) {
     show("設定を確認できませんでした。しばらく待ってからお試しください。", true);
     return;
   }
-  const config = await configResponse.json();
-  if (typeof config?.locationName === "string" && config.locationName.length > 0) {
-    for (const element of document.querySelectorAll("[data-location-name]")) {
-      element.textContent = config.locationName;
-    }
-  }
+  applyLocationName(config);
   const liffId = config?.lineAdapter?.liffId;
   if (typeof liffId !== "string") {
     show("現在 LINE 連携はご利用いただけません。", true);
     return;
   }
 
-  if (typeof globalThis.liff === "undefined") {
+  if (globalThis.liff === undefined) {
     show("LINE の読み込みに失敗しました。通信環境を確認して再読み込みしてください。", true);
     return;
   }
@@ -141,10 +150,12 @@ const run = async () => {
   show("現在連携を完了できません。しばらく待ってから、予約管理ページよりお試しください。", true);
 };
 
-run().catch(() => {
+try {
+  await run();
+} catch {
   // 通信断・応答の破損・LIFF SDK の例外など、想定外の失敗でも操作不能にはしない。
   show(
     "連携を完了できませんでした。通信環境を確認して、予約管理ページからもう一度お進みください。",
     true,
   );
-});
+}

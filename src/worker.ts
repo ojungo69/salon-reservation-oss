@@ -388,7 +388,7 @@ const adapterDescriptor = (
   context: InstallationContext,
 ): DayConfig["adapter"] | undefined => {
   const line = context.line;
-  if (line === undefined || line.generation === undefined) return undefined;
+  if (line?.generation === undefined) return undefined;
   if (line.phase !== "active" && line.phase !== "deactivating") return undefined;
   // Without the secret the adapter is in cleanup mode: it can still drain what
   // exists, but a fresh request must not create new outbox rows that nothing
@@ -1202,11 +1202,7 @@ const handleOwnerAvailability = async (
   const gate = await ownerGate(request, env, "owner-availability");
   if (gate !== null) return gate;
   const query = availabilityQuery(url, true);
-  if (
-    query === null ||
-    query.reservationId === undefined ||
-    !withinPartitionWindow(query.date, Date.now())
-  ) {
+  if (query?.reservationId === undefined || !withinPartitionWindow(query.date, Date.now())) {
     return errorResponse(400, "BAD_REQUEST");
   }
   const context = await installationContext(env, url, true);
@@ -1238,11 +1234,7 @@ const handlePublicCreate = async (
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseCreate(parsed.value, true);
-  if (
-    input === null ||
-    input.turnstileToken === undefined ||
-    input.replayOnly === undefined
-  ) {
+  if (input?.turnstileToken === undefined || input.replayOnly === undefined) {
     return errorResponse(400, "BAD_REQUEST");
   }
   const {
@@ -1751,8 +1743,7 @@ const lineEffectivelyActive = (
 ): context is InstallationContext & {
   line: LineContext & { generation: number; liffId: string; loginChannelId: string };
 } =>
-  context.line !== undefined &&
-  context.line.phase === "active" &&
+  context.line?.phase === "active" &&
   context.line.generation !== undefined &&
   context.line.liffId !== undefined &&
   context.line.loginChannelId !== undefined &&
@@ -1811,8 +1802,7 @@ const lineRouteGate = async (
   const line = context.line;
   if (
     residual &&
-    line !== undefined &&
-    line.generation !== undefined &&
+    line?.generation !== undefined &&
     (line.phase === "active" || line.phase === "deactivating")
   ) {
     // Missing secret or mid-deactivation: the customer can still see and
@@ -2153,6 +2143,23 @@ const handleCalendarStatus = async (
   }
 };
 
+const parseReconcileCursor = (
+  value: unknown,
+): { ok: true; cursor?: string } | { ok: false } => {
+  if (!isObject(value)) return { ok: false };
+  const keys = Object.keys(value);
+  if (keys.length !== 0 && (keys.length !== 1 || keys[0] !== "cursor")) return { ok: false };
+  if (value.cursor === undefined) return { ok: true };
+  if (
+    typeof value.cursor !== "string" ||
+    !DATE.test(value.cursor) ||
+    parseDateJstToUtcIso(value.cursor) === null
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, cursor: value.cursor };
+};
+
 const handleCalendarReconcile = async (
   request: Request,
   env: AppEnv,
@@ -2172,17 +2179,8 @@ const handleCalendarReconcile = async (
   }
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
-  if (!isObject(parsed.value)) return errorResponse(400, "BAD_REQUEST");
-  const keys = Object.keys(parsed.value);
-  if (
-    (keys.length !== 0 && (keys.length !== 1 || keys[0] !== "cursor")) ||
-    (parsed.value.cursor !== undefined &&
-      (typeof parsed.value.cursor !== "string" ||
-        !DATE.test(parsed.value.cursor) ||
-        parseDateJstToUtcIso(parsed.value.cursor) === null))
-  ) {
-    return errorResponse(400, "BAD_REQUEST");
-  }
+  const cursorInput = parseReconcileCursor(parsed.value);
+  if (!cursorInput.ok) return errorResponse(400, "BAD_REQUEST");
 
   try {
     const context = await withCalendarAdapter(
@@ -2193,7 +2191,7 @@ const handleCalendarReconcile = async (
       return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
     }
     const today = new Date(Date.now() + JST_OFFSET_MS).toISOString().slice(0, 10);
-    const cursor = (parsed.value.cursor as string | undefined) ?? today;
+    const cursor = cursorInput.cursor ?? today;
     const offset = dayOffset(cursor, Date.now());
     if (offset === null || offset < 0 || offset >= context.settings.horizonDays) {
       return errorResponse(400, "BAD_REQUEST");
@@ -2316,99 +2314,66 @@ const handlePrivacyPage = async (
   });
 };
 
+type ExactRoute = (request: Request, env: AppEnv, url: URL) => Promise<Response>;
+type CaptureRoute = {
+  pattern: RegExp;
+  handle: (request: Request, env: AppEnv, url: URL, id: string) => Promise<Response>;
+};
+
+const EXACT_ROUTES: Record<string, ExactRoute> = {
+  "/api/adapters/calendar/feed.ics": handleCalendarFeed,
+  "/api/config": handleConfig,
+  "/api/availability": handleAvailability,
+  "/api/reservations": handlePublicCreate,
+  "/api/adapters/line/link": handleLineLinkComplete,
+  "/api/adapters/line/webhook": handleLineWebhook,
+  "/api/admin/setup": handleSetup,
+  "/api/admin/line/settings": (request, env, url) =>
+    handleLineLifecycle(request, env, url, "line.settings"),
+  "/api/admin/line/enable": (request, env, url) =>
+    handleLineLifecycle(request, env, url, "line.enable"),
+  "/api/admin/line/disable": (request, env, url) =>
+    handleLineLifecycle(request, env, url, "line.disable"),
+  "/api/admin/line/status": handleLineStatus,
+  "/api/admin/calendar/status": handleCalendarStatus,
+  "/api/admin/calendar/reconcile": handleCalendarReconcile,
+  "/api/admin/setup/live": handleLive,
+  "/api/admin/installation-receipt": handleReceipt,
+  "/api/admin/availability": handleOwnerAvailability,
+  "/api/admin/schedule": handleSchedule,
+  "/api/admin/reservations": handleOwnerCreate,
+  "/api/admin/closures": handleClosureCreate,
+  "/privacy": handlePrivacyPage,
+  "/privacy.html": handlePrivacyPage,
+};
+
+const CAPTURE_ROUTES: CaptureRoute[] = [
+  { pattern: /^\/api\/reservations\/([^/]+)\/status$/, handle: handlePublicStatus },
+  { pattern: /^\/api\/reservations\/([^/]+)\/cancel$/, handle: handlePublicCancel },
+  {
+    pattern: /^\/api\/reservations\/([^/]+)\/line\/link-intent$/,
+    handle: handleLineLinkIntent,
+  },
+  { pattern: /^\/api\/reservations\/([^/]+)\/line\/unlink$/, handle: handleLineUnlink },
+  { pattern: /^\/api\/reservations\/([^/]+)\/line\/status$/, handle: handleLineLinkStatus },
+  {
+    pattern: /^\/api\/admin\/reservations\/([^/]+)\/transition$/,
+    handle: handleOwnerTransition,
+  },
+  { pattern: /^\/api\/admin\/closures\/([^/]+)\/remove$/, handle: handleClosureRemove },
+];
+
 const handle = async (request: Request, env: AppEnv): Promise<Response> => {
   const url = new URL(request.url);
-  if (url.pathname === "/api/adapters/calendar/feed.ics") {
-    return handleCalendarFeed(request, env, url);
+  const exact = EXACT_ROUTES[url.pathname];
+  if (exact !== undefined) return exact(request, env, url);
+  for (const route of CAPTURE_ROUTES) {
+    const id = route.pattern.exec(url.pathname)?.[1];
+    if (id !== undefined) return route.handle(request, env, url, id);
   }
-  if (url.pathname === "/api/config") return handleConfig(request, env, url);
-  if (url.pathname === "/api/availability") return handleAvailability(request, env, url);
-  if (url.pathname === "/api/reservations") return handlePublicCreate(request, env, url);
-
-  const publicStatus = url.pathname.match(/^\/api\/reservations\/([^/]+)\/status$/);
-  if (publicStatus?.[1] !== undefined) {
-    return handlePublicStatus(request, env, url, publicStatus[1]);
-  }
-  const publicCancel = url.pathname.match(/^\/api\/reservations\/([^/]+)\/cancel$/);
-  if (publicCancel?.[1] !== undefined) {
-    return handlePublicCancel(request, env, url, publicCancel[1]);
-  }
-
-  const lineIntent = url.pathname.match(
-    /^\/api\/reservations\/([^/]+)\/line\/link-intent$/,
-  );
-  if (lineIntent?.[1] !== undefined) {
-    return handleLineLinkIntent(request, env, url, lineIntent[1]);
-  }
-  const lineUnlink = url.pathname.match(/^\/api\/reservations\/([^/]+)\/line\/unlink$/);
-  if (lineUnlink?.[1] !== undefined) {
-    return handleLineUnlink(request, env, url, lineUnlink[1]);
-  }
-  const lineStatus = url.pathname.match(/^\/api\/reservations\/([^/]+)\/line\/status$/);
-  if (lineStatus?.[1] !== undefined) {
-    return handleLineLinkStatus(request, env, url, lineStatus[1]);
-  }
-  if (url.pathname === "/api/adapters/line/link") {
-    return handleLineLinkComplete(request, env, url);
-  }
-  if (url.pathname === "/api/adapters/line/webhook") {
-    return handleLineWebhook(request, env, url);
-  }
-
-  if (url.pathname === "/api/admin/setup") return handleSetup(request, env, url);
-  if (url.pathname === "/api/admin/line/settings") {
-    return handleLineLifecycle(request, env, url, "line.settings");
-  }
-  if (url.pathname === "/api/admin/line/enable") {
-    return handleLineLifecycle(request, env, url, "line.enable");
-  }
-  if (url.pathname === "/api/admin/line/disable") {
-    return handleLineLifecycle(request, env, url, "line.disable");
-  }
-  if (url.pathname === "/api/admin/line/status") {
-    return handleLineStatus(request, env, url);
-  }
-  if (url.pathname === "/api/admin/calendar/status") {
-    return handleCalendarStatus(request, env, url);
-  }
-  if (url.pathname === "/api/admin/calendar/reconcile") {
-    return handleCalendarReconcile(request, env, url);
-  }
-  if (url.pathname === "/api/admin/setup/live") return handleLive(request, env, url);
-  if (url.pathname === "/api/admin/installation-receipt") {
-    return handleReceipt(request, env, url);
-  }
-  if (url.pathname === "/api/admin/availability") {
-    return handleOwnerAvailability(request, env, url);
-  }
-  if (url.pathname === "/api/admin/schedule") return handleSchedule(request, env, url);
-  if (url.pathname === "/api/admin/reservations") {
-    return handleOwnerCreate(request, env, url);
-  }
-
-  const transition = url.pathname.match(
-    /^\/api\/admin\/reservations\/([^/]+)\/transition$/,
-  );
-  if (transition?.[1] !== undefined) {
-    return handleOwnerTransition(request, env, url, transition[1]);
-  }
-  if (url.pathname === "/api/admin/closures") {
-    return handleClosureCreate(request, env, url);
-  }
-  const closureRemove = url.pathname.match(
-    /^\/api\/admin\/closures\/([^/]+)\/remove$/,
-  );
-  if (closureRemove?.[1] !== undefined) {
-    return handleClosureRemove(request, env, url, closureRemove[1]);
-  }
-
   if (LINE_PAGE_PATHS.has(url.pathname) || LINE_MODULE_PATHS.has(url.pathname)) {
     return handleLineAsset(request, env, url);
   }
-  if (url.pathname === "/privacy" || url.pathname === "/privacy.html") {
-    return handlePrivacyPage(request, env, url);
-  }
-
   if (url.pathname.startsWith("/api/")) return errorResponse(404, "BAD_REQUEST");
   return env.ASSETS.fetch(request);
 };
