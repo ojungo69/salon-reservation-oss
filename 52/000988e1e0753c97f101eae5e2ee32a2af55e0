@@ -1,0 +1,23 @@
+scripts/release-audit.mjs
+  s_a8ab9debe9c635::t_e3d9cee8111f83 3,109-115,141-143,150
+src/installation-config.ts
+  s_a8ab9debe9c635::t_46bebf5785cffc 630-634
+src/reservation-core.ts
+  s_a8ab9debe9c635::t_380d62b5180a5d 478-482
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "52000988e1e0753c97f101eae5e2ee32a2af55e0",
+  "prompts": {},
+  "sessions": {
+    "s_a8ab9debe9c635": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffbb2-e673-7831-80fe-fbc9d071eb77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
