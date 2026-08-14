@@ -1,0 +1,23 @@
+public/app.js
+  s_211aa7fe546c35::t_00aefed0ae22d4 214-274,278,280,284-287,290-291
+scripts/release-audit.mjs
+  s_211aa7fe546c35::t_bfe9fa3b8b9118 137-169,173
+src/reservation-day.ts
+  s_211aa7fe546c35::t_90993f38c78f29 2395-2541,2558-2571,2573
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "07e2438fece9a9d840194467d302ddd61894498d",
+  "prompts": {},
+  "sessions": {
+    "s_211aa7fe546c35": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffdcb-e994-7732-bb4e-56faff6022eb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
