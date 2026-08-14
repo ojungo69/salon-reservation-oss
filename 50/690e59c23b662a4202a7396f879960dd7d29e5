@@ -1,0 +1,57 @@
+playwright.config.ts
+  s_a8ab9debe9c635::t_2ed8d61b77764d 36-47,50-51,56,58,61,64,72-73,78,81-83
+public/admin.html
+  s_a8ab9debe9c635::t_9123c71cb6e56a 64,94,125,160,199,235
+public/bookings.html
+  s_a8ab9debe9c635::t_137396ee027011 39,41,91
+public/cancellation.html
+  s_a8ab9debe9c635::t_e771cae2ac7c2a 31,33
+public/index.html
+  s_a8ab9debe9c635::t_88518362eaaca0 32,35,56,84,283,308
+public/line-link.mjs
+  s_a8ab9debe9c635::t_4b60a9af6a7c7c 17,26,60
+public/line.html
+  s_a8ab9debe9c635::t_fa64f810218cbe 47,49
+public/privacy.html
+  s_a8ab9debe9c635::t_050135a9bacc36 31,33
+public/setup.html
+  s_a8ab9debe9c635::t_3831083eda6c16 32,34,68,77,224,275
+public/styles.css
+  s_a8ab9debe9c635::t_1af800f0513722 297-301
+public/terms.html
+  s_a8ab9debe9c635::t_b07074b2e9163f 31,33
+test/line-helpers.ts
+  s_a8ab9debe9c635::t_d18d76b3a61d21 204
+public/app.js
+  s_7a0cf80b70e7f1::t_6f4a47a9be00d0 112-122,134-135,173-304,398,554-558,1011-1013,1053,1055,1297-1300,1422,1506,1900-1901,2214,2260,2333,2425-2426,2823-2826,2828
+scripts/release-audit.mjs
+  s_7a0cf80b70e7f1::t_1580cb4db2d88d 2-3,82,107-110,134-145,176-178,426-433,435,465
+src/calendar-adapter.ts
+  s_7a0cf80b70e7f1::t_3877681117d19a 19,117-120,264-266,275,346,366-411,417-424,426-436,450-459,478-492,1024-1092,1165-1169,1530,1598,1681-1689,1752-1753,1759-1778
+src/reservation-day.ts
+  s_7a0cf80b70e7f1::t_8da91e7d9f5a9d 429-487,759,945,1213-1242,1244-1265,1272-1280,1283-1289,1637,1906,2088-2089,2112,2186-2234,2281-2283,2395-2506,2571-2579,3050,3126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "50690e59c23b662a4202a7396f879960dd7d29e5",
+  "prompts": {},
+  "sessions": {
+    "s_7a0cf80b70e7f1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffd8e-5435-74b1-9158-1f90d2f9f44d",
+        "model": "unknown"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_a8ab9debe9c635": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffbb2-e673-7831-80fe-fbc9d071eb77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
