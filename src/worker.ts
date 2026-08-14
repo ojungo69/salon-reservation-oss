@@ -2143,19 +2143,21 @@ const handleCalendarStatus = async (
   }
 };
 
-const parseReconcileCursor = (value: unknown): string | undefined | "bad" => {
-  if (!isObject(value)) return "bad";
+const parseReconcileCursor = (
+  value: unknown,
+): { ok: true; cursor?: string } | { ok: false } => {
+  if (!isObject(value)) return { ok: false };
   const keys = Object.keys(value);
-  if (keys.length !== 0 && (keys.length !== 1 || keys[0] !== "cursor")) return "bad";
-  if (value.cursor === undefined) return undefined;
+  if (keys.length !== 0 && (keys.length !== 1 || keys[0] !== "cursor")) return { ok: false };
+  if (value.cursor === undefined) return { ok: true };
   if (
     typeof value.cursor !== "string" ||
     !DATE.test(value.cursor) ||
     parseDateJstToUtcIso(value.cursor) === null
   ) {
-    return "bad";
+    return { ok: false };
   }
-  return value.cursor;
+  return { ok: true, cursor: value.cursor };
 };
 
 const handleCalendarReconcile = async (
@@ -2178,7 +2180,7 @@ const handleCalendarReconcile = async (
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const cursorInput = parseReconcileCursor(parsed.value);
-  if (cursorInput === "bad") return errorResponse(400, "BAD_REQUEST");
+  if (!cursorInput.ok) return errorResponse(400, "BAD_REQUEST");
 
   try {
     const context = await withCalendarAdapter(
@@ -2189,7 +2191,7 @@ const handleCalendarReconcile = async (
       return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
     }
     const today = new Date(Date.now() + JST_OFFSET_MS).toISOString().slice(0, 10);
-    const cursor = cursorInput ?? today;
+    const cursor = cursorInput.cursor ?? today;
     const offset = dayOffset(cursor, Date.now());
     if (offset === null || offset < 0 || offset >= context.settings.horizonDays) {
       return errorResponse(400, "BAD_REQUEST");

@@ -134,43 +134,43 @@ const readManifest = () => {
   return paths;
 };
 
+const realpathOrEmpty = (dir) => {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return "";
+  }
+};
+
+const confineDenylistPath = (path) => {
+  // Assembler snapshots with TMPDIR=/tmp mktemp. Live terms stay outside both trees.
+  // After realpath, only the repo and the fixed system temp roots are readable.
+  let canonical;
+  try {
+    canonical = realpathSync(path);
+  } catch {
+    fail("denylist path is not readable");
+  }
+  const root = realpathSync(ROOT);
+  const tmpRoot = realpathOrEmpty("/tmp");
+  const varTmpRoot = realpathOrEmpty("/var/tmp");
+  if (
+    canonical !== root &&
+    !canonical.startsWith(`${root}${sep}`) &&
+    (tmpRoot === "" ||
+      (canonical !== tmpRoot && !canonical.startsWith(`${tmpRoot}${sep}`))) &&
+    (varTmpRoot === "" ||
+      (canonical !== varTmpRoot && !canonical.startsWith(`${varTmpRoot}${sep}`)))
+  ) {
+    fail("denylist path is not under the repository or a system temp directory");
+  }
+  if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
+};
+
 const loadDenylist = (argument) => {
   const defaultPath = join(ROOT, ".release-private-denylist");
   const path = argument === null ? defaultPath : resolve(argument);
-  if (argument !== null) {
-    // Assembler snapshots with TMPDIR=/tmp mktemp. Live terms stay outside both trees.
-    // After realpath, only the repo and the fixed system temp roots are readable.
-    let canonical;
-    try {
-      canonical = realpathSync(path);
-    } catch {
-      fail("denylist path is not readable");
-    }
-    const root = realpathSync(ROOT);
-    let tmpRoot = "";
-    let varTmpRoot = "";
-    try {
-      tmpRoot = realpathSync("/tmp");
-    } catch {
-      tmpRoot = "";
-    }
-    try {
-      varTmpRoot = realpathSync("/var/tmp");
-    } catch {
-      varTmpRoot = "";
-    }
-    if (
-      canonical !== root &&
-      !canonical.startsWith(`${root}${sep}`) &&
-      (tmpRoot === "" ||
-        (canonical !== tmpRoot && !canonical.startsWith(`${tmpRoot}${sep}`))) &&
-      (varTmpRoot === "" ||
-        (canonical !== varTmpRoot && !canonical.startsWith(`${varTmpRoot}${sep}`)))
-    ) {
-      fail("denylist path is not under the repository or a system temp directory");
-    }
-    if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
-  }
+  if (argument !== null) confineDenylistPath(path);
   try {
     const terms = readFileSync(path, "utf8")
       .split("\n")

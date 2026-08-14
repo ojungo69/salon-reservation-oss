@@ -2392,6 +2392,153 @@ export class ReservationDay extends DurableObject<Env> {
     return this.#create(config, input, "owner-create", "actor-owner", allowFresh);
   }
 
+  #applyOwnerCancelTransition(
+    input: DayOwnerTransitionInput,
+    state: ReservationState,
+    detail: BookingDetail,
+  ):
+    | DayFailure
+    | {
+        nextState: ReservationState;
+        status: BookingStatus;
+        rejectionReason: string | null;
+        outcomeAt: string | null;
+        history: BookingDetail["rescheduleHistory"];
+      } {
+    const status = detail.status;
+    if (
+      (input.action === "reject" && status !== "pending") ||
+      (input.action === "cancel" && status !== "pending" && status !== "approved")
+    ) {
+      return failure("NOT_FOUND_OR_UNAUTHORIZED");
+    }
+    const cancelled = executeReservationCommand(state, {
+      version: 1,
+      commandId: input.commandId,
+      expectedRevision: state.revision,
+      actor: {
+        subject: "actor-owner",
+        capabilities: ["reservation:cancel"],
+      },
+      type: "reservation.cancel",
+      payload: { reservationId: input.reservationId },
+    });
+    if (!cancelled.ok) {
+      return cancelled.error.code === "RESERVATION_NOT_FOUND" ||
+        cancelled.error.code === "RESERVATION_NOT_ACTIVE"
+        ? failure("NOT_FOUND_OR_UNAUTHORIZED")
+        : failure("TEMPORARILY_UNAVAILABLE");
+    }
+    return {
+      nextState: cancelled.state,
+      status: input.action === "reject" ? "rejected" : "cancelled",
+      rejectionReason: input.action === "reject" ? input.reason ?? null : null,
+      outcomeAt: new Date().toISOString(),
+      history: [...detail.rescheduleHistory],
+    };
+  }
+
+  #applyOwnerOutcomeTransition(
+    input: DayOwnerTransitionInput,
+    state: ReservationState,
+    reservation: { endAt: string },
+    detail: BookingDetail,
+  ):
+    | DayFailure
+    | {
+        nextState: ReservationState;
+        status: BookingStatus;
+        rejectionReason: string | null;
+        outcomeAt: string | null;
+        history: BookingDetail["rescheduleHistory"];
+      } {
+    if (detail.status !== "approved" || Date.parse(reservation.endAt) > Date.now()) {
+      return failure("NOT_FOUND_OR_UNAUTHORIZED");
+    }
+    return {
+      nextState: state,
+      status: input.action === "complete" ? "completed" : "no_show",
+      rejectionReason: detail.rejectionReason,
+      outcomeAt: new Date().toISOString(),
+      history: [...detail.rescheduleHistory],
+    };
+  }
+
+  #applyOwnerRescheduleTransition(
+    input: DayOwnerTransitionInput,
+    state: ReservationState,
+    reservation: { resourceId: string; startAt: string; endAt: string },
+    detail: BookingDetail,
+    effective: TargetDayConfig,
+  ):
+    | DayFailure
+    | {
+        nextState: ReservationState;
+        status: BookingStatus;
+        rejectionReason: string | null;
+        outcomeAt: string | null;
+        history: BookingDetail["rescheduleHistory"];
+      } {
+    if (detail.status !== "pending" && detail.status !== "approved") {
+      return failure("NOT_FOUND_OR_UNAUTHORIZED");
+    }
+    if (detail.snapshot === null) return failure("NOT_FOUND_OR_UNAUTHORIZED");
+    const selection = selectServices(
+      effective,
+      detail.snapshot.services.map(({ id }) => id),
+    );
+    if (
+      selection === null ||
+      input.resourceId === undefined ||
+      input.startTime === undefined ||
+      !resourceEligible(effective, selection, input.resourceId) ||
+      !validStart(effective, input.startTime, detail.snapshot.occupiedMinutes) ||
+      isElapsedStart(effective.date, input.startTime) ||
+      this.#closureOverlaps(
+        this.#readClosures(),
+        input.resourceId,
+        minutes(input.startTime),
+        minutes(input.startTime) + detail.snapshot.occupiedMinutes,
+      )
+    ) {
+      return failure("UNAVAILABLE");
+    }
+    const rescheduled = executeReservationCommand(state, {
+      version: 1,
+      commandId: input.commandId,
+      expectedRevision: state.revision,
+      actor: {
+        subject: "actor-owner",
+        capabilities: ["reservation:reschedule"],
+      },
+      type: "reservation.reschedule",
+      payload: {
+        reservationId: input.reservationId,
+        resourceId: input.resourceId,
+        date: input.date,
+        startTime: input.startTime,
+        durationMinutes: detail.snapshot.occupiedMinutes,
+      },
+    });
+    if (!rescheduled.ok) return rescheduleCommandFailure(rescheduled.error.code);
+    return {
+      nextState: rescheduled.state,
+      status: detail.status,
+      rejectionReason: detail.rejectionReason,
+      outcomeAt: detail.outcomeAt,
+      history: [
+        ...detail.rescheduleHistory,
+        {
+          from: {
+            resourceId: reservation.resourceId,
+            startTime: jstTime(reservation.startAt),
+          },
+          to: { resourceId: input.resourceId, startTime: input.startTime },
+        },
+      ],
+    };
+  }
+
   #applyOwnerTransitionAction(
     input: DayOwnerTransitionInput,
     state: ReservationState,
@@ -2407,101 +2554,23 @@ export class ReservationDay extends DurableObject<Env> {
         outcomeAt: string | null;
         history: BookingDetail["rescheduleHistory"];
       } {
-    let nextState = state;
-    let status = detail.status;
-    let rejectionReason = detail.rejectionReason;
-    let outcomeAt = detail.outcomeAt;
-    const history = [...detail.rescheduleHistory];
     if (input.action === "approve") {
-      if (status !== "pending") return failure("NOT_FOUND_OR_UNAUTHORIZED");
-      status = "approved";
-    } else if (input.action === "reject" || input.action === "cancel") {
-      if (
-        (input.action === "reject" && status !== "pending") ||
-        (input.action === "cancel" && status !== "pending" && status !== "approved")
-      ) {
-        return failure("NOT_FOUND_OR_UNAUTHORIZED");
-      }
-      const cancelled = executeReservationCommand(state, {
-        version: 1,
-        commandId: input.commandId,
-        expectedRevision: state.revision,
-        actor: {
-          subject: "actor-owner",
-          capabilities: ["reservation:cancel"],
-        },
-        type: "reservation.cancel",
-        payload: { reservationId: input.reservationId },
-      });
-      if (!cancelled.ok) {
-        return cancelled.error.code === "RESERVATION_NOT_FOUND" ||
-          cancelled.error.code === "RESERVATION_NOT_ACTIVE"
-          ? failure("NOT_FOUND_OR_UNAUTHORIZED")
-          : failure("TEMPORARILY_UNAVAILABLE");
-      }
-      nextState = cancelled.state;
-      status = input.action === "reject" ? "rejected" : "cancelled";
-      rejectionReason = input.action === "reject" ? input.reason ?? null : null;
-      outcomeAt = new Date().toISOString();
-    } else if (input.action === "complete" || input.action === "no_show") {
-      if (status !== "approved" || Date.parse(reservation.endAt) > Date.now()) {
-        return failure("NOT_FOUND_OR_UNAUTHORIZED");
-      }
-      status = input.action === "complete" ? "completed" : "no_show";
-      outcomeAt = new Date().toISOString();
-    } else {
-      if (status !== "pending" && status !== "approved") {
-        return failure("NOT_FOUND_OR_UNAUTHORIZED");
-      }
-      if (detail.snapshot === null) return failure("NOT_FOUND_OR_UNAUTHORIZED");
-      const selection = selectServices(
-        effective,
-        detail.snapshot.services.map(({ id }) => id),
-      );
-      if (
-        selection === null ||
-        input.resourceId === undefined ||
-        input.startTime === undefined ||
-        !resourceEligible(effective, selection, input.resourceId) ||
-        !validStart(effective, input.startTime, detail.snapshot.occupiedMinutes) ||
-        isElapsedStart(effective.date, input.startTime) ||
-        this.#closureOverlaps(
-          this.#readClosures(),
-          input.resourceId,
-          minutes(input.startTime),
-          minutes(input.startTime) + detail.snapshot.occupiedMinutes,
-        )
-      ) {
-        return failure("UNAVAILABLE");
-      }
-      const rescheduled = executeReservationCommand(state, {
-        version: 1,
-        commandId: input.commandId,
-        expectedRevision: state.revision,
-        actor: {
-          subject: "actor-owner",
-          capabilities: ["reservation:reschedule"],
-        },
-        type: "reservation.reschedule",
-        payload: {
-          reservationId: input.reservationId,
-          resourceId: input.resourceId,
-          date: input.date,
-          startTime: input.startTime,
-          durationMinutes: detail.snapshot.occupiedMinutes,
-        },
-      });
-      if (!rescheduled.ok) return rescheduleCommandFailure(rescheduled.error.code);
-      history.push({
-        from: {
-          resourceId: reservation.resourceId,
-          startTime: jstTime(reservation.startAt),
-        },
-        to: { resourceId: input.resourceId, startTime: input.startTime },
-      });
-      nextState = rescheduled.state;
+      if (detail.status !== "pending") return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      return {
+        nextState: state,
+        status: "approved",
+        rejectionReason: detail.rejectionReason,
+        outcomeAt: detail.outcomeAt,
+        history: [...detail.rescheduleHistory],
+      };
     }
-    return { nextState, status, rejectionReason, outcomeAt, history };
+    if (input.action === "reject" || input.action === "cancel") {
+      return this.#applyOwnerCancelTransition(input, state, detail);
+    }
+    if (input.action === "complete" || input.action === "no_show") {
+      return this.#applyOwnerOutcomeTransition(input, state, reservation, detail);
+    }
+    return this.#applyOwnerRescheduleTransition(input, state, reservation, detail, effective);
   }
 
   async transitionOwner(

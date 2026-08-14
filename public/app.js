@@ -211,68 +211,84 @@ const setupHelpText = (authenticated, pending, accepting, setupState) => {
 const firstVisible = (root, selector) =>
   [...root.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
 
+const collectRejectReason = (detailStatus) => {
+  const reason = window.prompt("お客様にも表示する見送り理由を200文字以内で入力してください。");
+  if (reason === null) return null;
+  if (!reason.trim() || Array.from(reason.trim()).length > 200) {
+    setStatus(detailStatus, "見送り理由を1〜200文字で入力してください。", "error");
+    return null;
+  }
+  return reason.trim();
+};
+
+const collectRescheduleSlot = async (reservation, ownerApi, detailStatus) => {
+  setStatus(detailStatus, "同じ日の空き時間を確認しています。");
+  let available;
+  try {
+    available = await ownerApi(
+      availabilityPath(
+        reservation.date,
+        reservation.services.map(({ id }) => id),
+        reservation.reservationId,
+        "/api/admin/availability",
+      ),
+    );
+  } catch (error) {
+    setStatus(detailStatus, error.message, "error");
+    return null;
+  }
+  const resources = available.resources.filter(({ startTimes }) => startTimes.length);
+  if (!resources.length) {
+    setStatus(detailStatus, "同じ日に移動できる空き時間がありません。", "error");
+    return null;
+  }
+  const resourceId = window.prompt(
+    `移動先の識別子を入力してください。\n${resources.map(({ id, label }) => id + ": " + label).join("\n")}`,
+    resources[0].id,
+  );
+  if (resourceId === null) return null;
+  const resource = resources.find(({ id }) => id === resourceId.trim());
+  if (!resource) {
+    setStatus(detailStatus, "一覧にある担当・設備を選んでください。", "error");
+    return null;
+  }
+  const startTime = window.prompt(
+    `開始時間を入力してください。\n${resource.startTimes.join(" / ")}`,
+    resource.startTimes[0],
+  );
+  if (startTime === null) return null;
+  if (!resource.startTimes.includes(startTime.trim())) {
+    setStatus(detailStatus, "一覧にある開始時間を選んでください。", "error");
+    return null;
+  }
+  return { resourceId: resource.id, startTime: startTime.trim() };
+};
+
+const confirmDestructiveTransition = (action) => {
+  const message =
+    action === "cancel"
+      ? "この予約を取り消します。元に戻せません。続けますか？"
+      : "この予約を無断不来として記録しますか？";
+  return window.confirm(message);
+};
+
 const collectTransitionCommand = async (action, reservation, ownerApi, detailStatus) => {
   const command = { commandId: crypto.randomUUID(), date: reservation.date, action };
   if (action === "reject") {
-    const reason = window.prompt("お客様にも表示する見送り理由を200文字以内で入力してください。");
+    const reason = collectRejectReason(detailStatus);
     if (reason === null) return null;
-    if (!reason.trim() || Array.from(reason.trim()).length > 200) {
-      setStatus(detailStatus, "見送り理由を1〜200文字で入力してください。", "error");
-      return null;
-    }
-    command.reason = reason.trim();
+    command.reason = reason;
     return command;
   }
   if (action === "reschedule") {
-    setStatus(detailStatus, "同じ日の空き時間を確認しています。");
-    let available;
-    try {
-      available = await ownerApi(
-        availabilityPath(
-          reservation.date,
-          reservation.services.map(({ id }) => id),
-          reservation.reservationId,
-          "/api/admin/availability",
-        ),
-      );
-    } catch (error) {
-      setStatus(detailStatus, error.message, "error");
-      return null;
-    }
-    const resources = available.resources.filter(({ startTimes }) => startTimes.length);
-    if (!resources.length) {
-      setStatus(detailStatus, "同じ日に移動できる空き時間がありません。", "error");
-      return null;
-    }
-    const resourceId = window.prompt(
-      `移動先の識別子を入力してください。\n${resources.map(({ id, label }) => id + ": " + label).join("\n")}`,
-      resources[0].id,
-    );
-    if (resourceId === null) return null;
-    const resource = resources.find(({ id }) => id === resourceId.trim());
-    if (!resource) {
-      setStatus(detailStatus, "一覧にある担当・設備を選んでください。", "error");
-      return null;
-    }
-    const startTime = window.prompt(
-      `開始時間を入力してください。\n${resource.startTimes.join(" / ")}`,
-      resource.startTimes[0],
-    );
-    if (startTime === null) return null;
-    if (!resource.startTimes.includes(startTime.trim())) {
-      setStatus(detailStatus, "一覧にある開始時間を選んでください。", "error");
-      return null;
-    }
-    command.resourceId = resource.id;
-    command.startTime = startTime.trim();
+    const slot = await collectRescheduleSlot(reservation, ownerApi, detailStatus);
+    if (slot === null) return null;
+    command.resourceId = slot.resourceId;
+    command.startTime = slot.startTime;
     return command;
   }
-  if (["cancel", "no_show"].includes(action)) {
-    const message =
-      action === "cancel"
-        ? "この予約を取り消します。元に戻せません。続けますか？"
-        : "この予約を無断不来として記録しますか？";
-    if (!window.confirm(message)) return null;
+  if (["cancel", "no_show"].includes(action) && !confirmDestructiveTransition(action)) {
+    return null;
   }
   return command;
 };
