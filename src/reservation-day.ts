@@ -426,6 +426,65 @@ const failure = (code: DayFailureCode): DayFailure => ({
   code,
 });
 
+const rescheduleCommandFailure = (code: string): DayFailure => {
+  if (code === "OVERLAP") return failure("UNAVAILABLE");
+  if (code === "NO_CHANGE") return failure("BAD_REQUEST");
+  if (code === "RESERVATION_NOT_FOUND" || code === "RESERVATION_NOT_ACTIVE") {
+    return failure("NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  return failure("TEMPORARILY_UNAVAILABLE");
+};
+
+const isOwnerTransitionFailure = (
+  value:
+    | DayFailure
+    | {
+        nextState: ReservationState;
+        status: BookingStatus;
+        rejectionReason: string | null;
+        outcomeAt: string | null;
+        history: BookingDetail["rescheduleHistory"];
+      },
+): value is DayFailure => Object.hasOwn(value, "ok");
+
+const calendarEventStatus = (
+  status: string,
+): "pending" | "approved" | null => {
+  if (status === "pending") return "pending";
+  if (status === "approved" || status === "completed" || status === "no_show") {
+    return "approved";
+  }
+  return null;
+};
+
+const movingAvailability = (
+  movingReservation: { id: string } | undefined,
+  movingDetail: { snapshot: BookingSnapshot | null; status: string } | null,
+  serviceIds: string[] | undefined,
+  meta: { acceptedMutations?: number } | null,
+): DayFailure | null => {
+  if (movingReservation === undefined || movingDetail === null) {
+    return failure("NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  if (
+    movingDetail.snapshot === null ||
+    (movingDetail.status !== "pending" && movingDetail.status !== "approved")
+  ) {
+    return failure("NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  const snapshotServiceIds = movingDetail.snapshot.services.map(({ id }) => id);
+  if (
+    serviceIds?.length !== snapshotServiceIds.length ||
+    serviceIds.some((id) => !snapshotServiceIds.includes(id))
+  ) {
+    return failure("BAD_REQUEST");
+  }
+  if ((meta?.acceptedMutations ?? 0) >= MAX_ACCEPTED_MUTATIONS) {
+    return failure("CAPACITY_REACHED");
+  }
+  return null;
+};
+
 const isCanonicalDate = (value: string): boolean => {
   if (!DATE.test(value)) return false;
   const milliseconds = Date.parse(`${value}T00:00:00.000Z`);
@@ -697,7 +756,7 @@ const selectServices = (
   const services = serviceIds.map((id) =>
     config.services.find((service) => service.active && service.id === id),
   );
-  if (services.some((service) => service === undefined)) return null;
+  if (services.includes(undefined)) return null;
   const selected = services as DayService[];
   const serviceMinutes = selected.reduce(
     (total, service) => total + service.durationMinutes,
@@ -883,7 +942,7 @@ const equalDigest = (left: string, right: string): boolean => {
   if (!DIGEST.test(left) || !DIGEST.test(right)) return false;
   let difference = 0;
   for (let index = 0; index < 64; index += 1) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+    difference |= (left.codePointAt(index) ?? 0) ^ (right.codePointAt(index) ?? 0);
   }
   return difference === 0;
 };
@@ -1145,72 +1204,89 @@ export class ReservationDay extends DurableObject<Env> {
       (adapter): adapter is DayAdapterDescriptor => adapter !== undefined,
     );
     if (adapters.length === 0) return;
-    const sql = this.ctx.storage.sql;
     // A partition's retention boundary is frozen on first write. A later
     // config snapshot may have a different retentionDays value, but events
     // from this partition must keep the boundary already stored with it.
     const purgeAt = this.#readMeta()?.purgeAt ?? config.purgeAt;
     const occurredAt = new Date().toISOString();
     for (const adapter of adapters) {
-      const accepted =
-        adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
-      if (adapter.phase !== "active" || accepted.length === 0) continue;
-      let generation = adapter.generation;
-      const now = Date.now();
-      if (now > adapter.leaseNotAfter) {
-        if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
-        if (
-          adapter.generation === 0 ||
-          now >= adapter.leaseIssuedAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000
-        ) {
-          continue;
-        }
-        generation = 0;
+      this.#writeAdapterOutbox(config, adapter, events, purgeAt, occurredAt);
+    }
+  }
+
+  #writeAdapterOutbox(
+    config: DayConfig,
+    adapter: DayAdapterDescriptor,
+    events: Array<{
+      type: AdapterEventType;
+      reservationId: string;
+      startTime: string;
+      endTime: string;
+      serviceLabel: string;
+      reservationStatus: CalendarReservationStatus;
+    }>,
+    purgeAt: number,
+    occurredAt: string,
+  ): void {
+    const accepted =
+      adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
+    if (adapter.phase !== "active" || accepted.length === 0) return;
+    let generation = adapter.generation;
+    const now = Date.now();
+    if (now > adapter.leaseNotAfter) {
+      if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
+      if (
+        adapter.generation === 0 ||
+        now >= adapter.leaseIssuedAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000
+      ) {
+        return;
       }
-      this.#ensureAdapterSchema();
-      let seq =
-        adapter.consumer === "calendar"
-          ? (sql
-              .exec<{ event_seq: number | null }>(
-                "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
-              )
-              .one().event_seq ?? 0)
-          : (sql
-              .exec<{ event_seq: number }>(
-                "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
-                adapter.consumer,
-                adapter.generation,
-              )
-              .toArray()[0]?.event_seq ?? 0);
-      for (const event of accepted) {
-        seq += 1;
-        sql.exec(
-          `INSERT INTO __adapter_outbox
+      generation = 0;
+    }
+    this.#ensureAdapterSchema();
+    const sql = this.ctx.storage.sql;
+    let seq =
+      adapter.consumer === "calendar"
+        ? (sql
+            .exec<{ event_seq: number | null }>(
+              "SELECT MAX(event_seq) AS event_seq FROM __adapter_meta WHERE consumer = 'calendar'",
+            )
+            .one().event_seq ?? 0)
+        : (sql
+            .exec<{ event_seq: number }>(
+              "SELECT event_seq FROM __adapter_meta WHERE consumer = ? AND generation = ?",
+              adapter.consumer,
+              adapter.generation,
+            )
+            .toArray()[0]?.event_seq ?? 0);
+    for (const event of accepted) {
+      seq += 1;
+      sql.exec(
+        `INSERT INTO __adapter_outbox
              (consumer, generation, seq, event_id, reservation_id, type, start_time,
               end_time, service_label, reservation_status, occurred_at, purge_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          adapter.consumer,
-          generation,
-          seq,
-          `${config.date}#${seq}`,
-          event.reservationId,
-          event.type,
-          event.startTime,
-          event.endTime,
-          event.serviceLabel,
-          event.reservationStatus,
-          occurredAt,
-          purgeAt,
-        );
-      }
-      sql.exec(
-        `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
-         ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
         adapter.consumer,
         generation,
         seq,
+        `${config.date}#${seq}`,
+        event.reservationId,
+        event.type,
+        event.startTime,
+        event.endTime,
+        event.serviceLabel,
+        event.reservationStatus,
+        occurredAt,
+        purgeAt,
       );
     }
+    sql.exec(
+      `INSERT INTO __adapter_meta (consumer, generation, event_seq) VALUES (?, ?, ?)
+         ON CONFLICT(consumer, generation) DO UPDATE SET event_seq = excluded.event_seq`,
+      adapter.consumer,
+      generation,
+      seq,
+    );
   }
 
   // Post-commit handoff: wake the delivery object when this day holds outbox
@@ -1558,8 +1634,7 @@ export class ReservationDay extends DurableObject<Env> {
     if (
       probe.ok ||
       probe.error.code !== "INVALID_COMMAND" ||
-      probe.state === null ||
-      probe.state.revision !== row.revision
+      probe.state?.revision !== row.revision
     ) {
       throw new Error("invalid core state");
     }
@@ -1828,7 +1903,7 @@ export class ReservationDay extends DurableObject<Env> {
     }> = [];
     for (const { reservationId } of due) {
       const detail = this.#readDetail(reservationId);
-      if (detail === null || detail.status !== "pending") {
+      if (detail?.status !== "pending") {
         throw new Error("missing expiring booking");
       }
       const reservation = state.reservations.find(({ id }) => id === reservationId);
@@ -2010,25 +2085,8 @@ export class ReservationDay extends DurableObject<Env> {
         ? null
         : this.#readDetail(reservationId);
       if (reservationId !== undefined) {
-        if (
-          movingReservation === undefined ||
-          movingDetail === null ||
-          movingDetail.snapshot === null ||
-          (movingDetail.status !== "pending" && movingDetail.status !== "approved")
-        ) {
-          return failure("NOT_FOUND_OR_UNAUTHORIZED");
-        }
-        const snapshotServiceIds = movingDetail.snapshot.services.map(({ id }) => id);
-        if (
-          serviceIds === undefined ||
-          serviceIds.length !== snapshotServiceIds.length ||
-          serviceIds.some((id) => !snapshotServiceIds.includes(id))
-        ) {
-          return failure("BAD_REQUEST");
-        }
-        if ((meta?.acceptedMutations ?? 0) >= MAX_ACCEPTED_MUTATIONS) {
-          return failure("CAPACITY_REACHED");
-        }
+        const moving = movingAvailability(movingReservation, movingDetail, serviceIds, meta);
+        if (moving !== null) return moving;
       }
       const availableStartTimes = effective.startTimes.filter(
         (startTime) => !isElapsedStart(effective.date, startTime),
@@ -2051,8 +2109,7 @@ export class ReservationDay extends DurableObject<Env> {
               ? []
               : availableStartTimes.filter(
                   (time) =>
-                    (movingReservation === undefined ||
-                      movingReservation.resourceId !== id ||
+                    (movingReservation?.resourceId !== id ||
                       jstTime(movingReservation.startAt) !== time) &&
                     !occupied.has(`${id}:${time}`),
                 ),
@@ -2126,6 +2183,55 @@ export class ReservationDay extends DurableObject<Env> {
     }
   }
 
+  #prepareCreate(
+    effective: DayConfig,
+    config: DayConfig,
+    input: DayCreateInput,
+    operation: "public-create" | "owner-create",
+  ):
+    | DayFailure
+    | { durationMinutes: number; snapshot: BookingSnapshot | null; status: BookingStatus } {
+    if (isTargetDayConfig(effective)) {
+      if (
+        !isTargetDayConfig(config) ||
+        input.settingsVersion !== effective.settingsVersion ||
+        input.consentVersion !== config.consentVersion
+      ) {
+        return failure("CONFIGURATION_CONFLICT");
+      }
+      const selection = selectServices(effective, input.serviceIds);
+      if (
+        selection === null ||
+        !resourceEligible(effective, selection, input.resourceId) ||
+        !validStart(effective, input.startTime, selection.occupiedMinutes)
+      ) {
+        return failure("UNAVAILABLE");
+      }
+      if (
+        this.#closureOverlaps(
+          this.#readClosures(),
+          input.resourceId,
+          minutes(input.startTime),
+          minutes(input.startTime) + selection.occupiedMinutes,
+        )
+      ) {
+        return failure("UNAVAILABLE");
+      }
+      return {
+        durationMinutes: selection.occupiedMinutes,
+        snapshot: bookingSnapshot(effective, selection, input.resourceId, input.consentVersion),
+        status: operation === "public-create" ? "pending" : "approved",
+      };
+    }
+    if (
+      !effective.resourceIds.includes(input.resourceId) ||
+      !effective.startTimes.includes(input.startTime)
+    ) {
+      return failure("UNAVAILABLE");
+    }
+    return { durationMinutes: effective.slotMinutes, snapshot: null, status: "active" };
+  }
+
   async #create(
     config: DayConfig,
     input: DayCreateInput,
@@ -2172,49 +2278,9 @@ export class ReservationDay extends DurableObject<Env> {
         );
         if (gate !== null) return gate;
 
-        let durationMinutes = effective.slotMinutes;
-        let snapshot: BookingSnapshot | null = null;
-        let status: BookingStatus = "active";
-        if (isTargetDayConfig(effective)) {
-          if (
-            !isTargetDayConfig(config) ||
-            input.settingsVersion !== effective.settingsVersion ||
-            input.consentVersion !== config.consentVersion
-          ) {
-            return failure("CONFIGURATION_CONFLICT");
-          }
-          const selection = selectServices(effective, input.serviceIds);
-          if (
-            selection === null ||
-            !resourceEligible(effective, selection, input.resourceId) ||
-            !validStart(effective, input.startTime, selection.occupiedMinutes)
-          ) {
-            return failure("UNAVAILABLE");
-          }
-          durationMinutes = selection.occupiedMinutes;
-          snapshot = bookingSnapshot(
-            effective,
-            selection,
-            input.resourceId,
-            input.consentVersion,
-          );
-          status = operation === "public-create" ? "pending" : "approved";
-          if (
-            this.#closureOverlaps(
-              this.#readClosures(),
-              input.resourceId,
-              minutes(input.startTime),
-              minutes(input.startTime) + durationMinutes,
-            )
-          ) {
-            return failure("UNAVAILABLE");
-          }
-        } else if (
-          !effective.resourceIds.includes(input.resourceId) ||
-          !effective.startTimes.includes(input.startTime)
-        ) {
-          return failure("UNAVAILABLE");
-        }
+        const preparedCreate = this.#prepareCreate(effective, config, input, operation);
+        if ("ok" in preparedCreate) return preparedCreate;
+        const { durationMinutes, snapshot, status } = preparedCreate;
         if (isElapsedStart(effective.date, input.startTime)) {
           return failure("UNAVAILABLE");
         }
@@ -2326,6 +2392,118 @@ export class ReservationDay extends DurableObject<Env> {
     return this.#create(config, input, "owner-create", "actor-owner", allowFresh);
   }
 
+  #applyOwnerTransitionAction(
+    input: DayOwnerTransitionInput,
+    state: ReservationState,
+    reservation: { resourceId: string; startAt: string; endAt: string },
+    detail: BookingDetail,
+    effective: TargetDayConfig,
+  ):
+    | DayFailure
+    | {
+        nextState: ReservationState;
+        status: BookingStatus;
+        rejectionReason: string | null;
+        outcomeAt: string | null;
+        history: BookingDetail["rescheduleHistory"];
+      } {
+    let nextState = state;
+    let status = detail.status;
+    let rejectionReason = detail.rejectionReason;
+    let outcomeAt = detail.outcomeAt;
+    const history = [...detail.rescheduleHistory];
+    if (input.action === "approve") {
+      if (status !== "pending") return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      status = "approved";
+    } else if (input.action === "reject" || input.action === "cancel") {
+      if (
+        (input.action === "reject" && status !== "pending") ||
+        (input.action === "cancel" && status !== "pending" && status !== "approved")
+      ) {
+        return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      }
+      const cancelled = executeReservationCommand(state, {
+        version: 1,
+        commandId: input.commandId,
+        expectedRevision: state.revision,
+        actor: {
+          subject: "actor-owner",
+          capabilities: ["reservation:cancel"],
+        },
+        type: "reservation.cancel",
+        payload: { reservationId: input.reservationId },
+      });
+      if (!cancelled.ok) {
+        return cancelled.error.code === "RESERVATION_NOT_FOUND" ||
+          cancelled.error.code === "RESERVATION_NOT_ACTIVE"
+          ? failure("NOT_FOUND_OR_UNAUTHORIZED")
+          : failure("TEMPORARILY_UNAVAILABLE");
+      }
+      nextState = cancelled.state;
+      status = input.action === "reject" ? "rejected" : "cancelled";
+      rejectionReason = input.action === "reject" ? input.reason ?? null : null;
+      outcomeAt = new Date().toISOString();
+    } else if (input.action === "complete" || input.action === "no_show") {
+      if (status !== "approved" || Date.parse(reservation.endAt) > Date.now()) {
+        return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      }
+      status = input.action === "complete" ? "completed" : "no_show";
+      outcomeAt = new Date().toISOString();
+    } else {
+      if (status !== "pending" && status !== "approved") {
+        return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      }
+      if (detail.snapshot === null) return failure("NOT_FOUND_OR_UNAUTHORIZED");
+      const selection = selectServices(
+        effective,
+        detail.snapshot.services.map(({ id }) => id),
+      );
+      if (
+        selection === null ||
+        input.resourceId === undefined ||
+        input.startTime === undefined ||
+        !resourceEligible(effective, selection, input.resourceId) ||
+        !validStart(effective, input.startTime, detail.snapshot.occupiedMinutes) ||
+        isElapsedStart(effective.date, input.startTime) ||
+        this.#closureOverlaps(
+          this.#readClosures(),
+          input.resourceId,
+          minutes(input.startTime),
+          minutes(input.startTime) + detail.snapshot.occupiedMinutes,
+        )
+      ) {
+        return failure("UNAVAILABLE");
+      }
+      const rescheduled = executeReservationCommand(state, {
+        version: 1,
+        commandId: input.commandId,
+        expectedRevision: state.revision,
+        actor: {
+          subject: "actor-owner",
+          capabilities: ["reservation:reschedule"],
+        },
+        type: "reservation.reschedule",
+        payload: {
+          reservationId: input.reservationId,
+          resourceId: input.resourceId,
+          date: input.date,
+          startTime: input.startTime,
+          durationMinutes: detail.snapshot.occupiedMinutes,
+        },
+      });
+      if (!rescheduled.ok) return rescheduleCommandFailure(rescheduled.error.code);
+      history.push({
+        from: {
+          resourceId: reservation.resourceId,
+          startTime: jstTime(reservation.startAt),
+        },
+        to: { resourceId: input.resourceId, startTime: input.startTime },
+      });
+      nextState = rescheduled.state;
+    }
+    return { nextState, status, rejectionReason, outcomeAt, history };
+  }
+
   async transitionOwner(
     config: DayConfig,
     input: DayOwnerTransitionInput,
@@ -2390,111 +2568,15 @@ export class ReservationDay extends DurableObject<Env> {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
 
-        let nextState = state;
-        let status = detail.status;
-        let rejectionReason = detail.rejectionReason;
-        let outcomeAt = detail.outcomeAt;
-        const history = [...detail.rescheduleHistory];
-        if (input.action === "approve") {
-          if (status !== "pending") return failure("NOT_FOUND_OR_UNAUTHORIZED");
-          status = "approved";
-        } else if (input.action === "reject" || input.action === "cancel") {
-          if (
-            (input.action === "reject" && status !== "pending") ||
-            (input.action === "cancel" && status !== "pending" && status !== "approved")
-          ) {
-            return failure("NOT_FOUND_OR_UNAUTHORIZED");
-          }
-          const cancelled = executeReservationCommand(state, {
-            version: 1,
-            commandId: input.commandId,
-            expectedRevision: state.revision,
-            actor: {
-              subject: "actor-owner",
-              capabilities: ["reservation:cancel"],
-            },
-            type: "reservation.cancel",
-            payload: { reservationId: input.reservationId },
-          });
-          if (!cancelled.ok) {
-            return cancelled.error.code === "RESERVATION_NOT_FOUND" ||
-              cancelled.error.code === "RESERVATION_NOT_ACTIVE"
-              ? failure("NOT_FOUND_OR_UNAUTHORIZED")
-              : failure("TEMPORARILY_UNAVAILABLE");
-          }
-          nextState = cancelled.state;
-          status = input.action === "reject" ? "rejected" : "cancelled";
-          rejectionReason = input.action === "reject" ? input.reason ?? null : null;
-          outcomeAt = new Date().toISOString();
-        } else if (input.action === "complete" || input.action === "no_show") {
-          if (
-            status !== "approved" ||
-            Date.parse(reservation.endAt) > Date.now()
-          ) {
-            return failure("NOT_FOUND_OR_UNAUTHORIZED");
-          }
-          status = input.action === "complete" ? "completed" : "no_show";
-          outcomeAt = new Date().toISOString();
-        } else {
-          if (status !== "pending" && status !== "approved") {
-            return failure("NOT_FOUND_OR_UNAUTHORIZED");
-          }
-          const selection = selectServices(
-            effective,
-            detail.snapshot.services.map(({ id }) => id),
-          );
-          if (
-            selection === null ||
-            input.resourceId === undefined ||
-            input.startTime === undefined ||
-            !resourceEligible(effective, selection, input.resourceId) ||
-            !validStart(effective, input.startTime, detail.snapshot.occupiedMinutes) ||
-            isElapsedStart(effective.date, input.startTime) ||
-            this.#closureOverlaps(
-              this.#readClosures(),
-              input.resourceId,
-              minutes(input.startTime),
-              minutes(input.startTime) + detail.snapshot.occupiedMinutes,
-            )
-          ) {
-            return failure("UNAVAILABLE");
-          }
-          const rescheduled = executeReservationCommand(state, {
-            version: 1,
-            commandId: input.commandId,
-            expectedRevision: state.revision,
-            actor: {
-              subject: "actor-owner",
-              capabilities: ["reservation:reschedule"],
-            },
-            type: "reservation.reschedule",
-            payload: {
-              reservationId: input.reservationId,
-              resourceId: input.resourceId,
-              date: input.date,
-              startTime: input.startTime,
-              durationMinutes: detail.snapshot.occupiedMinutes,
-            },
-          });
-          if (!rescheduled.ok) {
-            return rescheduled.error.code === "OVERLAP"
-              ? failure("UNAVAILABLE")
-              : rescheduled.error.code === "NO_CHANGE"
-                ? failure("BAD_REQUEST")
-                : rescheduled.error.code === "RESERVATION_NOT_FOUND" ||
-                    rescheduled.error.code === "RESERVATION_NOT_ACTIVE"
-                  ? failure("NOT_FOUND_OR_UNAUTHORIZED")
-                  : failure("TEMPORARILY_UNAVAILABLE");
-          }
-          history.push({
-            from: {
-              resourceId: reservation.resourceId,
-              startTime: jstTime(reservation.startAt),
-            },
-            to: { resourceId: input.resourceId, startTime: input.startTime },
-          });
-          nextState = rescheduled.state;
-        }
+        const applied = this.#applyOwnerTransitionAction(
+          input,
+          state,
+          reservation,
+          detail,
+          effective,
+        );
+        if (isOwnerTransitionFailure(applied)) return applied;
+        const { nextState, status, rejectionReason, outcomeAt, history } = applied;
 
         const current = nextState.reservations.find(
           ({ id }) => id === input.reservationId,
@@ -2965,7 +3047,7 @@ export class ReservationDay extends DurableObject<Env> {
         const closure = this.#readClosures().find(
           ({ closureId }) => closureId === input.closureId,
         );
-        if (closure === undefined || !closure.active) {
+        if (!closure?.active) {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
         const response: DayClosureSuccess = {
@@ -3041,14 +3123,7 @@ export class ReservationDay extends DurableObject<Env> {
         .flatMap((reservation) => {
           const detail = details.get(reservation.id);
           if (detail === undefined) throw new Error("missing detail");
-          const status: "pending" | "approved" | null =
-            detail.status === "pending"
-              ? "pending"
-              : detail.status === "approved" ||
-                  detail.status === "completed" ||
-                  detail.status === "no_show"
-                ? "approved"
-                : null;
+          const status = calendarEventStatus(detail.status);
           if (status === null || detail.snapshot === null) return [];
           return [
             {

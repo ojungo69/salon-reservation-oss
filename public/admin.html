@@ -61,7 +61,7 @@
           <button class="primary-button compact-button" type="submit">認証して予定表を開く</button>
           <button id="logout-button" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
         </form>
-        <p id="auth-status" class="status" role="status" aria-live="polite" data-owner-auth-status></p>
+        <output id="auth-status" class="status" aria-live="polite" data-owner-auth-status></output>
       </section>
 
       <section class="operator-toolbar" aria-label="予定表の表示範囲" data-operator-toolbar>
@@ -91,7 +91,7 @@
             7日
           </button>
         </div>
-        <p class="status toolbar-status" role="status" aria-live="polite" data-schedule-live></p>
+        <output class="status toolbar-status" aria-live="polite" data-schedule-live></output>
       </section>
 
       <div class="operator-layout">
@@ -122,7 +122,7 @@
           <div id="closure-list" class="closure-list" data-closure-list aria-live="polite">
             <p class="empty-note">休業時間はまだありません。</p>
           </div>
-          <p id="schedule-status" class="status" role="status" aria-live="polite" data-schedule-status></p>
+          <output id="schedule-status" class="status" aria-live="polite" data-schedule-status></output>
         </section>
 
         <section id="week-board" class="panel schedule-board" data-schedule-board="week" hidden>
@@ -157,7 +157,7 @@
             <button type="button" class="danger-button" data-reservation-action="reject" disabled>申請を見送る</button>
             <button type="button" class="danger-button" data-reservation-action="cancel" disabled>予約を取り消す</button>
           </div>
-          <p class="status" role="status" aria-live="polite" data-reservation-action-status></p>
+          <output class="status" aria-live="polite" data-reservation-action-status></output>
         </section>
 
         <section class="panel" aria-labelledby="owner-create-title">
@@ -196,7 +196,7 @@
             <code id="owner-management-key" class="key-value"></code>
             <button id="owner-copy-key" class="secondary-button" type="button">管理キーをコピー</button>
           </div>
-          <p id="owner-create-status" class="status" role="status" aria-live="polite"></p>
+          <output id="owner-create-status" class="status" aria-live="polite"></output>
         </section>
 
         <section id="closures" class="panel closure-panel" aria-labelledby="closure-title">
@@ -232,7 +232,7 @@
             </fieldset>
             <button id="closure-submit" class="secondary-button" type="submit" data-closure-submit disabled>休業時間を登録する</button>
           </form>
-          <p class="status" role="status" aria-live="polite" data-closure-status></p>
+          <output class="status" aria-live="polite" data-closure-status></output>
         </section>
       </div>
     </main>

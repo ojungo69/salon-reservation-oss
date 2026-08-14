@@ -33,22 +33,35 @@ const copyStringLiteral = (text: string, start: number): { chunk: string; end: n
   return { chunk: chunk + (text[i] ?? ""), end: i };
 };
 
+const skipLineComment = (text: string, start: number): number => {
+  let i = start;
+  while (i < text.length && text[i] !== "\n") i += 1;
+  return i;
+};
+
+const skipBlockComment = (text: string, start: number): number => {
+  let i = start + 2;
+  while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+  return i + 2;
+};
+
 const stripComments = (text: string): string => {
   let out = "";
-  for (let i = 0; i < text.length; i += 1) {
+  let i = 0;
+  while (i < text.length) {
     const ch = text[i];
     if (ch === '"') {
       const literal = copyStringLiteral(text, i);
       out += literal.chunk;
-      i = literal.end;
+      i = literal.end + 1;
     } else if (ch === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i += 1;
+      i = skipLineComment(text, i) + 1;
       out += "\n";
     } else if (ch === "/" && text[i + 1] === "*") {
-      for (i += 2; i < text.length && !(text[i] === "*" && text[i + 1] === "/"); i += 1);
-      i += 1;
+      i = skipBlockComment(text, i);
     } else {
       out += ch;
+      i += 1;
     }
   }
   return out;
@@ -56,14 +69,18 @@ const stripComments = (text: string): string => {
 
 const stripTrailingCommas = (text: string): string => {
   let out = "";
-  for (let i = 0; i < text.length; i += 1) {
+  let i = 0;
+  while (i < text.length) {
     const ch = text[i];
     if (ch === '"') {
       const literal = copyStringLiteral(text, i);
       out += literal.chunk;
-      i = literal.end;
+      i = literal.end + 1;
     } else if (ch !== "," || !/^\s*[}\]]/.test(text.slice(i + 1))) {
       out += ch;
+      i += 1;
+    } else {
+      i += 1;
     }
   }
   return out;

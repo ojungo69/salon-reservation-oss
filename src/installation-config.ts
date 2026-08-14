@@ -11,6 +11,9 @@ const DurableObjectBase: typeof CloudflareDurableObject = directNodeRuntime
       constructor() {
         throw new Error("InstallationConfig requires the Workers runtime");
       }
+      fetch(): never {
+        throw new Error("InstallationConfig requires the Workers runtime");
+      }
     } as unknown as typeof CloudflareDurableObject)
   : (await import("cloudflare:workers")).DurableObject;
 
@@ -409,27 +412,21 @@ const parseService = (value: unknown, index: number): InstallationService => {
   };
 };
 
-export const parseInstallationSettings = (value: unknown): InstallationSettings => {
-  if (!isRecord(value) || !hasKnownKeys(value, SETTINGS_KEYS, OPTIONAL_SETTINGS_KEYS)) {
-    return invalid("settings");
-  }
-  if (!Array.isArray(value.services) || value.services.length < 1 || value.services.length > 16) {
-    return invalid("services");
-  }
-  if (!Array.isArray(value.resources) || value.resources.length < 1 || value.resources.length > 8) {
-    return invalid("resources");
-  }
-
-  const resources = value.resources.map(parseResource);
-  const services = value.services.map(parseService);
+const parseCatalog = (
+  resourceValues: unknown[],
+  serviceValues: unknown[],
+): {
+  resources: InstallationResource[];
+  services: InstallationService[];
+  activeResourceIds: Set<string>;
+} => {
+  const resources = resourceValues.map((resource, index) => parseResource(resource, index));
+  const services = serviceValues.map((service, index) => parseService(service, index));
   const resourceIds = resources.map(({ id }) => id);
   const serviceIds = services.map(({ id }) => id);
   if (new Set(resourceIds).size !== resourceIds.length) return invalid("resources.id");
   if (new Set(serviceIds).size !== serviceIds.length) return invalid("services.id");
-
-  const activeResourceIds = new Set(
-    resources.filter(({ active }) => active).map(({ id }) => id),
-  );
+  const activeResourceIds = new Set(resources.filter(({ active }) => active).map(({ id }) => id));
   if (activeResourceIds.size === 0 || services.every(({ active }) => !active)) {
     return invalid("capacity");
   }
@@ -438,7 +435,19 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
       return invalid(`services[${index}].eligibleResourceIds`);
     }
   }
+  return { resources, services, activeResourceIds };
+};
 
+const parseHours = (
+  value: Record<string, unknown>,
+  services: InstallationService[],
+  activeResourceIds: Set<string>,
+): {
+  opensAt: string;
+  closesAt: string;
+  startIntervalMinutes: number;
+  openWeekdays: number[];
+} => {
   const opensAt = parseTime(value.opensAt, "opensAt");
   const closesAt = parseTime(value.closesAt, "closesAt");
   if (opensAt.minutes >= closesAt.minutes) return invalid("closesAt");
@@ -459,7 +468,6 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
     boundedInteger(weekday, "openWeekdays", 0, 6),
   );
   if (new Set(openWeekdays).size !== openWeekdays.length) return invalid("openWeekdays");
-
   const shortestOccupiedMinutes = Math.min(
     ...services
       .filter(({ active }) => active)
@@ -471,6 +479,27 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
       ? 0
       : Math.floor((openMinutes - shortestOccupiedMinutes) / startIntervalMinutes) + 1;
   if (startCount === 0 || startCount * activeResourceIds.size > 96) return invalid("capacity");
+  return {
+    opensAt: opensAt.value,
+    closesAt: closesAt.value,
+    startIntervalMinutes,
+    openWeekdays,
+  };
+};
+
+export const parseInstallationSettings = (value: unknown): InstallationSettings => {
+  if (!isRecord(value) || !hasKnownKeys(value, SETTINGS_KEYS, OPTIONAL_SETTINGS_KEYS)) {
+    return invalid("settings");
+  }
+  if (!Array.isArray(value.services) || value.services.length < 1 || value.services.length > 16) {
+    return invalid("services");
+  }
+  if (!Array.isArray(value.resources) || value.resources.length < 1 || value.resources.length > 8) {
+    return invalid("resources");
+  }
+
+  const { resources, services, activeResourceIds } = parseCatalog(value.resources, value.services);
+  const hours = parseHours(value, services, activeResourceIds);
 
   if (value.timeZone !== "Asia/Tokyo") return invalid("timeZone");
   if (typeof value.turnstileSiteKey !== "string") return invalid("turnstileSiteKey");
@@ -485,10 +514,10 @@ export const parseInstallationSettings = (value: unknown): InstallationSettings 
     timeZone: "Asia/Tokyo",
     services,
     resources,
-    opensAt: opensAt.value,
-    closesAt: closesAt.value,
-    startIntervalMinutes,
-    openWeekdays,
+    opensAt: hours.opensAt,
+    closesAt: hours.closesAt,
+    startIntervalMinutes: hours.startIntervalMinutes,
+    openWeekdays: hours.openWeekdays,
     horizonDays: boundedInteger(value.horizonDays, "horizonDays", 1, 90),
     retentionDays: boundedInteger(value.retentionDays, "retentionDays", 1, 365),
     ...(value.pendingExpiryMinutes === undefined
@@ -598,7 +627,7 @@ const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!isRecord(value)) throw new Error("Cannot canonicalize unsupported value");
   return `{${Object.keys(value)
-    .sort()
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
     .join(",")}}`;
 };
@@ -1005,8 +1034,8 @@ const SHA256_HEX = /^[a-f0-9]{64}$/;
 // the settings JSON round-trip never see it: a pre-adapter Worker reads this
 // storage exactly as before, and no `lineAdapter` settings key ever exists.
 
-const LIFF_ID = /^[0-9]{7,14}-[A-Za-z0-9]{4,20}$/;
-const CHANNEL_ID = /^[0-9]{7,14}$/;
+const LIFF_ID = /^\d{7,14}-[A-Za-z0-9]{4,20}$/;
+const CHANNEL_ID = /^\d{7,14}$/;
 const LINE_OPERATIONS = ["line.settings", "line.enable", "line.disable"] as const;
 type LineOperationName = (typeof LINE_OPERATIONS)[number];
 
@@ -1138,6 +1167,52 @@ const parseLineIdentifiers = (value: unknown): LineIdentifiers => {
   };
 };
 
+const parseLineActive = (value: unknown): LineLifecycle["active"] => {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, LINE_ACTIVE_KEYS)) {
+    return corruptStorage();
+  }
+  const { generation, activatedAt, ...identifiers } = value;
+  if (
+    !Number.isSafeInteger(generation) ||
+    (generation as number) < 1 ||
+    typeof activatedAt !== "string"
+  ) {
+    return corruptStorage();
+  }
+  return {
+    ...parseLineIdentifiers(identifiers),
+    generation: generation as number,
+    activatedAt: canonicalTimestamp(activatedAt),
+  };
+};
+
+const parseLineOperation = (value: unknown): LineSagaOperation | null => {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, LINE_OPERATION_KEYS)) {
+    return corruptStorage();
+  }
+  if (
+    typeof value.operationId !== "string" ||
+    !UUID.test(value.operationId) ||
+    (value.kind !== "enable" && value.kind !== "disable") ||
+    !["activate", "begin-disable", "final-wait"].includes(value.step as string) ||
+    typeof value.startedAt !== "string" ||
+    (value.finalPassAt !== null && !Number.isSafeInteger(value.finalPassAt))
+  ) {
+    return corruptStorage();
+  }
+  return {
+    operationId: value.operationId,
+    kind: value.kind,
+    step: value.step as LineSagaOperation["step"],
+    startedAt: canonicalTimestamp(value.startedAt),
+    identifiers:
+      value.identifiers === null ? null : parseLineIdentifiers(value.identifiers),
+    finalPassAt: value.finalPassAt as number | null,
+  };
+};
+
 const parseLineLifecycle = (value: unknown): LineLifecycle => {
   if (!isRecord(value) || !hasExactKeys(value, LINE_LIFECYCLE_KEYS)) {
     return corruptStorage();
@@ -1158,59 +1233,8 @@ const parseLineLifecycle = (value: unknown): LineLifecycle => {
     return corruptStorage();
   }
   const draft = value.draft === null ? null : parseLineIdentifiers(value.draft);
-  let active: LineLifecycle["active"] = null;
-  if (value.active !== null) {
-    if (!isRecord(value.active) || !hasExactKeys(value.active, LINE_ACTIVE_KEYS)) {
-      return corruptStorage();
-    }
-    const { generation, activatedAt, ...identifiers } = value.active;
-    if (
-      !Number.isSafeInteger(generation) ||
-      (generation as number) < 1 ||
-      typeof activatedAt !== "string"
-    ) {
-      return corruptStorage();
-    }
-    active = {
-      ...parseLineIdentifiers(identifiers),
-      generation: generation as number,
-      activatedAt: canonicalTimestamp(activatedAt),
-    };
-  }
-  let operation: LineSagaOperation | null = null;
-  if (value.operation !== null) {
-    if (
-      !isRecord(value.operation) ||
-      !hasExactKeys(value.operation, LINE_OPERATION_KEYS)
-    ) {
-      return corruptStorage();
-    }
-    const candidate = value.operation;
-    if (
-      typeof candidate.operationId !== "string" ||
-      !UUID.test(candidate.operationId) ||
-      (candidate.kind !== "enable" && candidate.kind !== "disable") ||
-      !["activate", "begin-disable", "final-wait"].includes(
-        candidate.step as string,
-      ) ||
-      typeof candidate.startedAt !== "string" ||
-      (candidate.finalPassAt !== null &&
-        !Number.isSafeInteger(candidate.finalPassAt))
-    ) {
-      return corruptStorage();
-    }
-    operation = {
-      operationId: candidate.operationId,
-      kind: candidate.kind,
-      step: candidate.step as LineSagaOperation["step"],
-      startedAt: canonicalTimestamp(candidate.startedAt),
-      identifiers:
-        candidate.identifiers === null
-          ? null
-          : parseLineIdentifiers(candidate.identifiers),
-      finalPassAt: candidate.finalPassAt as number | null,
-    };
-  }
+  const active = parseLineActive(value.active);
+  const operation = parseLineOperation(value.operation);
   const receipts = value.receipts.map((entry): LineReceipt => {
     if (!isRecord(entry) || !hasExactKeys(entry, LINE_RECEIPT_KEYS)) {
       return corruptStorage();
@@ -1470,7 +1494,7 @@ const parseRpcRuntime = (value: unknown): ReadinessRuntime => {
     typeof value.turnstileSecretPresent !== "boolean" ||
     typeof value.lineSecretPresent !== "boolean"
   ) {
-    throw new Error("Invalid installation runtime");
+    throw new TypeError("Invalid installation runtime");
   }
   return {
     ownerSecretPresent: value.ownerSecretPresent,
@@ -1527,12 +1551,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       )
       .toArray();
     const row = rows[0];
-    if (
-      rows.length !== 1 ||
-      row === undefined ||
-      row.singleton !== 1 ||
-      typeof row.state_json !== "string"
-    ) {
+    if (rows.length !== 1 || row?.singleton !== 1 || typeof row.state_json !== "string") {
       return corruptStorage();
     }
     let parsed: unknown;
@@ -1570,7 +1589,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       )
       .toArray();
     const row = rows[0];
-    if (rows.length !== 1 || row === undefined || row.singleton !== 1) {
+    if (rows.length !== 1 || row?.singleton !== 1) {
       return corruptStorage();
     }
     let parsed: unknown;
@@ -1664,6 +1683,66 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * phase + version CAS → execute. `lifecycleVersion` bumps exactly once per
    * accepted external command; saga re-drives never change it.
    */
+  #nextLineLifecycle(
+    command: LineCommandInput,
+    lifecycle: LineLifecycle,
+    safeRuntime: ReadinessRuntime,
+    now: string,
+  ): LineLifecycle | { ok: false; code: "PHASE_CONFLICT" | "SECRET_MISSING" | "ORIGIN_UNCONFIGURED" } {
+    if (command.operation === "line.settings") {
+      if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
+        return { ok: false, code: "PHASE_CONFLICT" };
+      }
+      return {
+        ...lifecycle,
+        draft: command.identifiers,
+        lifecycleVersion: lifecycle.lifecycleVersion + 1,
+        updatedAt: now,
+      };
+    }
+    if (command.operation === "line.enable") {
+      if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
+        return { ok: false, code: "PHASE_CONFLICT" };
+      }
+      if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
+      const settings = activeVersion(this.#readStoredState().state).settings;
+      if (!protectionReady(settings, safeRuntime)) {
+        return { ok: false, code: "ORIGIN_UNCONFIGURED" };
+      }
+      return {
+        ...lifecycle,
+        phase: "activating",
+        operation: {
+          operationId: crypto.randomUUID(),
+          kind: "enable",
+          step: "activate",
+          startedAt: now,
+          identifiers: command.identifiers,
+          finalPassAt: null,
+        },
+        lifecycleVersion: lifecycle.lifecycleVersion + 1,
+        updatedAt: now,
+      };
+    }
+    if (lifecycle.phase !== "active") {
+      return { ok: false, code: "PHASE_CONFLICT" };
+    }
+    return {
+      ...lifecycle,
+      phase: "deactivating",
+      operation: {
+        operationId: crypto.randomUUID(),
+        kind: "disable",
+        step: "begin-disable",
+        startedAt: now,
+        identifiers: null,
+        finalPassAt: null,
+      },
+      lifecycleVersion: lifecycle.lifecycleVersion + 1,
+      updatedAt: now,
+    };
+  }
+
   async executeLineCommand(
     input: unknown,
     runtime: ReadinessRuntime,
@@ -1697,64 +1776,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         return { ok: false, code: "VERSION_CONFLICT" };
       }
 
-      let next: LineLifecycle;
-      if (command.operation === "line.settings") {
-        if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
-          return { ok: false, code: "PHASE_CONFLICT" };
-        }
-        next = {
-          ...lifecycle,
-          draft: command.identifiers,
-          lifecycleVersion: lifecycle.lifecycleVersion + 1,
-          updatedAt: now,
-        };
-      } else if (command.operation === "line.enable") {
-        if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
-          return { ok: false, code: "PHASE_CONFLICT" };
-        }
-        if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
-        const settings = activeVersion(this.#readStoredState().state).settings;
-        if (!protectionReady(settings, safeRuntime)) {
-          return { ok: false, code: "ORIGIN_UNCONFIGURED" };
-        }
-        next = {
-          ...lifecycle,
-          phase: "activating",
-          operation: {
-            operationId: crypto.randomUUID(),
-            kind: "enable",
-            step: "activate",
-            startedAt: now,
-            // Enable's identifiers are authoritative; the draft is a setup
-            // convenience they supersede.
-            identifiers: command.identifiers,
-            finalPassAt: null,
-          },
-          lifecycleVersion: lifecycle.lifecycleVersion + 1,
-          updatedAt: now,
-        };
-      } else {
-        // Only a settled installation can be disabled: interleaving a disable
-        // with an in-flight activation would let both sagas drive the
-        // authority in opposite directions.
-        if (lifecycle.phase !== "active") {
-          return { ok: false, code: "PHASE_CONFLICT" };
-        }
-        next = {
-          ...lifecycle,
-          phase: "deactivating",
-          operation: {
-            operationId: crypto.randomUUID(),
-            kind: "disable",
-            step: "begin-disable",
-            startedAt: now,
-            identifiers: null,
-            finalPassAt: null,
-          },
-          lifecycleVersion: lifecycle.lifecycleVersion + 1,
-          updatedAt: now,
-        };
-      }
+      const next = this.#nextLineLifecycle(command, lifecycle, safeRuntime, now);
+      if ("code" in next) return next;
 
       const outcome: LineCommandOutcome = {
         ok: true,
@@ -1786,6 +1809,41 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   // Single-coordinator saga driver: idempotent, re-entrant, alarm re-driven.
   // Every step reads its work from storage, performs one adapter RPC, then
   // records the step's completion; a crash anywhere re-drives from the record.
+  async #driveEnableSaga(
+    operation: LineSagaOperation,
+    authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
+    now: string,
+  ): Promise<"done" | "retry"> {
+    if (operation.identifiers === null) throw new Error("corrupt enable operation");
+    const meta = await authority.readMeta();
+    const generation = (meta?.highWater ?? 0) + 1;
+    const activated = await authority.activate({
+      operationId: operation.operationId,
+      generation,
+      snapshot: {
+        messagingChannelId: (operation.identifiers as LineIdentifiers).messagingChannelId,
+      },
+    });
+    if (!activated.ok) return "retry";
+    this.ctx.storage.transactionSync(() => {
+      const current = this.#readLineLifecycle();
+      if (current?.operation?.operationId !== operation.operationId) return;
+      this.#writeLineLifecycle({
+        ...current,
+        phase: "active",
+        active: {
+          ...(operation.identifiers as LineIdentifiers),
+          generation: activated.meta.generation,
+          activatedAt: now,
+        },
+        operation: null,
+        highWaterCopy: activated.meta.highWater,
+        updatedAt: now,
+      });
+    });
+    return "done";
+  }
+
   async #driveLineSaga(): Promise<void> {
     for (let step = 0; step < 4; step += 1) {
       const lifecycle = this.#readLineLifecycle();
@@ -1795,34 +1853,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       const now = new Date().toISOString();
       try {
         if (operation.kind === "enable") {
-          if (operation.identifiers === null) throw new Error("corrupt enable operation");
-          const meta = await authority.readMeta();
-          const generation = (meta?.highWater ?? 0) + 1;
-          const activated = await authority.activate({
-            operationId: operation.operationId,
-            generation,
-            snapshot: {
-              messagingChannelId: (operation.identifiers as LineIdentifiers)
-                .messagingChannelId,
-            },
-          });
-          if (!activated.ok) continue; // raced a concurrent mint; re-read and retry
-          this.ctx.storage.transactionSync(() => {
-            const current = this.#readLineLifecycle();
-            if (current?.operation?.operationId !== operation.operationId) return;
-            this.#writeLineLifecycle({
-              ...current,
-              phase: "active",
-              active: {
-                ...operation.identifiers as LineIdentifiers,
-                generation: activated.meta.generation,
-                activatedAt: now,
-              },
-              operation: null,
-              highWaterCopy: activated.meta.highWater,
-              updatedAt: now,
-            });
-          });
+          if ((await this.#driveEnableSaga(operation, authority, now)) === "retry") continue;
           return;
         }
         if (operation.step === "begin-disable") {

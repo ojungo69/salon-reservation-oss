@@ -36,9 +36,9 @@
         </p>
       </section>
 
-      <p id="bookings-status" class="status page-status" role="status" aria-live="polite" data-bookings-status>
+      <output id="bookings-status" class="status page-status" aria-live="polite" data-bookings-status>
         保存した予約を確認しています。
-      </p>
+      </output>
 
       <section id="owned-bookings" class="owned-bookings" data-owned-bookings aria-labelledby="owned-bookings-title" aria-live="polite">
         <h2 id="owned-bookings-title" class="visually-hidden">保存した予約一覧</h2>
@@ -88,7 +88,7 @@
           <button class="secondary-button" value="cancel">戻る</button>
           <button id="booking-cancel-confirm" class="danger-button" value="confirm" data-booking-cancel-confirm-button>取り消す</button>
         </div>
-        <p class="status" role="status" aria-live="polite" data-booking-cancel-status></p>
+        <output class="status" aria-live="polite" data-booking-cancel-status></output>
       </form>
     </dialog>
 

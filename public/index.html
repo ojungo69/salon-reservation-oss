@@ -29,10 +29,10 @@
     </header>
 
     <main id="main" class="page-shell" data-journey-root>
-      <p class="mode-notice" role="status" data-installation-mode-notice>
+      <output class="mode-notice" data-installation-mode-notice>
         デモ・設定中です。必要な準備が完了するまで、予約内容は受け付けません。
         <a href="/setup.html">設定状況を確認する</a>
-      </p>
+      </output>
 
       <section class="intro journey-intro" aria-labelledby="page-title">
         <p class="section-label">予約の申請</p>
@@ -53,7 +53,7 @@
           <span>3</span><strong>確認して送信</strong>
         </li>
       </ol>
-      <p id="journey-announcer" class="visually-hidden" role="status" aria-live="polite" data-journey-live></p>
+      <output id="journey-announcer" class="visually-hidden" aria-live="polite" data-journey-live></output>
 
       <form id="booking-form" class="journey-form" data-booking-form novalidate>
         <section
@@ -81,7 +81,7 @@
                 autocomplete="off"
                 placeholder="サービス名で絞り込み"
               >
-              <p class="visually-hidden" role="status" data-service-filter-count></p>
+              <output class="visually-hidden" data-service-filter-count></output>
             </div>
             <div id="service-list" class="service-list" data-service-list aria-live="polite">
               <p class="empty-note" data-services-loading>サービスを読み込んでいます。</p>
@@ -280,7 +280,7 @@
               </div>
             </div>
           </div>
-          <p id="booking-status" class="status" role="status" aria-live="polite" data-booking-status></p>
+          <output id="booking-status" class="status" aria-live="polite" data-booking-status></output>
         </section>
       </form>
 
@@ -305,7 +305,7 @@
           <a class="tertiary-link" href="/bookings.html">保存した予約を確認</a>
           <button id="forget-key" class="text-button" type="button">この端末から管理キーを削除</button>
         </div>
-        <p id="key-status" class="status" role="status" aria-live="polite"></p>
+        <output id="key-status" class="status" aria-live="polite"></output>
       </section>
 
     </main>

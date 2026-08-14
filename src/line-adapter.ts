@@ -16,7 +16,8 @@ export const isLineChannelSecret = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length >= 16 &&
   value.length <= 128 &&
-  !/[\s\u0000-\u001f\u007f]/.test(value);
+  !/\s/.test(value) &&
+  !/[\u0000-\u0008\u000e-\u001f\u007f]/.test(value);
 
 declare global {
   interface Env {
@@ -96,7 +97,7 @@ const decodeStrictBase64 = (value: string): Uint8Array | null => {
   if (btoa(decoded) !== value) return null;
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index += 1) {
-    bytes[index] = decoded.charCodeAt(index);
+    bytes[index] = decoded.codePointAt(index) ?? 0;
   }
   return bytes;
 };
@@ -114,7 +115,7 @@ export const verifyWebhookSignature = async (
   if (body.byteLength > ADAPTER.WEBHOOK_BODY_MAX_BYTES) return false;
   if (signatureHeader === null || signatureHeader.length > 64) return false;
   const presented = decodeStrictBase64(signatureHeader);
-  if (presented === null || presented.byteLength !== 32) return false;
+  if (presented?.byteLength !== 32) return false;
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(channelSecret),
@@ -167,49 +168,51 @@ export const parseWebhookBody = (body: Uint8Array): ParsedWebhook | null => {
   const events: LineWebhookEvent[] = [];
   let ignoredCount = 0;
   for (const entry of parsed.events) {
-    if (!isRecord(entry)) return null;
-    if (
-      typeof entry.webhookEventId !== "string" ||
-      !WEBHOOK_EVENT_ID.test(entry.webhookEventId) ||
-      !Number.isSafeInteger(entry.timestamp) ||
-      (entry.timestamp as number) < 0
-    ) {
-      return null;
-    }
-    const source = isRecord(entry.source) ? entry.source : null;
-    const userId =
-      source !== null && source.type === "user" && typeof source.userId === "string"
-        ? source.userId
-        : null;
-    const handledType =
-      entry.type === "follow" || entry.type === "unfollow" ? entry.type : null;
-    const handled = handledType !== null && userId !== null && LINE_USER_ID.test(userId);
-    // A handled event must be well formed all the way down: a malformed
-    // deliveryContext on an event we act upon is a protocol violation, not
-    // something to coerce into `false`.
-    if (handled) {
-      if (
-        !isRecord(entry.deliveryContext) ||
-        typeof entry.deliveryContext.isRedelivery !== "boolean"
-      ) {
-        return null;
-      }
-    }
-    const isRedelivery =
-      isRecord(entry.deliveryContext) && entry.deliveryContext.isRedelivery === true;
-    if (handled && handledType !== null && userId !== null) {
-      events.push({
-        type: handledType,
-        webhookEventId: entry.webhookEventId,
-        timestamp: entry.timestamp as number,
-        userId,
-        isRedelivery,
-      });
-    } else {
+    const parsedEvent = parseWebhookEvent(entry);
+    if (parsedEvent === "malformed") return null;
+    if (parsedEvent === "ignored") {
       ignoredCount += 1;
+      continue;
     }
+    events.push(parsedEvent);
   }
   return { events, ignoredCount };
+};
+
+const parseWebhookEvent = (
+  entry: unknown,
+): LineWebhookEvent | "ignored" | "malformed" => {
+  if (!isRecord(entry)) return "malformed";
+  if (
+    typeof entry.webhookEventId !== "string" ||
+    !WEBHOOK_EVENT_ID.test(entry.webhookEventId) ||
+    !Number.isSafeInteger(entry.timestamp) ||
+    (entry.timestamp as number) < 0
+  ) {
+    return "malformed";
+  }
+  const source = isRecord(entry.source) ? entry.source : null;
+  const userId =
+    source !== null && source.type === "user" && typeof source.userId === "string"
+      ? source.userId
+      : null;
+  const handledType =
+    entry.type === "follow" || entry.type === "unfollow" ? entry.type : null;
+  const handled = handledType !== null && userId !== null && LINE_USER_ID.test(userId);
+  // A handled event must be well formed all the way down: a malformed
+  // deliveryContext on an event we act upon is a protocol violation, not
+  // something to coerce into `false`.
+  if (handled && (!isRecord(entry.deliveryContext) || typeof entry.deliveryContext.isRedelivery !== "boolean")) {
+    return "malformed";
+  }
+  if (!handled || handledType === null || userId === null) return "ignored";
+  return {
+    type: handledType,
+    webhookEventId: entry.webhookEventId,
+    timestamp: entry.timestamp as number,
+    userId,
+    isRedelivery: isRecord(entry.deliveryContext) && entry.deliveryContext.isRedelivery === true,
+  };
 };
 
 // ---- ID-token verification (POST; GET on the same path is a different API) ----
@@ -261,6 +264,15 @@ export const verifyIdToken = async (
     return { ok: false, code: "PROTOCOL_ERROR" };
   }
   if (!isRecord(payload)) return { ok: false, code: "PROTOCOL_ERROR" };
+  const subject = verifiedLineSubject(payload, loginChannelId);
+  if (subject === null) return { ok: false, code: "PROTOCOL_ERROR" };
+  return { ok: true, sub: subject };
+};
+
+const verifiedLineSubject = (
+  payload: Record<string, unknown>,
+  loginChannelId: string,
+): string | null => {
   const { iss, sub, aud, exp, iat } = payload;
   if (
     iss !== "https://access.line.me" ||
@@ -271,21 +283,19 @@ export const verifyIdToken = async (
     (exp as number) * 1000 < Date.now() - 60_000 ||
     !Number.isSafeInteger(iat)
   ) {
-    return { ok: false, code: "PROTOCOL_ERROR" };
+    return null;
   }
-  // Optional profile claims: bounds-checked, then deliberately discarded —
-  // nothing beyond `sub` survives this function.
   for (const claim of ["nonce", "name", "picture", "email"]) {
     const value = payload[claim];
     if (value !== undefined && (typeof value !== "string" || value.length > 1000)) {
-      return { ok: false, code: "PROTOCOL_ERROR" };
+      return null;
     }
   }
   if (
     payload.auth_time !== undefined &&
     (!Number.isSafeInteger(payload.auth_time) || (payload.auth_time as number) < 0)
   ) {
-    return { ok: false, code: "PROTOCOL_ERROR" };
+    return null;
   }
   if (
     payload.amr !== undefined &&
@@ -293,9 +303,9 @@ export const verifyIdToken = async (
       payload.amr.length > 16 ||
       payload.amr.some((entry) => typeof entry !== "string" || entry.length > 64))
   ) {
-    return { ok: false, code: "PROTOCOL_ERROR" };
+    return null;
   }
-  return { ok: true, sub };
+  return sub;
 };
 
 // ---- stateless channel access token (v3, client_credentials) ----
@@ -319,9 +329,9 @@ const secretDiscriminator = async (secret: string): Promise<string> => {
     "SHA-256",
     new TextEncoder().encode(secret),
   );
-  return [...new Uint8Array(digest).slice(0, 8)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(new Uint8Array(digest).subarray(0, 8), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
 };
 
 export const mintChannelToken = async (

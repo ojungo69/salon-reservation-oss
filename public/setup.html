@@ -29,9 +29,9 @@
     </header>
 
     <main id="main" class="page-shell" data-setup-root>
-      <p class="mode-notice" role="status" data-setup-mode-notice>
+      <output class="mode-notice" data-setup-mode-notice>
         現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。
-      </p>
+      </output>
 
       <section class="intro compact-intro" aria-labelledby="page-title">
         <p class="section-label">公開準備</p>
@@ -65,7 +65,7 @@
           <button id="setup-auth-submit" class="primary-button compact-button" type="submit">認証して設定を開く</button>
           <button id="setup-logout" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
         </form>
-        <p id="setup-auth-status" class="status" role="status" aria-live="polite" data-setup-auth-status></p>
+        <output id="setup-auth-status" class="status" aria-live="polite" data-setup-auth-status></output>
       </section>
 
       <ol class="setup-progress" aria-label="公開準備の手順" data-setup-progress>
@@ -74,7 +74,7 @@
         <li data-setup-progress-step="protection"><span>3</span><strong>公開の保護</strong></li>
         <li data-setup-progress-step="review"><span>4</span><strong>最終確認</strong></li>
       </ol>
-      <p id="setup-announcer" class="visually-hidden" role="status" aria-live="polite" data-setup-live></p>
+      <output id="setup-announcer" class="visually-hidden" aria-live="polite" data-setup-live></output>
 
       <form id="setup-form" class="setup-form" data-setup-form novalidate>
         <fieldset id="setup-fields" disabled>
@@ -221,7 +221,7 @@
             <button id="setup-save" class="secondary-button" type="submit" data-setup-save disabled>下書きを保存する</button>
             <button id="setup-enable-live" class="primary-button" type="button" data-setup-enable-live aria-describedby="setup-help" disabled>公開予約を有効にする</button>
           </div>
-          <p id="setup-status" class="status" role="status" aria-live="polite" data-setup-status></p>
+          <output id="setup-status" class="status" aria-live="polite" data-setup-status></output>
         </div>
       </form>
 
@@ -272,7 +272,7 @@
           <a data-receipt-guidance-link="export">データ出力</a>
           <a data-receipt-guidance-link="deletion">データの削除</a>
         </nav>
-        <p id="receipt-status" class="status" role="status" aria-live="polite" data-receipt-status></p>
+        <output id="receipt-status" class="status" aria-live="polite" data-receipt-status></output>
       </section>
     </main>
 

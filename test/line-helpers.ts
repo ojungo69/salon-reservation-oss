@@ -201,5 +201,5 @@ export const signWebhookBody = async (
     ["sign"],
   );
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return btoa(String.fromCharCode(...new Uint8Array(mac)));
+  return btoa(String.fromCodePoint(...new Uint8Array(mac)));
 };

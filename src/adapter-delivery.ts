@@ -345,6 +345,31 @@ export class AdapterDelivery extends DurableObject<Env> {
    * re-disposition of held rows) routes through here, so one event can never
    * resolve differently by route.
    */
+  #linkDisposition(
+    event: AdapterOutboxEvent,
+    link:
+      | {
+          subject: string;
+          status: string;
+          watermark_seq: number;
+          link_version: number;
+          expires_at: number | null;
+        }
+      | undefined,
+    now: number,
+    sql: DurableObject["ctx"]["storage"]["sql"],
+  ): string {
+    const liveProvisional =
+      link?.status === "provisional" && (link.expires_at === null || link.expires_at >= now);
+    if (liveProvisional) return "held";
+    if (link?.status !== "final") return "ignored-no-recipient";
+    if (event.seq <= link.watermark_seq) return "ignored-prelink";
+    const pending =
+      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries").toArray()[0]?.n ?? 0;
+    if (pending >= ADAPTER.DELIVERY_QUEUE_CAP) return "overflow";
+    return this.#secretPresent() ? "queued" : "awaiting-configuration";
+  }
+
   #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number): string {
     if (event.type === "create") throw new Error("calendar event reached LINE delivery");
     const sql = this.ctx.storage.sql;
@@ -370,26 +395,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           event.reservationId,
         )
         .toArray()[0];
-      const liveProvisional =
-        link !== undefined &&
-        link.status === "provisional" &&
-        (link.expires_at === null || link.expires_at >= now);
-      if (liveProvisional) {
-        disposition = "held";
-      } else if (link === undefined || link.status !== "final") {
-        disposition = "ignored-no-recipient";
-      } else if (event.seq <= link.watermark_seq) {
-        disposition = "ignored-prelink";
-      } else {
-        const pending =
-          sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries").toArray()[0]?.n ??
-          0;
-        if (pending >= ADAPTER.DELIVERY_QUEUE_CAP) {
-          disposition = "overflow";
-        } else {
-          disposition = this.#secretPresent() ? "queued" : "awaiting-configuration";
-        }
-      }
+      disposition = this.#linkDisposition(event, link, now, sql);
       if (disposition === "held" || disposition === "queued" || disposition === "awaiting-configuration") {
         const fragment: MessageFragment = {
           v: 1,
@@ -783,11 +789,7 @@ export class AdapterDelivery extends DurableObject<Env> {
         .toArray()[0];
       // Missing or unstamped: prune already took the holder. A stamp that has
       // already passed: prune has not run yet, but the boundary still governs.
-      if (
-        existing === undefined ||
-        existing.purge_at === null ||
-        existing.purge_at <= Date.now()
-      ) {
+      if (existing?.purge_at == null || existing.purge_at <= Date.now()) {
         sql.exec("DELETE FROM intents WHERE nonce = ?", nonceDigest);
         this.#bumpCounter("link_failed:past-retention", 1);
         return { ok: false as const, code: "INVALID_INTENT" as const };
@@ -936,6 +938,102 @@ export class AdapterDelivery extends DurableObject<Env> {
    * terminalizing expired attempts. Anything while not active is acknowledged
    * with zero persistence (disposition priority 0).
    */
+  #applyWebhookEvent(
+    sql: DurableObject["ctx"]["storage"]["sql"],
+    event: {
+      type: "follow" | "unfollow";
+      webhookEventId: string;
+      timestamp: number;
+      userId: string;
+    },
+    now: number,
+  ): "applied" | "duplicate" {
+    if (
+      !NONCE_FREE_ID.test(event.webhookEventId) ||
+      !LINE_SUBJECT.test(event.userId) ||
+      !Number.isSafeInteger(event.timestamp)
+    ) {
+      throw new Error("bad webhook event");
+    }
+    const inserted = sql.exec(
+      `INSERT INTO webhook_dedup (webhook_event_id, seen_at) VALUES (?, ?)
+       ON CONFLICT(webhook_event_id) DO NOTHING`,
+      event.webhookEventId,
+      now,
+    );
+    if (inserted.rowsWritten === 0) return "duplicate";
+    const linked =
+      sql
+        .exec<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM links WHERE subject = ? AND status = 'final'",
+          event.userId,
+        )
+        .toArray()[0]?.n ?? 0;
+    if (linked === 0) return "applied";
+    const current = sql
+      .exec<{ followed: number; updated_at: number }>(
+        "SELECT followed, updated_at FROM subjects WHERE subject = ?",
+        event.userId,
+      )
+      .toArray()[0];
+    if (
+      current !== undefined &&
+      (current.updated_at > event.timestamp ||
+        (current.updated_at === event.timestamp &&
+          current.followed === 0 &&
+          event.type === "follow"))
+    ) {
+      return "applied";
+    }
+    sql.exec(
+      `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(subject) DO UPDATE SET
+         followed = excluded.followed,
+         updated_at = excluded.updated_at`,
+      event.userId,
+      event.type === "follow" ? 1 : 0,
+      event.timestamp,
+    );
+    if (event.type === "unfollow") {
+      sql.exec(
+        `UPDATE deliveries SET status = 'parked', park_reason = 'unfollow'
+         WHERE status IN ('queued', 'awaiting-configuration')
+           AND reservation_id IN (
+             SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+           )`,
+        event.userId,
+      );
+      return "applied";
+    }
+    const expired = sql
+      .exec<{ delivery_id: string; type: string }>(
+        `SELECT delivery_id, type FROM deliveries
+         WHERE status = 'parked' AND park_reason = 'unfollow'
+           AND first_attempt_at IS NOT NULL AND first_attempt_at < ?
+           AND reservation_id IN (
+             SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+           )`,
+        retryKeyCutoff(now),
+        event.userId,
+      )
+      .toArray();
+    for (const row of expired) {
+      this.#recordTerminal("retry-exhausted", row.type);
+      sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
+    }
+    sql.exec(
+      `UPDATE deliveries SET status = ?, park_reason = NULL, next_attempt_at = ?
+       WHERE status = 'parked' AND park_reason = 'unfollow'
+         AND reservation_id IN (
+           SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
+         )`,
+      this.#secretPresent() ? "queued" : "awaiting-configuration",
+      now,
+      event.userId,
+    );
+    return "applied";
+  }
+
   async processWebhook(input: {
     events: Array<{
       type: "follow" | "unfollow";
@@ -962,108 +1060,14 @@ export class AdapterDelivery extends DurableObject<Env> {
       const now = Date.now();
       let applied = 0;
       let duplicates = 0;
-      const ordered = [...input.events].sort((a, b) =>
-        a.timestamp !== b.timestamp
-          ? a.timestamp - b.timestamp
-          : (a.type === "unfollow" ? 1 : 0) - (b.type === "unfollow" ? 1 : 0),
-      );
+      const ordered = [...input.events].sort((a, b) => {
+        if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+        const rank = (event: { type: string }) => (event.type === "unfollow" ? 1 : 0);
+        return rank(a) - rank(b);
+      });
       for (const event of ordered) {
-        if (
-          !NONCE_FREE_ID.test(event.webhookEventId) ||
-          !LINE_SUBJECT.test(event.userId) ||
-          !Number.isSafeInteger(event.timestamp)
-        ) {
-          throw new Error("bad webhook event");
-        }
-        const inserted = sql.exec(
-          `INSERT INTO webhook_dedup (webhook_event_id, seen_at) VALUES (?, ?)
-           ON CONFLICT(webhook_event_id) DO NOTHING`,
-          event.webhookEventId,
-          now,
-        );
-        if (inserted.rowsWritten === 0) {
-          duplicates += 1;
-          continue;
-        }
-        // Deliverability is only worth persisting for a subject this
-        // installation can actually send to: an unlinked follower leaves
-        // nothing behind but its webhookEventId in the dedup table.
-        const linked =
-          sql
-            .exec<{ n: number }>(
-              "SELECT COUNT(*) AS n FROM links WHERE subject = ? AND status = 'final'",
-              event.userId,
-            )
-            .toArray()[0]?.n ?? 0;
-        if (linked === 0) {
-          applied += 1;
-          continue;
-        }
-        const current = sql
-          .exec<{ followed: number; updated_at: number }>(
-            "SELECT followed, updated_at FROM subjects WHERE subject = ?",
-            event.userId,
-          )
-          .toArray()[0];
-        // Ordered by event timestamp: an older follow can never resurrect a
-        // newer unfollow, and an equal-timestamp stored unfollow wins too.
-        if (
-          current !== undefined &&
-          (current.updated_at > event.timestamp ||
-            (current.updated_at === event.timestamp &&
-              current.followed === 0 &&
-              event.type === "follow"))
-        ) {
-          applied += 1;
-          continue;
-        }
-        sql.exec(
-          `INSERT INTO subjects (subject, followed, updated_at) VALUES (?, ?, ?)
-           ON CONFLICT(subject) DO UPDATE SET
-             followed = excluded.followed,
-             updated_at = excluded.updated_at`,
-          event.userId,
-          event.type === "follow" ? 1 : 0,
-          event.timestamp,
-        );
-        if (event.type === "unfollow") {
-          sql.exec(
-            `UPDATE deliveries SET status = 'parked', park_reason = 'unfollow'
-             WHERE status IN ('queued', 'awaiting-configuration')
-               AND reservation_id IN (
-                 SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
-               )`,
-            event.userId,
-          );
-        } else {
-          const expired = sql
-            .exec<{ delivery_id: string; type: string }>(
-              `SELECT delivery_id, type FROM deliveries
-               WHERE status = 'parked' AND park_reason = 'unfollow'
-                 AND first_attempt_at IS NOT NULL AND first_attempt_at < ?
-                 AND reservation_id IN (
-                   SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
-                 )`,
-              retryKeyCutoff(now),
-              event.userId,
-            )
-            .toArray();
-          for (const row of expired) {
-            this.#recordTerminal("retry-exhausted", row.type);
-            sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", row.delivery_id);
-          }
-          sql.exec(
-            `UPDATE deliveries SET status = ?, park_reason = NULL, next_attempt_at = ?
-             WHERE status = 'parked' AND park_reason = 'unfollow'
-               AND reservation_id IN (
-                 SELECT reservation_id FROM links WHERE subject = ? AND status = 'final'
-               )`,
-            this.#secretPresent() ? "queued" : "awaiting-configuration",
-            now,
-            event.userId,
-          );
-        }
-        applied += 1;
+        if (this.#applyWebhookEvent(sql, event, now) === "duplicate") duplicates += 1;
+        else applied += 1;
       }
       // Retention: TTL prune plus cap eviction folded into a counter so
       // visibility degrades to counts, never to silence.
@@ -1376,6 +1380,75 @@ export class AdapterDelivery extends DurableObject<Env> {
   }
 
   /** One bounded send pass: mint, claim, push, settle. Active state only. */
+  #claimDueDelivery(
+    row: DeliveryRow,
+    meta: AdapterDeliveryMeta,
+    snapshot: { messagingChannelId: string },
+  ): { subject: string; fragment: MessageFragment; firstAttemptAt: number } | null {
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const current = this.#readMeta();
+      if (
+        current.state !== "active" ||
+        current.generation !== meta.generation ||
+        current.snapshot?.messagingChannelId !== snapshot.messagingChannelId
+      ) {
+        return null;
+      }
+      const fresh = sql
+        .exec<DeliveryRow>(
+          "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'queued'",
+          row.delivery_id,
+        )
+        .toArray()[0];
+      if (fresh === undefined) return null;
+      const claimNow = Date.now();
+      if (fresh.first_attempt_at !== null && fresh.first_attempt_at < retryKeyCutoff(claimNow)) {
+        this.#recordTerminal("retry-exhausted", fresh.type);
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        return null;
+      }
+      if (fresh.purge_at !== null && fresh.purge_at <= claimNow) {
+        this.#recordTerminal("past-retention", fresh.type);
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        return null;
+      }
+      const link = sql
+        .exec<{ subject: string; status: string; link_version: number }>(
+          "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
+          fresh.reservation_id,
+        )
+        .toArray()[0];
+      if (link?.status !== "final" || link.link_version !== fresh.link_version) {
+        this.#recordTerminal("unlinked", fresh.type);
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        return null;
+      }
+      const subjectRow = sql
+        .exec<{ followed: number }>(
+          "SELECT followed FROM subjects WHERE subject = ?",
+          link.subject,
+        )
+        .toArray()[0];
+      if (subjectRow?.followed === 0) {
+        sql.exec(
+          "UPDATE deliveries SET status = 'parked', park_reason = 'unfollow' WHERE delivery_id = ?",
+          fresh.delivery_id,
+        );
+        return null;
+      }
+      const firstAttemptAt = fresh.first_attempt_at ?? claimNow;
+      sql.exec(
+        "UPDATE deliveries SET status = 'sending', claimed_at = ?, first_attempt_at = ? WHERE delivery_id = ?",
+        claimNow,
+        firstAttemptAt,
+        fresh.delivery_id,
+      );
+      const fragment = JSON.parse(fresh.payload_json) as MessageFragment;
+      return { subject: link.subject, fragment, firstAttemptAt };
+    });
+  }
+
   async #sendDue(now: number): Promise<void> {
     const meta = this.#readMeta();
     if (meta.state !== "active" || meta.snapshot === null || !this.#secretPresent()) {
@@ -1399,76 +1472,7 @@ export class AdapterDelivery extends DurableObject<Env> {
       });
       // Claim commits with no await before pushMessage: the input gate stays
       // closed from this validation through the start of the outbound fetch.
-      const claim = this.ctx.storage.transactionSync(():
-        | { subject: string; fragment: MessageFragment; firstAttemptAt: number }
-        | null => {
-        const sql = this.ctx.storage.sql;
-        const current = this.#readMeta();
-        if (
-          current.state !== "active" ||
-          current.generation !== meta.generation ||
-          current.snapshot === null ||
-          current.snapshot.messagingChannelId !== snapshot.messagingChannelId
-        ) {
-          return null;
-        }
-        const fresh = sql
-          .exec<DeliveryRow>(
-            "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'queued'",
-            row.delivery_id,
-          )
-          .toArray()[0];
-        if (fresh === undefined) return null;
-        const claimNow = Date.now();
-        if (
-          fresh.first_attempt_at !== null &&
-          fresh.first_attempt_at < retryKeyCutoff(claimNow)
-        ) {
-          this.#recordTerminal("retry-exhausted", fresh.type);
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          return null;
-        }
-        // Last check before the message leaves: the parent reservation's
-        // retention deadline is a send boundary, not just a prune boundary.
-        if (fresh.purge_at !== null && fresh.purge_at <= claimNow) {
-          this.#recordTerminal("past-retention", fresh.type);
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          return null;
-        }
-        const link = sql
-          .exec<{ subject: string; status: string; link_version: number }>(
-            "SELECT subject, status, link_version FROM links WHERE reservation_id = ?",
-            fresh.reservation_id,
-          )
-          .toArray()[0];
-        if (link === undefined || link.status !== "final" || link.link_version !== fresh.link_version) {
-          this.#recordTerminal("unlinked", fresh.type);
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          return null;
-        }
-        const subjectRow = sql
-          .exec<{ followed: number }>(
-            "SELECT followed FROM subjects WHERE subject = ?",
-            link.subject,
-          )
-          .toArray()[0];
-        if (subjectRow !== undefined && subjectRow.followed === 0) {
-          sql.exec(
-            "UPDATE deliveries SET status = 'parked', park_reason = 'unfollow' WHERE delivery_id = ?",
-            fresh.delivery_id,
-          );
-          return null;
-        }
-        const firstAttemptAt = fresh.first_attempt_at ?? claimNow;
-        sql.exec(
-          "UPDATE deliveries SET status = 'sending', claimed_at = ?, first_attempt_at = ? WHERE delivery_id = ?",
-          claimNow,
-          firstAttemptAt,
-          fresh.delivery_id,
-        );
-        const fragment = JSON.parse(fresh.payload_json) as MessageFragment;
-        return { subject: link.subject, fragment, firstAttemptAt };
-      });
+      const claim = this.#claimDueDelivery(row, meta, snapshot);
       if (claim === null) continue;
 
       let outcome:
