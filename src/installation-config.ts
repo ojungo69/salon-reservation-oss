@@ -1933,6 +1933,13 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * commands both seeing no roster still cannot both land: the second one's
    * insert hits the singleton conflict, and its `WHERE` fails against the row
    * the first one wrote.
+   *
+   * No request can currently lose this compare-and-swap: `executeRosterCommand`
+   * has no `await` between its read and this write, so an object turn cannot be
+   * suspended mid-command and the previous document is always the current one.
+   * The clause guards that invariant rather than an observed race — introduce a
+   * suspension point up there and the window opens, and this is what turns the
+   * lost update into a refusal instead of silent corruption.
    */
   #writeRoster(roster: StaffRoster, previousJson: string | null): boolean {
     const sql = this.ctx.storage.sql;
@@ -2003,9 +2010,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     );
     if ("ok" in applied) return applied;
     if (command.operation === "staff.create" && command.dryRun) {
-      // Everything above ran: the input was validated and the exact document
-      // that would be stored was built and would parse. Nothing is written, and
-      // no credential is handed out for a record that will not exist.
+      // Run the same parser the write runs, so "this would have worked" is a
+      // result rather than a claim. Nothing is written, and no credential is
+      // handed out for a record that will not exist.
+      parseStaffRoster(applied.roster);
       return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
     }
     return this.#writeRoster(applied.roster, stored?.rosterJson ?? null)

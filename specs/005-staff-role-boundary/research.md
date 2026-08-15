@@ -201,7 +201,28 @@ INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
   WHERE roster_json = ?;          -- the document this command was computed from
 ```
 
-`rowsWritten === 0` means someone else wrote first, and the command answers `409 CONFLICT`.
+`rowsWritten === 0` means someone else wrote first, and the command answers `409 VERSION_CONFLICT`.
+
+**What this guard is actually for, stated honestly.** As written, it cannot fire through the HTTP
+surface, and that is a property worth recording rather than a gap. `executeRosterCommand` contains
+no `await` between reading the roster and writing it — parse, read, apply, write are all synchronous
+— so an object turn cannot be suspended in the middle of a command, and the document the `WHERE`
+compares against is always the one that was just read. Two concurrent requests are serialized by the
+object, and each computes against the other's committed result.
+
+That is the stronger property, not a weaker one. Every roster command is a delta aimed at one named
+member, so a second operator working from a stale screen still gets what they asked for: "deactivate
+Alice" deactivates Alice, and a command aimed at a member who changed underneath it is refused by
+`NOT_FOUND_OR_UNAUTHORIZED` or by FR-011's last-owner rule — never by silently overwriting somebody
+else's edit, which is what the specification's edge case is about.
+
+The compare-and-swap stays because the property it protects is invisible: it holds only while the
+command body has no suspension point, and nothing in the type system says so. If a future change
+introduces an `await` there — a digest computed in the object, an adapter consulted mid-command —
+the window opens, and the `WHERE` clause is what makes the resulting lost update a refusal instead
+of silent corruption. It is the guard for a mistake nobody has made yet, and it costs one clause.
+The test for it drives `#writeRoster` with a stale previous document directly, because no sequence
+of HTTP requests can produce the conflict.
 
 **Rationale**: the naive form — `UPDATE … WHERE singleton = 1 AND roster_json = ?` — cannot perform
 the *first* write, because there is no row to update; R6 says the table does not exist until then.

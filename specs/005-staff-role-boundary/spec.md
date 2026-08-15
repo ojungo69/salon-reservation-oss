@@ -179,9 +179,13 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 
 - **FR-010**: Deactivating a staff member MUST take effect on their next request. No authorization
   decision may be cached anywhere that would delay it.
-- **FR-011**: The system MUST refuse any roster operation that would leave the installation with no
-  active `owner`-role account — deactivation today, and equally any role-change or record-removal
-  operation a later slice adds.
+- **FR-011**: The system MUST refuse any roster operation that would take away the installation's
+  last active `owner`-role account — deactivation today, and equally any role-change or
+  record-removal operation a later slice adds. Stated as removal rather than as "the roster must
+  always contain an active owner" deliberately: a roster of staff alone is legitimate, and is the
+  likely first state, because the deployment secret administers the installation whether or not
+  anybody in the roster holds the owner role. A rule phrased as a standing requirement would forbid
+  creating that roster, and would then refuse to deactivate anyone in it.
 - **FR-012**: The offboarding procedure MUST be documented as covering the credentials that
   deactivation does not reach: the calendar feed token, the LINE channel secret, and the Google
   calendar credentials are installation-level secrets that an offboarded person may still hold a

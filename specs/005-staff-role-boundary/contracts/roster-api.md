@@ -65,11 +65,13 @@ stored, reports the outcome, writes nothing:
 ```jsonc
 {
   "dryRun": true,
-  "wouldCreate": { "displayName": "受付 A", "role": "staff" },
-  "wouldBeFirstMember": true,
-  "rosterValid": true
+  "wouldBeFirstMember": true
 }
 ```
+
+The request is not echoed back, and there is no `valid: true` field: a dry run that got this far
+*is* the validation, and a field that can only ever hold one value tells a reader nothing. An input
+the parser refuses answers `400` instead.
 
 No credential is generated on a dry run — there is nothing to hand out, and generating one would
 mean a credential existed that was never stored. (FR-020)
@@ -80,7 +82,7 @@ mean a credential existed that was never stored. (FR-020)
 |---|---|---|
 | 400 | `BAD_REQUEST` | Unknown key, bad `displayName` length, `role` not one of the two |
 | 401 | `UNAUTHORIZED` | Not `owner` — including a valid `staff` credential (FR-005) |
-| 409 | `CONFLICT` | The roster changed under this command (R7) |
+| 409 | `VERSION_CONFLICT` | The roster changed under this command (R7) |
 | 503 | `TEMPORARILY_UNAVAILABLE` | `OWNER_TOKEN` absent or placeholder |
 
 ---

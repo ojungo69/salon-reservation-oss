@@ -13,6 +13,7 @@ import type {
   ReservationDay,
 } from "../src/reservation-day.ts";
 import type { CalendarAdapter } from "../src/calendar-adapter.ts";
+import type { InstallationConfig } from "../src/installation-config.ts";
 import worker from "../src/worker.ts";
 
 const nextOpenJstDate = (minimumOffset = 0) => {
@@ -3754,6 +3755,36 @@ describe("S3 staff and role boundary", () => {
       { headers: bearer(owner.credential) },
     );
     expect(receipt.status).toBe(200);
+  });
+
+  it("writes zero rows when the roster moved under a command", async () => {
+    // No sequence of requests can reach this: `executeRosterCommand` has no
+    // suspension point between reading the roster and writing it, so the
+    // compare-and-swap always matches. What is under test is the assumption the
+    // guard rests on — that `ON CONFLICT DO UPDATE … WHERE` reports
+    // `rowsWritten: 0` on a failed match rather than writing anyway or throwing.
+    // If a workerd upgrade changed that, the guard would be silently dead and
+    // every other test here would still pass.
+    await addStaff("owner", "店長");
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    const written = await runInDurableObject(config, (_instance, state) => {
+      const upsert = (previousJson: string) =>
+        state.storage.sql.exec(
+          `INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
+           ON CONFLICT(singleton) DO UPDATE SET roster_json = excluded.roster_json
+           WHERE roster_json = ?`,
+          '{"version":1,"members":[]}',
+          previousJson,
+        ).rowsWritten;
+      const current = state.storage.sql
+        .exec<{ roster_json: string }>("SELECT roster_json FROM __staff_roster")
+        .one().roster_json;
+      return { stale: upsert('{"version":1,"members":[]}'), fresh: upsert(current) };
+    });
+    expect(written.stale).toBe(0);
+    expect(written.fresh).toBe(1);
   });
 
   it("refuses everyone the same way when the roster is empty", async () => {
