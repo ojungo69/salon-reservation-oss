@@ -3785,10 +3785,15 @@ describe("S3 staff and role boundary", () => {
 
     // And the refusal is in storage rather than in the object's memory, so it
     // survives the object being torn down and rebuilt.
-    await runInDurableObject(
-      env.INSTALLATION_CONFIG.getByName("installation") as DurableObjectStub<InstallationConfig>,
-      (_instance, state) => state.abort("evicted by the revocation test"),
-    ).catch(() => {});
+    // A successful abort rejects with its own reason, so asserting the
+    // rejection is what proves the object was actually torn down — a swallowed
+    // failure here would leave the two assertions below passing without one.
+    await expect(
+      runInDurableObject(
+        env.INSTALLATION_CONFIG.getByName("installation") as DurableObjectStub<InstallationConfig>,
+        (_instance, state) => state.abort("evicted by the revocation test"),
+      ),
+    ).rejects.toThrow("evicted by the revocation test");
     expect((await read(leaving.credential)).status).toBe(401);
     expect((await read(staying.credential)).status).toBe(200);
   });
@@ -3878,6 +3883,106 @@ describe("S3 staff and role boundary", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  const attribution = () =>
+    runInDurableObject(stubFor(day.date), (_instance, state) => {
+      const exists =
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = '__attribution'",
+          )
+          .one().count === 1;
+      if (!exists) return [] as Array<{ command_id: string; actor_kind: string; actor_id: string | null }>;
+      return state.storage.sql
+        .exec<{ command_id: string; actor_kind: string; actor_id: string | null }>(
+          "SELECT command_id, actor_kind, actor_id FROM __attribution ORDER BY command_id",
+        )
+        .toArray();
+    });
+
+  it("records who made each operator change, and keeps it when they leave", async () => {
+    await enableLiveInstallation();
+    const receptionist = await addStaff("staff", "受付 A");
+    const manager = await addStaff("owner", "店長");
+
+    const fixture = await publicCreateBody();
+    const {
+      turnstileToken: _turnstileToken,
+      replayOnly: _replayOnly,
+      ...createBody
+    } = fixture.body;
+    const created = await jsonRequest(
+      "/api/admin/reservations",
+      createBody,
+      bearer(receptionist.credential),
+    );
+    expect(created.status).toBe(201);
+    const reservationId = ((await created.json()) as { reservation: { reservationId: string } })
+      .reservation.reservationId;
+
+    const cancelCommand = crypto.randomUUID();
+    const cancelled = await jsonRequest(
+      `/api/admin/reservations/${reservationId}/transition`,
+      { commandId: cancelCommand, date: day.date, action: "cancel" },
+      bearer(manager.credential),
+    );
+    expect(cancelled.status).toBe(200);
+
+    // The third change is made with the deployment secret, which has no roster
+    // record by definition and must still be recorded as somebody.
+    const closureCommand = crypto.randomUUID();
+    const closed = await jsonRequest(
+      "/api/admin/closures",
+      {
+        commandId: closureCommand,
+        date: day.date,
+        resourceId: "resource-chair-b",
+        startTime: "11:00",
+        endTime: "12:00",
+        label: "架空の設備点検",
+      },
+      ownerHeaders,
+    );
+    expect(closed.status).toBe(201);
+
+    const rows = await attribution();
+    expect(rows).toHaveLength(3);
+    const byCommand = new Map(rows.map((row) => [row.command_id, row]));
+    expect(byCommand.get(createBody.commandId as string)).toEqual({
+      command_id: createBody.commandId,
+      actor_kind: "staff",
+      actor_id: receptionist.member.id,
+    });
+    expect(byCommand.get(cancelCommand)).toEqual({
+      command_id: cancelCommand,
+      actor_kind: "staff",
+      actor_id: manager.member.id,
+    });
+    expect(byCommand.get(closureCommand)).toEqual({
+      command_id: closureCommand,
+      actor_kind: "break_glass",
+      actor_id: null,
+    });
+    // The display name is never the identifier, so editing or removing a name
+    // cannot rewrite who did what.
+    expect(JSON.stringify(rows)).not.toContain("受付 A");
+
+    // Deactivation ends the credential, not the record of what was done with it.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${receptionist.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(200);
+    expect(await attribution()).toEqual(rows);
+
+    // A replay short-circuits at the command gate, before any write, so it can
+    // neither add a row nor re-attribute the original — even when the replay
+    // comes from a different actor than the one who issued it first.
+    const replay = await jsonRequest("/api/admin/reservations", createBody, ownerHeaders);
+    expect(replay.status).toBe(201);
+    expect(await attribution()).toEqual(rows);
+  });
+
   it("writes zero rows when the roster moved under a command", async () => {
     // No sequence of requests can reach this: `executeRosterCommand` has no
     // suspension point between reading the roster and writing it, so the
@@ -3906,6 +4011,32 @@ describe("S3 staff and role boundary", () => {
     });
     expect(written.stale).toBe(0);
     expect(written.fresh).toBe(1);
+  });
+
+  it("answers a dry run without writing a member or minting a credential", async () => {
+    const dryRun = (displayName: string) =>
+      jsonRequest("/api/admin/staff", { displayName, role: "staff", dryRun: true }, ownerHeaders);
+    const roster = async () => {
+      const response = await SELF.fetch("https://example.test/api/admin/staff", {
+        headers: ownerHeaders,
+      });
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { members: unknown[] }).members;
+    };
+
+    const first = await dryRun("検証 受付");
+    expect(first.status).toBe(200);
+    // No `credential` key at all: a dry run creates nothing, so there is nothing
+    // a caller could mistake for a working credential. (FR-020)
+    expect(await first.json()).toEqual({ dryRun: true, wouldBeFirstMember: true });
+    expect(await roster()).toEqual([]);
+
+    await addStaff("owner", "店長");
+    const second = await dryRun("検証 受付");
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ dryRun: true, wouldBeFirstMember: false });
+    // Still one member: the second dry run did not add the person it validated.
+    expect(await roster()).toHaveLength(1);
   });
 
   it("refuses everyone the same way when the roster is empty", async () => {

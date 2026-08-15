@@ -15,6 +15,7 @@ import {
 import {
   ReservationDay,
   type BookingSnapshot,
+  type DayActor,
   type DayClosureCreateInput,
   type DayClosureRemoveInput,
   type DayCalendarProjectionResult,
@@ -393,6 +394,13 @@ const operatorGate = async (
   if (ROUTE_ROLE[route] === "owner" && resolved.role !== "owner") return refused;
   return { actor: { kind: "staff", role: resolved.role, staffId: resolved.staffId } };
 };
+
+/**
+ * The day partition records who acted, not what they may do, so the role the
+ * gate resolved is dropped here rather than carried into storage.
+ */
+const dayActor = (actor: Actor): DayActor =>
+  actor.kind === "break_glass" ? { kind: "break_glass" } : { kind: "staff", staffId: actor.staffId };
 
 /**
  * Kept so the handlers that only need "may this caller proceed" read as they
@@ -1846,8 +1854,8 @@ const handleOwnerCreate = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-create");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-create");
+  if ("response" in gate) return gate.response;
   const context = await installationContext(env, url, true);
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
@@ -1866,7 +1874,7 @@ const handleOwnerCreate = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-    dayStub(env, input.date).createOwner(config, input, allowFresh),
+    dayStub(env, input.date).createOwner(config, input, dayActor(gate.actor), allowFresh),
   );
   if (!allowFresh && !result.ok && result.code === "UNAVAILABLE") {
     if (context.state.mode !== "live") return errorResponse(403, "NOT_LIVE");
@@ -1887,8 +1895,8 @@ const handleOwnerTransition = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-transition");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-transition");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseTransition(parsed.value, reservationId);
@@ -1899,7 +1907,7 @@ const handleOwnerTransition = async (
   }
   return mutationResponse(
     await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-      dayStub(env, input.date).transitionOwner(config, input),
+      dayStub(env, input.date).transitionOwner(config, input, dayActor(gate.actor)),
     ),
     input.action,
     200,
@@ -1916,8 +1924,8 @@ const handleClosureCreate = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-closure-create");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-closure-create");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseClosureCreate(parsed.value);
@@ -1928,7 +1936,7 @@ const handleClosureCreate = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-    dayStub(env, input.date).createClosure(config, input, allowFresh),
+    dayStub(env, input.date).createClosure(config, input, dayActor(gate.actor), allowFresh),
   );
   return !allowFresh && !result.ok && result.code === "UNAVAILABLE"
     ? errorResponse(400, "BAD_REQUEST")
@@ -1946,8 +1954,8 @@ const handleClosureRemove = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-closure-remove");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-closure-remove");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseClosureRemove(parsed.value, closureId);
@@ -1958,7 +1966,7 @@ const handleClosureRemove = async (
   }
   return closureResponse(
     await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-      dayStub(env, input.date).removeClosure(config, input),
+      dayStub(env, input.date).removeClosure(config, input, dayActor(gate.actor)),
     ),
     "closure_remove",
     200,
