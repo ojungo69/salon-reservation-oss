@@ -28,7 +28,7 @@ Single Worker at the repository root: `src/`, `public/`, `test/` (node --test), 
 
 **Purpose**: start from a known-green baseline, so a later failure is attributable.
 
-- [ ] T001 Confirm the worktree is on `feat/s3-staff-role-design` rebased on `origin/main`, then run `npm run check` and `npm run test:browser` and record both as green before any edit
+- [X] T001 Confirm the worktree is on `feat/s3-staff-role-design` rebased on `origin/main`, then run `npm run check` and `npm run test:browser` and record both as green before any edit
 
 ---
 
@@ -42,13 +42,13 @@ Single Worker at the repository root: `src/`, `public/`, `test/` (node --test), 
 `owner`, and an installation with no roster is byte-identical to today. That is what makes the
 checkpoint meaningful.
 
-- [ ] T002 [P] Add the roster types and `parseStaffRoster` to `src/installation-config.ts`, enforcing all four invariants from [data-model.md §1](./data-model.md) — at least one active `owner`, unique `id`, digest present iff active, and round-trip stability
-- [ ] T003 Add `__staff_roster` storage to `src/installation-config.ts`: an existence check, a read that answers `null` when the table is absent, and the `CREATE TABLE IF NOT EXISTS` + `INSERT … ON CONFLICT DO UPDATE … WHERE roster_json = ?` upsert from [research.md R7](./research.md) (depends on T002)
-- [ ] T004 Add the `resolveActor(digest)` RPC to `src/installation-config.ts`, scanning every member with a constant-time compare and **no early exit**, returning `{ staffId, role } | null` and never letting a digest leave the object (depends on T003)
-- [ ] T005 [P] Add the staff-credential helpers to `src/worker.ts`: generation as 32 bytes from `crypto.getRandomValues` encoded base64url to 43 characters, matching `newManagementKey` in `public/app.js:131-136`, plus the digest and its validation regex
-- [ ] T006 Replace `ownerGate` with `operatorGate` in `src/worker.ts` per [contracts/authorization.md](./contracts/authorization.md): rate limit, then `OWNER_TOKEN` from the environment with no Durable Object call, then `resolveActor`, then the role check — with both refusals answering an identical `401` and a comment recording that this is deliberate (depends on T004, T005)
-- [ ] T007 Add the `ROUTE_ROLE` record to `src/worker.ts` as a total `Record<OperatorRoute, Required>` with no index signature and no default branch, and set all thirteen existing buckets to `owner` so this phase changes nothing (depends on T006)
-- [ ] T008 [P] Add `test/staff-roster.test.ts` covering the parse and the four invariants, and register it in the `test:core` script in `package.json`
+- [X] T002 [P] Add the roster types and `parseStaffRoster` to `src/installation-config.ts`, enforcing all four invariants from [data-model.md §1](./data-model.md) — at least one active `owner`, unique `id`, digest present iff active, and round-trip stability
+- [X] T003 Add `__staff_roster` storage to `src/installation-config.ts`: an existence check, a read that answers `null` when the table is absent, and the `CREATE TABLE IF NOT EXISTS` + `INSERT … ON CONFLICT DO UPDATE … WHERE roster_json = ?` upsert from [research.md R7](./research.md) (depends on T002)
+- [X] T004 Add the `resolveActor(digest)` RPC to `src/installation-config.ts`, scanning every member with a constant-time compare and **no early exit**, returning `{ staffId, role } | null` and never letting a digest leave the object (depends on T003)
+- [X] T005 [P] Add the staff-credential helpers to `src/worker.ts`: generation as 32 bytes from `crypto.getRandomValues` encoded base64url to 43 characters, matching `newManagementKey` in `public/app.js:131-136`, plus the digest and its validation regex
+- [X] T006 Replace `ownerGate` with `operatorGate` in `src/worker.ts` per [contracts/authorization.md](./contracts/authorization.md): rate limit, then `OWNER_TOKEN` from the environment with no Durable Object call, then `resolveActor`, then the role check — with both refusals answering an identical `401` and a comment recording that this is deliberate (depends on T004, T005)
+- [X] T007 Add the `ROUTE_ROLE` record to `src/worker.ts` as a total `Record<OperatorRoute, Required>` with no index signature and no default branch, and set all thirteen existing buckets to `owner` so this phase changes nothing (depends on T006)
+- [X] T008 [P] Add `test/staff-roster.test.ts` covering the parse and the four invariants, and register it in the `test:core` script in `package.json`
 
 **Checkpoint**: `npm run check` and `npm run test:browser` are green and no existing test was edited. If either statement is false, stop here.
 
@@ -62,14 +62,14 @@ checkpoint meaningful.
 returned credential, and confirm it is accepted on the operations routes and refused on the roster
 and installation-settings routes — with no `OWNER_TOKEN` in that person's possession at any point.
 
-- [ ] T009 [US1] Add the roster commands to `src/installation-config.ts` — create and rotate — each a single CAS attempt that answers a conflict rather than retrying (depends on T003)
-- [ ] T010 [US1] Add `GET /api/admin/staff` and `POST /api/admin/staff` to `src/worker.ts` with the `owner-staff` bucket, per [contracts/roster-api.md](./contracts/roster-api.md), returning the credential exactly once and never a digest (depends on T007, T009)
-- [ ] T011 [US1] Add the `dryRun` branch to `POST /api/admin/staff` in `src/worker.ts`, validating the input and the exact document that would be stored, generating no credential and writing nothing (FR-020)
-- [ ] T012 [US1] Add `POST /api/admin/staff/:id/rotate` to the `CAPTURE_ROUTES` table in `src/worker.ts` with the `owner-staff-credential` bucket, answering one `404 NOT_FOUND_OR_UNAUTHORIZED` for both an unknown and an inactive member (depends on T010)
-- [ ] T013 [US1] Flip the six day-to-day buckets in `ROUTE_ROLE` to `staff` — `owner-availability`, `owner-schedule`, `owner-create`, `owner-transition`, `owner-closure-create`, `owner-closure-remove` — leaving the other seven and both roster buckets at `owner` (depends on T007)
-- [ ] T014 [US1] Add the route-by-route boundary test to `test/` or the worker suite: one assertion per row of [contracts/authorization.md](./contracts/authorization.md), sending each route its **real** method (note `/api/admin/setup` is `GET`/`PUT`, never `POST` — the method check answers `405` before the gate) (SC-004; depends on T013)
-- [ ] T015 [US1] Add the roster panel and staff sign-in to `public/app.js` and the operator screen markup: credential shown once with a copy affordance, role-aware panel rendering derived from `GET /api/admin/staff`, and a statement that the client-side role is presentation only
-- [ ] T016 [US1] Add a Playwright case for the roster screen **at the end** of the relevant file in `tests-browser/` — the installation bootstrap test must stay first, because the suite runs `workers: 1` with `fullyParallel: false` — with the accessibility and horizontal-overflow assertions the other specs use, and verify it fails against unfixed code once before trusting it (depends on T015)
+- [X] T009 [US1] Add the roster commands to `src/installation-config.ts` — create and rotate — each a single CAS attempt that answers a conflict rather than retrying (depends on T003)
+- [X] T010 [US1] Add `GET /api/admin/staff` and `POST /api/admin/staff` to `src/worker.ts` with the `owner-staff` bucket, per [contracts/roster-api.md](./contracts/roster-api.md), returning the credential exactly once and never a digest (depends on T007, T009)
+- [X] T011 [US1] Add the `dryRun` branch to `POST /api/admin/staff` in `src/worker.ts`, validating the input and the exact document that would be stored, generating no credential and writing nothing (FR-020)
+- [X] T012 [US1] Add `POST /api/admin/staff/:id/rotate` to the `CAPTURE_ROUTES` table in `src/worker.ts` with the `owner-staff-credential` bucket, answering one `404 NOT_FOUND_OR_UNAUTHORIZED` for both an unknown and an inactive member (depends on T010)
+- [X] T013 [US1] Flip the six day-to-day buckets in `ROUTE_ROLE` to `staff` — `owner-availability`, `owner-schedule`, `owner-create`, `owner-transition`, `owner-closure-create`, `owner-closure-remove` — leaving the other seven and both roster buckets at `owner` (depends on T007)
+- [X] T014 [US1] Add the route-by-route boundary test to `test/` or the worker suite: one assertion per row of [contracts/authorization.md](./contracts/authorization.md), sending each route its **real** method (note `/api/admin/setup` is `GET`/`PUT`, never `POST` — the method check answers `405` before the gate) (SC-004; depends on T013)
+- [X] T015 [US1] Add the roster panel and staff sign-in to `public/app.js` and the operator screen markup: credential shown once with a copy affordance, role-aware panel rendering derived from `GET /api/admin/staff`, and a statement that the client-side role is presentation only
+- [X] T016 [US1] Add a Playwright case for the roster screen **at the end** of the relevant file in `tests-browser/` — the installation bootstrap test must stay first, because the suite runs `workers: 1` with `fullyParallel: false` — with the accessibility and horizontal-overflow assertions the other specs use, and verify it fails against unfixed code once before trusting it (depends on T015)
 
 **Checkpoint**: a staff credential runs the day and reaches nothing else. This is the MVP.
 
@@ -83,10 +83,10 @@ and installation-settings routes — with no `OWNER_TOKEN` in that person's poss
 credential is refused on the very next request while the other is unaffected, and that the refusal
 survives a restart of the object holding the roster.
 
-- [ ] T017 [US2] Add the deactivate and reactivate commands to `src/installation-config.ts`: deactivation clears the credential digest and stamps `deactivatedAt`; reactivation issues a **new** credential because the old digest is gone (depends on T009)
-- [ ] T018 [US2] Enforce the last-active-owner invariant as a property of the **resulting** document, not of the operation, so it also covers the role changes and removals a later slice adds (FR-011; depends on T017)
-- [ ] T019 [US2] Add `POST /api/admin/staff/:id/deactivate` and `/reactivate` to `CAPTURE_ROUTES` in `src/worker.ts` with the `owner-staff-credential` bucket, answering the specific `409 LAST_OWNER` for the invariant refusal and warning in the operator screen that reactivation cannot restore the old credential (depends on T012, T018)
-- [ ] T020 [US2] Add the revocation test to the worker suite: no sleep, retry, or delay anywhere in it — the absence of a wait is the assertion — and confirm the refusal survives a Durable Object reset, using a per-test object name and faking the whole `Date` (SC-001, SC-002; depends on T019)
+- [X] T017 [US2] Add the deactivate and reactivate commands to `src/installation-config.ts`: deactivation clears the credential digest and stamps `deactivatedAt`; reactivation issues a **new** credential because the old digest is gone (depends on T009)
+- [X] T018 [US2] Enforce the last-active-owner invariant as a property of the **resulting** document, not of the operation, so it also covers the role changes and removals a later slice adds (FR-011; depends on T017)
+- [X] T019 [US2] Add `POST /api/admin/staff/:id/deactivate` and `/reactivate` to `CAPTURE_ROUTES` in `src/worker.ts` with the `owner-staff-credential` bucket, answering the specific `409 LAST_OWNER` for the invariant refusal and warning in the operator screen that reactivation cannot restore the old credential (depends on T012, T018)
+- [X] T020 [US2] Add the revocation test to the worker suite: no sleep, retry, or delay anywhere in it — the absence of a wait is the assertion — and confirm the refusal survives a Durable Object reset, using a per-test object name and faking the whole `Date` (SC-001, SC-002; depends on T019)
 
 **Checkpoint**: one person can be removed and nobody else re-enters anything.
 
@@ -99,8 +99,8 @@ survives a restart of the object holding the roster.
 **Independent Test**: with a roster whose only owner-role account is deactivated, the `OWNER_TOKEN`
 holder is still accepted on every owner-gated route and can reactivate an account.
 
-- [ ] T021 [US3] Add the break-glass test to the worker suite: assert the last-owner deactivation is refused with `409 LAST_OWNER`, then write a deliberately corrupt `__staff_roster` document straight into storage and confirm `OWNER_TOKEN` is still accepted on **every one of the fifteen gated paths** and can repair the roster (SC-006; depends on T020)
-- [ ] T022 [US3] Confirm by reading `operatorGate` that the break-glass path reaches its verdict before `resolveActor` is called, so a corrupt or unreachable roster is invisible to it, and record that ordering in a comment at the call site (depends on T006)
+- [X] T021 [US3] Add the break-glass test to the worker suite: assert the last-owner deactivation is refused with `409 LAST_OWNER`, then write a deliberately corrupt `__staff_roster` document straight into storage and confirm `OWNER_TOKEN` is still accepted on **every one of the fifteen gated paths** and can repair the roster (SC-006; depends on T020)
+- [X] T022 [US3] Confirm by reading `operatorGate` that the break-glass path reaches its verdict before `resolveActor` is called, so a corrupt or unreachable roster is invisible to it, and record that ordering in a comment at the call site (depends on T006)
 
 **Checkpoint**: the installation cannot be locked out, and the property is structural rather than procedural.
 
@@ -113,8 +113,8 @@ holder is still accepted on every owner-gated route and can reactivate an accoun
 **Independent Test**: the existing customer browser suite passes unchanged, and the public routes
 answer identically whether the roster is empty, populated, or entirely absent.
 
-- [ ] T023 [US5] Run `npm run check` and `npm run test:browser` against an installation with **no roster** and confirm no existing test needed editing — a test that had to change is a behaviour change FR-026 does not permit, and is investigated rather than updated (SC-003)
-- [ ] T024 [US5] Add a worker-suite assertion that the public routes answer identically — same status, same body, same headers — with an empty roster and with a populated one (FR-026; depends on T019)
+- [X] T023 [US5] Run `npm run check` and `npm run test:browser` against an installation with **no roster** and confirm no existing test needed editing — a test that had to change is a behaviour change FR-026 does not permit, and is investigated rather than updated (SC-003)
+- [X] T024 [US5] Add a worker-suite assertion that the public routes answer identically — same status, same body, same headers — with an empty roster and with a populated one (FR-026; depends on T019)
 
 **Checkpoint**: the customer path is provably where it was.
 
@@ -128,10 +128,10 @@ answer identically whether the roster is empty, populated, or entirely absent.
 history attributes each to the acting identity, and that the attribution survives that person's later
 deactivation.
 
-- [ ] T025 [US4] Add the `__attribution` table to `src/reservation-day.ts` — three columns per [data-model.md §2](./data-model.md) — created by `CREATE TABLE IF NOT EXISTS` inside an already-open transaction, in the shape `#ensureAdapterSchema` uses at `src/reservation-day.ts:1145`
-- [ ] T026 [US4] Thread the actor from `operatorGate` through `src/worker.ts` into the DO inputs for `transitionOwner`, `createClosure`, `removeClosure`, and the owner branch of `#create` — **without adding it to the command fingerprint**, which stays at version 2 (FR-028; depends on T006, T025)
-- [ ] T027 [US4] Write the attribution row inside the same `transactionSync` that writes the receipt, after the command gate, in all four operator-initiated paths — so a replay short-circuits before the write and never re-attributes (depends on T026)
-- [ ] T028 [US4] Add the attribution test to the worker suite: three changes by three distinct actors including break-glass, the rows resolving one-to-one; the rows unchanged after the actor is deactivated; and a replayed command writing no second row and not changing the original actor (SC-005; depends on T027)
+- [X] T025 [US4] Add the `__attribution` table to `src/reservation-day.ts` — three columns per [data-model.md §2](./data-model.md) — created by `CREATE TABLE IF NOT EXISTS` inside an already-open transaction, in the shape `#ensureAdapterSchema` uses at `src/reservation-day.ts:1145`
+- [X] T026 [US4] Thread the actor from `operatorGate` through `src/worker.ts` into the DO inputs for `transitionOwner`, `createClosure`, `removeClosure`, and the owner branch of `#create` — **without adding it to the command fingerprint**, which stays at version 2 (FR-028; depends on T006, T025)
+- [X] T027 [US4] Write the attribution row inside the same `transactionSync` that writes the receipt, after the command gate, in all four operator-initiated paths — so a replay short-circuits before the write and never re-attributes (depends on T026)
+- [X] T028 [US4] Add the attribution test to the worker suite: three changes by three distinct actors including break-glass, the rows resolving one-to-one; the rows unchanged after the actor is deactivated; and a replayed command writing no second row and not changing the original actor (SC-005; depends on T027)
 
 **Checkpoint**: the history answers "by whom" without anyone trusting a memory of who was on shift.
 
@@ -139,10 +139,10 @@ deactivation.
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T029 [P] Add the staff data category to `docs/PRIVACY.md` and the served privacy page: what a staff record contains and deliberately does not, how the credential is protected, the two retention terms — a staff record for the life of the installation, attribution for the life of its day partition — and the structural separation from customer records that satisfies FR-024 (FR-022, SC-007)
-- [ ] T030 [P] Add the staff retention terms to the operator checklist in `docs/PRIVACY.md`, including FR-012's plain statement that deactivation does **not** reach the calendar feed token, the LINE channel secret, or the Google calendar credentials (FR-023)
-- [ ] T031 [P] Update the staff-accounts row in `docs/PARITY.md:85` and the S3 row in `docs/ROADMAP.md:42`, and add the revision-log entry
-- [ ] T032 [P] Confirm no real staff name, credential, or identifier entered the tree — fixtures, tests, and documentation examples — and that `npm run release:audit` still passes (FR-025)
+- [X] T029 [P] Add the staff data category to `docs/PRIVACY.md` and the served privacy page: what a staff record contains and deliberately does not, how the credential is protected, the two retention terms — a staff record for the life of the installation, attribution for the life of its day partition — and the structural separation from customer records that satisfies FR-024 (FR-022, SC-007)
+- [X] T030 [P] Add the staff retention terms to the operator checklist in `docs/PRIVACY.md`, including FR-012's plain statement that deactivation does **not** reach the calendar feed token, the LINE channel secret, or the Google calendar credentials (FR-023)
+- [X] T031 [P] Update the staff-accounts row in `docs/PARITY.md:85` and the S3 row in `docs/ROADMAP.md:42`, and add the revision-log entry
+- [X] T032 [P] Confirm no real staff name, credential, or identifier entered the tree — fixtures, tests, and documentation examples — and that `npm run release:audit` still passes (FR-025)
 - [ ] T033 Run the security battery: `semgrep scan --config=p/security-audit`, a security-focused review iterated to a clean verdict, and an adversarial review of the authorization boundary (depends on Phases 2–7)
 - [ ] T034 Run `speckit-verify-tasks` to confirm every `[X]` above has implementation behind it (depends on T033)
 - [ ] T035 Run the correctness review and then, separately, the over-implementation review of the whole diff (depends on T034)
