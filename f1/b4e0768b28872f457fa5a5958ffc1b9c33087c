@@ -1,0 +1,44 @@
+src/worker.ts
+  s_3ac342c3240e69::t_4159d9ff94bf32 94-95
+public/app.js
+  s_3ac342c3240e69::t_e8462b5ac291eb 2706,2722,2886
+  s_211aa7fe546c35::t_4e059a7f246e92 2693-2700,2703,2742-2744
+test/worker.test.ts
+  s_3ac342c3240e69::t_81878d5d07347f 4042-4101
+src/installation-config.ts
+  s_3ac342c3240e69::t_ebaddd3fa0bec2 1485-1496
+  s_3ac342c3240e69::t_fc53ecd2b45b79 1567-1571
+  s_3ac342c3240e69::t_8f29617a698d47 1985-1987,1996-1999
+public/setup.html
+  s_3ac342c3240e69::t_4ea35d2959de2b 284
+specs/005-staff-role-boundary/contracts/roster-api.md
+  s_3ac342c3240e69::t_79fd9f3e8efd41 86
+specs/005-staff-role-boundary/spec.md
+  s_3ac342c3240e69::t_2bd340387f812f 250-251
+tests-browser/install.spec.ts
+  s_3ac342c3240e69::t_ac77fccc49be3f 100,107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f1b4e0768b28872f457fa5a5958ffc1b9c33087c",
+  "prompts": {},
+  "sessions": {
+    "s_211aa7fe546c35": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffdcb-e994-7732-bb4e-56faff6022eb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
