@@ -33,7 +33,7 @@
     "release:audit:public": "node scripts/release-audit.mjs --public-tree",
     "test": "npm run test:core && npm run test:worker",
     "test:browser": "playwright test",
-    "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts",
+    "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts test/release-audit-denylist.test.ts",
     "test:worker": "vitest run",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
