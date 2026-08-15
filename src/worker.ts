@@ -2160,6 +2160,45 @@ const parseReconcileCursor = (
   return { ok: true, cursor: value.cursor };
 };
 
+// One reconciliation page: the caller owns the window arithmetic and the
+// authority stub, so `finishReconcile` still runs on the same stub instance.
+// A day that fails projection short-circuits the page as its own Response.
+const reconcileCalendarPage = async (
+  env: AppEnv,
+  url: URL,
+  context: InstallationContext,
+  authority: DurableObjectStub<CalendarAdapter>,
+  cursor: string,
+  pageSize: number,
+): Promise<
+  | Response
+  | { processedDates: number; projected: number; removed: number; nextCursor: string | null }
+> => {
+  let processedDates = 0;
+  let projected = 0;
+  let removed = 0;
+  for (let index = 0; index < pageSize; index += 1) {
+    const date = addDays(cursor, index);
+    const projection = await dayCallWithRetry<DayCalendarProjectionResult>(
+      env,
+      url,
+      true,
+      date,
+      context,
+      async (config) => dayStub(env, date).calendarProjection(config),
+    );
+    if (!projection.ok) return failureResponse(projection);
+    const reconciled = await authority.reconcileDay(projection);
+    if (reconciled.deferred === true) {
+      return { processedDates, projected, removed, nextCursor: date };
+    }
+    projected += reconciled.projected;
+    removed += reconciled.removed;
+    processedDates += 1;
+  }
+  return { processedDates, projected, removed, nextCursor: null };
+};
+
 const handleCalendarReconcile = async (
   request: Request,
   env: AppEnv,
@@ -2197,34 +2236,14 @@ const handleCalendarReconcile = async (
       return errorResponse(400, "BAD_REQUEST");
     }
     const pageSize = Math.min(7, context.settings.horizonDays - offset);
-    let processedDates = 0;
-    let projected = 0;
-    let removed = 0;
-    let nextCursor: string | null = null;
     const authority = calendarAdapterStub(env);
-    for (let index = 0; index < pageSize; index += 1) {
-      const date = addDays(cursor, index);
-      const projection = await dayCallWithRetry<DayCalendarProjectionResult>(
-        env,
-        url,
-        true,
-        date,
-        context,
-        async (config) => dayStub(env, date).calendarProjection(config),
-      );
-      if (!projection.ok) return failureResponse(projection);
-      const reconciled = await authority.reconcileDay(projection);
-      if (reconciled.deferred === true) {
-        nextCursor = date;
-        break;
-      }
-      projected += reconciled.projected;
-      removed += reconciled.removed;
-      processedDates += 1;
-    }
-    if (nextCursor === null && offset + processedDates < context.settings.horizonDays) {
-      nextCursor = addDays(cursor, processedDates);
-    }
+    const page = await reconcileCalendarPage(env, url, context, authority, cursor, pageSize);
+    if (page instanceof Response) return page;
+    const { processedDates, projected, removed } = page;
+    const nextCursor =
+      page.nextCursor === null && offset + processedDates < context.settings.horizonDays
+        ? addDays(cursor, processedDates)
+        : page.nextCursor;
     await authority.finishReconcile({ nextCursor });
     return json({ ok: true, processedDates, projected, removed, nextCursor });
   } catch {

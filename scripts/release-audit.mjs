@@ -165,12 +165,16 @@ const confineDenylistPath = (path) => {
     fail("denylist path is not under the repository or a system temp directory");
   }
   if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
+  // The caller reads this canonical path, not the argument it was derived from:
+  // validating one path and reading another leaves a symlink-swap window open.
+  return canonical;
 };
 
 const loadDenylist = (argument) => {
   const defaultPath = join(ROOT, ".release-private-denylist");
-  const path = argument === null ? defaultPath : resolve(argument);
-  if (argument !== null) confineDenylistPath(path);
+  // The default path is deliberately not confined: a missing default file is the
+  // normal case and must stay the ENOENT-to-empty-list path below, not a failure.
+  const path = argument === null ? defaultPath : confineDenylistPath(resolve(argument));
   try {
     const terms = readFileSync(path, "utf8")
       .split("\n")
@@ -190,12 +194,25 @@ const loadDenylist = (argument) => {
   }
 };
 
+// The dotenv and object-literal secret rules differ only in which capture group
+// holds the value, so the loop is shared and the extraction is passed in.
+const scanNamedSecrets = (label, text, pattern, valueOf) => {
+  for (const match of text.matchAll(pattern)) {
+    const name = match[1];
+    if (ALLOWED_NAMED_SECRETS.get(`${label}:${name}`) !== valueOf(match)) {
+      fail(`credential-like value found in ${label}`);
+    }
+  }
+};
+
 const scanText = (label, text, denylist) => {
   const privateKeyHeader = new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`);
   const rules = [
     ["private key", privateKeyHeader],
-    ["GitHub token", new RegExp(`\\b${"github"}_pat_[A-Za-z0-9_]{20,}\\b`)],
-    ["GitHub token", new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}\\b`)],
+    // The `github` interpolation keeps the literal token prefix from appearing
+    // contiguously in this file, which its own scan would otherwise flag.
+    ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)],
+    ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
     ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
     ["JWT-like token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/],
     ["live payment secret", /\bsk_live_[A-Za-z0-9]{16,}\b/],
@@ -208,11 +225,11 @@ const scanText = (label, text, denylist) => {
   const secretName =
     "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
   const dotenvSecret = new RegExp(
-    `^\\s*(?:export\\s+)?${secretName}\\s*=\\s*(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s#]+))\\s*(?:#.*)?$`,
+    String.raw`^\s*(?:export\s+)?${secretName}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
     "gm",
   );
   const objectSecret = new RegExp(
-    `["']?\\b${secretName}\\b["']?\\s*:\\s*(["'])([^"'\\n]+)\\2`,
+    String.raw`["']?\b${secretName}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
     "g",
   );
   for (const [name, pattern] of rules) {
@@ -231,20 +248,8 @@ const scanText = (label, text, denylist) => {
   for (const term of denylist) {
     if (lower.includes(term.toLowerCase())) fail(`private denylist term found in ${label}`);
   }
-  for (const match of text.matchAll(dotenvSecret)) {
-    const name = match[1];
-    const value = match[2] ?? match[3] ?? match[4];
-    if (ALLOWED_NAMED_SECRETS.get(`${label}:${name}`) !== value) {
-      fail(`credential-like value found in ${label}`);
-    }
-  }
-  for (const match of text.matchAll(objectSecret)) {
-    const name = match[1];
-    const value = match[3];
-    if (ALLOWED_NAMED_SECRETS.get(`${label}:${name}`) !== value) {
-      fail(`credential-like value found in ${label}`);
-    }
-  }
+  scanNamedSecrets(label, text, dotenvSecret, (match) => match[2] ?? match[3] ?? match[4]);
+  scanNamedSecrets(label, text, objectSecret, (match) => match[3]);
 };
 
 const scanPublicText = (paths, denylist) => {
@@ -255,15 +260,9 @@ const scanPublicText = (paths, denylist) => {
   }
 };
 
-const auditPackage = () => {
-  const packageJson = JSON.parse(readText("package.json"));
-  const lock = JSON.parse(readText("package-lock.json"));
-  if (packageJson.version !== RELEASE_VERSION) {
-    fail(`package version must be ${RELEASE_VERSION}`);
-  }
-  if (packageJson.license !== AGPL || packageJson.private !== true) {
-    fail("package must be private AGPL-3.0-only metadata");
-  }
+// Order matters: the checks below fail on the first drift they find, so the
+// message a broken release sees is the one the original single function gave.
+const auditToolchain = (packageJson) => {
   if (
     readLines(".npmrc") !==
     "allow-scripts=\nengine-strict=true\nstrict-allow-scripts=true\n"
@@ -280,6 +279,34 @@ const auditPackage = () => {
   if (packageJson.scripts?.audit !== "npm audit --audit-level=high") {
     fail("dependency audit command drift");
   }
+};
+
+const auditDependencyLicenses = (packageJson, lock) => {
+  const licenseDoc = readText("docs/THIRD_PARTY_LICENSES.md");
+  for (const [path, metadata] of Object.entries(lock.packages ?? {})) {
+    if (path === "") continue;
+    if (typeof metadata.license !== "string") fail(`missing package license: ${path}`);
+    if (!ALLOWED_DEPENDENCY_LICENSES.has(metadata.license)) {
+      fail(`unreviewed package license ${metadata.license}: ${path}`);
+    }
+  }
+  for (const [name, version] of Object.entries(packageJson.devDependencies ?? {})) {
+    if (!licenseDoc.includes(`| \`${name}\` | ${version} |`)) {
+      fail(`direct dependency license documentation drift: ${name}`);
+    }
+  }
+};
+
+const auditPackage = () => {
+  const packageJson = JSON.parse(readText("package.json"));
+  const lock = JSON.parse(readText("package-lock.json"));
+  if (packageJson.version !== RELEASE_VERSION) {
+    fail(`package version must be ${RELEASE_VERSION}`);
+  }
+  if (packageJson.license !== AGPL || packageJson.private !== true) {
+    fail("package must be private AGPL-3.0-only metadata");
+  }
+  auditToolchain(packageJson);
   if (packageJson.dependencies !== undefined && Object.keys(packageJson.dependencies).length !== 0) {
     fail("runtime dependencies require explicit release review");
   }
@@ -299,19 +326,7 @@ const auditPackage = () => {
   ) {
     fail("package metadata and lockfile root drift");
   }
-  const licenseDoc = readText("docs/THIRD_PARTY_LICENSES.md");
-  for (const [path, metadata] of Object.entries(lock.packages ?? {})) {
-    if (path === "") continue;
-    if (typeof metadata.license !== "string") fail(`missing package license: ${path}`);
-    if (!ALLOWED_DEPENDENCY_LICENSES.has(metadata.license)) {
-      fail(`unreviewed package license ${metadata.license}: ${path}`);
-    }
-  }
-  for (const [name, version] of Object.entries(packageJson.devDependencies ?? {})) {
-    if (!licenseDoc.includes(`| \`${name}\` | ${version} |`)) {
-      fail(`direct dependency license documentation drift: ${name}`);
-    }
-  }
+  auditDependencyLicenses(packageJson, lock);
 };
 
 // Every active line of ci.yml, in order, with each `uses:` value reduced to the

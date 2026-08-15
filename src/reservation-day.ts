@@ -426,6 +426,13 @@ const failure = (code: DayFailureCode): DayFailure => ({
   code,
 });
 
+const cancelCommandFailure = (code: string): DayFailure => {
+  if (code === "RESERVATION_NOT_FOUND" || code === "RESERVATION_NOT_ACTIVE") {
+    return failure("NOT_FOUND_OR_UNAUTHORIZED");
+  }
+  return failure("TEMPORARILY_UNAVAILABLE");
+};
+
 const rescheduleCommandFailure = (code: string): DayFailure => {
   if (code === "OVERLAP") return failure("UNAVAILABLE");
   if (code === "NO_CHANGE") return failure("BAD_REQUEST");
@@ -2633,7 +2640,9 @@ export class ReservationDay extends DurableObject<Env> {
           ({ id }) => id === input.reservationId,
         );
         const detail = this.#readDetail(input.reservationId);
-        if (reservation === undefined || detail === null || detail.snapshot === null) {
+        // Loose `== null` on purpose: it is the one form TypeScript narrows
+        // `detail` through, which the `detail.*` reads below depend on.
+        if (reservation === undefined || detail?.snapshot == null) {
           return failure("NOT_FOUND_OR_UNAUTHORIZED");
         }
 
@@ -2858,12 +2867,7 @@ export class ReservationDay extends DurableObject<Env> {
           type: "reservation.cancel",
           payload: { reservationId: input.reservationId },
         });
-        if (!result.ok) {
-          return result.error.code === "RESERVATION_NOT_FOUND" ||
-            result.error.code === "RESERVATION_NOT_ACTIVE"
-            ? failure("NOT_FOUND_OR_UNAUTHORIZED")
-            : failure("TEMPORARILY_UNAVAILABLE");
-        }
+        if (!result.ok) return cancelCommandFailure(result.error.code);
 
         const currentResource = isTargetDayConfig(effective)
           ? effective.resources.find(({ id }) => id === reservation.resourceId)
