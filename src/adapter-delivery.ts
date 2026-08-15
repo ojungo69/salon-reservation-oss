@@ -1461,6 +1461,10 @@ export class AdapterDelivery extends DurableObject<Env> {
     claim: { subject: string; fragment: MessageFragment; firstAttemptAt: number },
     row: DeliveryRow,
   ): Promise<SendOutcome> {
+    // Nothing here may await before pushMessage. The caller commits the claim
+    // and calls straight into this method, so the input gate stays closed from
+    // that commit through the start of the outbound fetch; an await added above
+    // the fetch reopens it and lets an unlink or a disable race the send.
     if (!token.ok) {
       return token.code === "RETRYABLE"
         ? { kind: "retryable", status: null }

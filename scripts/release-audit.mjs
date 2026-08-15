@@ -187,10 +187,14 @@ const openConfinedDenylist = (path, { optional }) => {
   // waits for a writer that a planted denylist path never has to provide, so the
   // audit would hang before fstat could reject it. It does nothing to a regular
   // file, which is the only kind this goes on to read.
-  // eslint-disable-next-line -- the open is what the containment above exists to protect
+  // Both flags are load-bearing, so a platform without them fails the audit
+  // rather than opening with a quietly weaker guarantee than this comment claims.
+  if (constants.O_NOFOLLOW === undefined || constants.O_NONBLOCK === undefined) {
+    fail("this platform cannot open the denylist without following links");
+  }
   const handle = openSync( // nosemgrep
     canonical,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
@@ -207,7 +211,6 @@ const loadDenylist = (argument) => {
   );
   if (handle === null) return [];
   try {
-    // eslint-disable-next-line -- handle is the descriptor opened above, not a path
     const terms = readFileSync(handle, "utf8") // nosemgrep
       .split("\n")
       .map((line) => line.trim())
@@ -243,8 +246,9 @@ const scanNamedSecrets = (label, text, pattern, extractValue) => {
 // secret scanner pointed at the release tree — would otherwise flag. Both
 // sources are literals written here, so the constructor takes no outside input.
 const CREDENTIAL_RULES = [
-  // eslint-disable-next-line
   ["private key", new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`)], // nosemgrep
+  // The directive names no rule because the hosted analyser that reports this
+  // line runs its own ESLint configuration and does not publish the rule id.
   // eslint-disable-next-line
   ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)], // nosemgrep
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
@@ -258,7 +262,8 @@ const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
 // Both rules share the name alternation above, so both are composed rather than
-// written as literals. The only interpolation is that module constant.
+// written as literals. The only interpolation is that module constant. The two
+// directives below name no rule for the same reason as the one above.
 // eslint-disable-next-line
 const DOTENV_SECRET = new RegExp( // nosemgrep
   String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`, // nosemgrep

@@ -1608,10 +1608,22 @@ const startAdmin = async () => {
   // The closing sentence every owner mutation failure appends. Only a conflict
   // is worth re-reading the schedule for, and the sentence may claim the
   // schedule was updated only when that read actually succeeded.
+  // Answers null when the reload ended in a 401: the reload has already put the
+  // logged-out screen up, and the failure line belongs to a screen that is gone.
+  // `settled` is read after the reload, not before, because the controls that
+  // start these mutations stay live through it and a second attempt made during
+  // the reload is what decides whether the sentence is still true.
   const mutationFailureHint = async (error, { settled, retryHint, reload }) => {
     let refreshed = false;
-    if (error.status === 409) refreshed = await reload().then(() => true, () => false);
-    if (!settled) return retryHint;
+    if (error.status === 409) {
+      try {
+        await reload();
+        refreshed = true;
+      } catch (reloadError) {
+        if (reloadError?.status === 401) return null;
+      }
+    }
+    if (!settled()) return retryHint;
     return refreshed ? " 予定表を更新しました。" : "";
   };
 
@@ -1718,10 +1730,11 @@ const startAdmin = async () => {
       if (handleOwnerError(error)) return;
       if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
       const hint = await mutationFailureHint(error, {
-        settled: !commands.has(key),
+        settled: () => !commands.has(key),
         retryHint: " 同じ操作で結果を再確認できます。",
         reload: loadSchedule,
       });
+      if (hint === null) return;
       setStatus(closureStatus, `${error.message}${hint}`, "error");
       focusWithoutScroll(closureStatus);
     } finally {
@@ -1963,10 +1976,11 @@ const startAdmin = async () => {
     if (handleOwnerError(error)) return;
     if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
     const hint = await mutationFailureHint(error, {
-      settled: !commands.has(key),
+      settled: () => !commands.has(key),
       retryHint: " 同じ操作で結果を再確認できます。",
       reload: () => loadSchedule(reservation.reservationId),
     });
+    if (hint === null) return;
     if (selectedReservation) renderDetail(selectedReservation, false);
     setStatus(detailStatus, `${error.message}${hint}`, "error");
     focusWithoutScroll(detail);
@@ -2199,10 +2213,11 @@ const startAdmin = async () => {
     if (handleOwnerError(error)) return;
     if ([400, 404, 409, 413].includes(error.status)) closurePending = null;
     const hint = await mutationFailureHint(error, {
-      settled: closurePending === null,
+      settled: () => closurePending === null,
       retryHint: " 同じ内容で結果を再確認できます。",
       reload: loadSchedule,
     });
+    if (hint === null) return;
     setStatus(closureStatus, `${error.message}${hint}`, "error");
     focusWithoutScroll(closureStatus);
   };
@@ -2514,11 +2529,17 @@ const startSetup = async () => {
   // authenticated banner addressed to someone who is now logged out. It follows
   // the publication mode, because a mode changed during the session is the mode
   // a visitor sees once that session ends.
-  const loggedOutNoticeFor = (mode) =>
-    mode === "live"
+  // Takes whether the installation is accepting, not the mode alone: a live
+  // installation whose readiness is incomplete is not accepting, and telling a
+  // visitor otherwise is the one thing this notice must never do.
+  const loggedOutNoticeFor = (accepting, mode) =>
+    accepting
       ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
       : setupModeNoticeText(false, mode);
-  let loggedOutNotice = "";
+  // The served page carries the demo notice as its own text, which is the right
+  // thing to keep showing when the config read that would replace it fails. It
+  // seeds the value so signing out never blanks the banner.
+  let loggedOutNotice = modeNotice.textContent.trim();
 
   const renderSetupState = (state) => {
     setupState = state;
@@ -2552,7 +2573,7 @@ const startSetup = async () => {
     renderServiceEditors();
     updateReadiness(state.readiness);
     const accepting = state.mode === "live" && state.readiness.ready;
-    loggedOutNotice = loggedOutNoticeFor(state.mode);
+    loggedOutNotice = loggedOutNoticeFor(accepting, state.mode);
     modeNotice.textContent = setupModeNoticeText(accepting, state.mode);
     modeNotice.dataset.tone = accepting ? "success" : "";
     updateSetupControls();
@@ -2646,8 +2667,7 @@ const startSetup = async () => {
       renderReceipt(await ownerApi("/api/admin/installation-receipt"));
       setStatus(receiptStatus, "秘密情報を含まない設置受領書を更新しました。", "success");
     } catch (error) {
-      if (error.status === 401) showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-      else setStatus(receiptStatus, error.message, "error");
+      if (!handleOwnerError(error)) setStatus(receiptStatus, error.message, "error");
     }
   };
 
@@ -2679,10 +2699,21 @@ const startSetup = async () => {
     if (message) setStatus(authStatus, message, "error");
   };
 
+  // The same check the operator screen keeps under this name. The two screens
+  // are separate closures with their own showLoggedOut, so the shape is shared
+  // rather than the function.
+  const handleOwnerError = (error) => {
+    if (error.status !== 401) return false;
+    showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
+    return true;
+  };
+
   try {
     const config = await api("/api/config");
     applyPublicConfig(config);
-    loggedOutNotice = loggedOutNoticeFor(config.mode);
+    // The public config already reports demo for a live installation that is not
+    // ready, so its live is the accepting one.
+    loggedOutNotice = loggedOutNoticeFor(config.mode === "live", config.mode);
     modeNotice.textContent = loggedOutNotice;
   } catch {
     setStatus(authStatus, "公開設定を読み込めませんでした。接続を確認してください。", "error");
@@ -2754,10 +2785,7 @@ const startSetup = async () => {
 
   const handleSetupSaveError = async (error) => {
     if ([400, 401, 409, 413].includes(error.status)) pendingUpdate = null;
-    if (error.status === 401) {
-      showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-      return;
-    }
+    if (handleOwnerError(error)) return;
     if (error.code === "CONFIGURATION_CONFLICT") {
       await loadSetup().catch(() => {});
       setStatus(setupStatus, "ほかの画面で設定が更新されました。最新の内容を読み込みました。もう一度確認してください。", "error");
@@ -2769,10 +2797,7 @@ const startSetup = async () => {
 
   const handleLiveToggleError = async (error) => {
     if ([400, 401, 409, 413].includes(error.status)) pendingLive = null;
-    if (error.status === 401) {
-      showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-      return;
-    }
+    if (handleOwnerError(error)) return;
     if (error.code === "CONFIGURATION_CONFLICT") await loadSetup().catch(() => {});
     setStatus(setupStatus, `${error.message}${pendingLive ? " 同じ操作で結果を再確認できます。" : ""}`, "error");
   };
