@@ -242,9 +242,7 @@ const CREDENTIAL_RULES = [
   ["live payment secret", /\bsk_live_[A-Za-z0-9]{16,}\b/],
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
 ];
-const FORBIDDEN_ROOTS = ["home", "Users"].map(
-  (name) => new RegExp(String.raw`/${name}/[^/\s]+/`),
-);
+const FORBIDDEN_ROOTS = [/\/home\/[^/\s]+\//, /\/Users\/[^/\s]+\//];
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
