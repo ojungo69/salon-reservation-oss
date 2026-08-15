@@ -217,12 +217,11 @@ const requireMutationOrigin = (request: Request, url: URL): Response | null =>
 const rateKey = (request: Request, route: string): string =>
   `${request.headers.get("cf-connecting-ip") ?? "unknown"}:${route}`;
 
-const limited = async (
-  limiter: RateLimit,
-  request: Request,
-  route: string,
-): Promise<boolean> =>
-  !(await limiter.limit({ key: rateKey(request, route) })).success;
+const limitedByKey = async (limiter: RateLimit, key: string): Promise<boolean> =>
+  !(await limiter.limit({ key })).success;
+
+const limited = (limiter: RateLimit, request: Request, route: string): Promise<boolean> =>
+  limitedByKey(limiter, rateKey(request, route));
 
 const rateLimited = (): Response =>
   errorResponse(429, "RATE_LIMITED", { "retry-after": "60" });
@@ -353,12 +352,13 @@ const breakGlassAuthenticated = async (
  *
  * Order matters and is load-bearing:
  *
- *  1. The rate limiter runs first and is not an authorization decision, so no
- *     role bypasses it and its per-route buckets are unchanged.
- *  2. The deployment secret is checked from the environment. A match answers
+ *  1. The deployment secret is checked from the environment. A match answers
  *     without touching storage, so an installation whose roster is corrupt,
  *     empty, or absent still lets its operator in — and an installation that
  *     has never added staff pays nothing at all.
+ *  2. The rate limiter runs before any authorization decision is acted on, so
+ *     no role bypasses it. Its outcome only selects which budget is spent: the
+ *     secret's own lane, or the shared per-address bucket everyone else uses.
  *  3. Only a credential that is *not* the deployment secret reaches the roster.
  *
  * Both refusals below answer an identical 401. A `403` for insufficient role
@@ -373,10 +373,19 @@ const operatorGate = async (
   env: AppEnv,
   route: OperatorRoute,
 ): Promise<{ actor: Actor } | { response: Response }> => {
-  if (await limited(env.OWNER_RATE_LIMITER, request, route)) {
+  // The deployment secret is answered first only to decide which budget the
+  // request spends; it still spends one. Its lane is keyed by the fact of
+  // holding the secret rather than by the caller's address, so it is a budget
+  // nobody without the secret can consume. That matters because staff and owner
+  // share one salon's network: on a per-address bucket, the person being
+  // revoked could spend the budget their own revocation needs, from the same
+  // office connection. Everyone else stays on the shared per-address bucket, so
+  // guessing the secret is rate limited exactly as it was. (FR-004, FR-009)
+  const breakGlass = await breakGlassAuthenticated(request, env);
+  const budget = breakGlass === "accepted" ? `break-glass:${route}` : rateKey(request, route);
+  if (await limitedByKey(env.OWNER_RATE_LIMITER, budget)) {
     return { response: rateLimited() };
   }
-  const breakGlass = await breakGlassAuthenticated(request, env);
   if (breakGlass === "unavailable") {
     return { response: errorResponse(503, "TEMPORARILY_UNAVAILABLE") };
   }

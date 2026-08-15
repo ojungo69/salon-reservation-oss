@@ -157,9 +157,17 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 - **FR-004**: The rate limiter and the same-origin mutation check MUST run before and independently
   of any role decision, keeping their current per-route buckets. Neither is an authorization
   decision and neither may be bypassed by any role.
-- **FR-005**: A refusal for insufficient role MUST NOT be distinguishable to the caller from a
-  refusal for a bad credential in a way that reveals whether a credential is valid for some other
-  route.
+- **FR-005**: On a route the caller may not use, a refusal for insufficient role MUST NOT be
+  distinguishable from a refusal for a credential that is not valid anywhere — same status, same
+  body, same headers, and the same work done to reach them.
+
+  This is route-local equivalence, and it is deliberately not a claim that a credential's validity
+  is unknowable. A staff credential is *accepted* on the six day-to-day routes; that is what it is
+  for. Anyone holding a candidate string can therefore learn whether it works by sending it to one
+  of those routes, and no response shape or timing on the owner-only routes can conceal a `200`
+  earned elsewhere. What FR-005 forbids is narrower and achievable: an owner-only route must not
+  become the oracle. It must not tell a caller "this credential is real, just not enough here",
+  because that is the sentence that turns a found string into a target worth escalating.
 
 **Identity and credentials**
 

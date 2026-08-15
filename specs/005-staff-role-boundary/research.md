@@ -375,3 +375,44 @@ destroy the record of who existed in order to make a screen work.
 document explicitly. Rejected for this slice as surface bought for a state no roster operation can
 reach. If a real installation ever reaches it, the evidence will say whether the repair belongs in
 the product or in the runbook.
+
+---
+
+## R13. What exactly does "revocation takes effect on the next request" fence?
+
+**Decision**: it fences every request whose authorization has not yet been decided. A request whose
+credential `operatorGate` has already resolved may finish, including the part of it that arrives
+afterwards — the body is read after the gate runs, so a client that supplies its command slowly can
+have a command authorized by a credential that was live when the request opened and stopped before
+the command landed.
+
+**Rationale**: the alternative is to read and bound the request body before deciding authorization,
+which asks the Worker to buffer bodies for callers it has not yet refused and to answer parse errors
+to anonymous ones. That trades a narrow window for a wider unauthenticated surface. The window it
+buys is small and bounded: the attacker must already hold a live credential, must open the request
+before the deactivation, and gains only the operations that credential already had.
+
+**What would close it**: an authorization epoch carried into the mutation coordinator and checked at
+the commit boundary, so a command commits against the roster as it stands when it commits rather
+than when it was authorized. That is a feature with its own failure modes — every command gains a
+new way to be refused — and it belongs in a slice that can test it, not in a comment here.
+
+---
+
+## R14. What does an attribution row mean when a command is replayed?
+
+**Decision**: the row records **who first committed this change**, not who has since asked for it.
+A replay short-circuits at the command gate and never reaches the attribution write, so a second
+authorized operator submitting the same command identifier and body leaves no trace.
+
+**Rationale**: the actor is deliberately outside the command fingerprint (FR-028), so that the same
+command from a second authorized operator replays rather than being refused as a mismatch. Given
+that, the receipt is the record of the change and the attribution row is a column of it; re-asking
+for a change that already happened did not change anything, and recording it would make the history
+of the reservation disagree with the history of the request.
+
+**What this is not**: a request log. Answering "who asked, and when, including the times nothing
+happened" needs a separate append-only record with its own retention, its own privacy category, and
+its own storage cost. It is not the same artifact as attribution and should not be smuggled in by
+widening this one. Reaching a replay in the first place needs the original client-generated
+command identifier, which is not published anywhere.

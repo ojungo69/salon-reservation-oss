@@ -4099,6 +4099,41 @@ describe("S3 staff and role boundary", () => {
     expect(((await listed.json()) as { members: unknown[] }).members).toHaveLength(200);
   });
 
+  it("keeps the deployment secret answerable when the shared rate bucket is spent", async () => {
+    const staff = await addStaff("staff", "受付 A");
+    const keys: string[] = [];
+    // Everything except the deployment secret's own lane is exhausted — which
+    // is what a salon looks like when someone on the office network has spent
+    // the per-address bucket, deliberately or not. Staff and owner share that
+    // address, so a single bucket would let the person being revoked spend the
+    // budget their own revocation needs.
+    const spentEnv = Object.create(env) as Env;
+    Object.defineProperty(spentEnv, "OWNER_RATE_LIMITER", {
+      value: {
+        limit: async ({ key }: { key: string }) => {
+          keys.push(key);
+          return { success: key.startsWith("break-glass:") };
+        },
+      },
+    });
+    const through = (headers: Record<string, string>) =>
+      worker.fetch(
+        new Request(`https://example.test${schedulePath}`, { headers }),
+        spentEnv,
+      );
+
+    expect((await through(bearer(staff.credential))).status).toBe(429);
+    expect((await through(garbage)).status).toBe(429);
+    // Not merely un-refused: answered, from the same address, in the same
+    // second, on the same route the two calls above were just refused on.
+    expect((await through(ownerHeaders)).status).toBe(200);
+    expect(keys).toEqual([
+      "unknown:owner-schedule",
+      "unknown:owner-schedule",
+      "break-glass:owner-schedule",
+    ]);
+  });
+
   it("refuses everyone the same way when the roster is empty", async () => {
     for (const [method, path] of ownerOnly(crypto.randomUUID())) {
       const response = await call(method, path, garbage);

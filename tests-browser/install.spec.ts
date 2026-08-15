@@ -126,3 +126,31 @@ test("the setup screen keeps its served notice when the public config is unreach
   await expect(page.locator("#setup-auth-status")).toContainText("公開設定を読み込めませんでした");
   await expect(page.locator("[data-setup-mode-notice]")).toContainText("デモ");
 });
+
+/**
+ * The credential exists in the response to the command that minted it and
+ * nowhere else. The screen refreshes the roster around that moment, and a
+ * refresh is a second request that can fail on its own — so the order of those
+ * two steps decides whether a failure costs a list or costs the credential.
+ */
+test("a failed roster refresh does not take the new credential with it", async ({ page }) => {
+  await page.goto("/setup");
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+  await expect(page.locator("#staff-submit")).toBeEnabled();
+
+  // Only the refresh is broken. The create still succeeds, which is exactly the
+  // situation where the credential is irrecoverable if it is dropped.
+  await page.route("**/api/admin/staff", (route) =>
+    route.request().method() === "GET" ? route.abort("failed") : route.continue(),
+  );
+
+  await page.fill("#staff-display-name", "検証 当番");
+  await page.click("#staff-submit");
+
+  await expect(page.locator("[data-staff-credential]")).toBeVisible();
+  await expect(page.locator("[data-staff-credential-value]")).toHaveText(
+    /^[A-Za-z0-9_-]{43}$/,
+  );
+});

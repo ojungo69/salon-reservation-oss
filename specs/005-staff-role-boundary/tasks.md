@@ -99,7 +99,7 @@ survives a restart of the object holding the roster.
 **Independent Test**: with a roster whose only owner-role account is deactivated, the `OWNER_TOKEN`
 holder is still accepted on every owner-gated route and can reactivate an account.
 
-- [X] T021 [US3] Add the break-glass test to the worker suite: assert the last-owner deactivation is refused with `409 LAST_OWNER`, then write a deliberately corrupt `__staff_roster` document straight into storage and confirm `OWNER_TOKEN` is still accepted on **every one of the fifteen gated paths** and can repair the roster (SC-006; depends on T020)
+- [X] T021 [US3] Add the break-glass test to the worker suite: assert the last-owner deactivation is refused with `409 LAST_OWNER`, then write a deliberately corrupt `__staff_roster` document straight into storage and confirm `OWNER_TOKEN` is still accepted on **every one of the fifteen gated paths** (SC-006; depends on T020). The roster's own routes are the exception and answer `503` — an unreadable document is reported as unreadable and repaired at the storage layer, which is the decision recorded in [research R12](./research.md); a parser-bypassing reset command is surface this slice does not add
 - [X] T022 [US3] Confirm by reading `operatorGate` that the break-glass path reaches its verdict before `resolveActor` is called, so a corrupt or unreachable roster is invisible to it, and record that ordering in a comment at the call site (depends on T006)
 
 **Checkpoint**: the installation cannot be locked out, and the property is structural rather than procedural.

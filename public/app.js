@@ -2722,8 +2722,12 @@ const startSetup = async () => {
     hideCredential();
     try {
       const result = await ownerApi(path, { method: "POST", body: "{}" });
-      await loadRoster();
+      // Shown before the refresh, never after. The credential exists in this
+      // one response and nowhere else, so a failed `loadRoster` must not be
+      // able to take it down with it — the member would exist with a
+      // credential nobody ever saw, recoverable only by rotating again.
       showCredential(result.credential);
+      await loadRoster();
       setStatus(
         staffStatus,
         result.credential
@@ -2891,8 +2895,9 @@ const startSetup = async () => {
         body: JSON.stringify({ displayName, role: staffRole.value }),
       });
       staffForm.reset();
-      await loadRoster();
+      // Before the refresh, for the same reason as in `rosterCommand`.
       showCredential(result.credential);
+      await loadRoster();
       setStatus(staffStatus, "登録しました。認証情報は下に一度だけ表示します。", "success");
     } catch (error) {
       staffSubmit.disabled = false;
