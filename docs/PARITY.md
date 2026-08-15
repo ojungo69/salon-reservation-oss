@@ -82,7 +82,7 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 | Capability | Production task it serves | Status | Current evidence / remaining gap | Roadmap stage / exclusion boundary |
 |---|---|---|---|---|
 | External identity login (LINE via LIFF) | Customers reuse an existing identity instead of a management key | Implemented (optional adapter) | Nonce-scoped link intents with management-key proof, server-side ID-token verification, two-phase provisional→final linking (`src/worker.ts`, `src/adapter-delivery.ts`, `src/line-adapter.ts`; tests in `test/line-adapter.test.ts`, `tests-browser/line.spec.ts`); the accountless path stays the default and the adapter is invisible until configured ([setup](LINE-SETUP.md)) | Stage S1 |
-| Staff accounts and role boundaries | Multiple staff operate with scoped permissions | Planned | Single owner secret is the implemented boundary | Stage S3 |
+| Staff accounts and role boundaries | Multiple staff operate with scoped permissions | Implemented | Named accounts with their own credentials in a `__staff_roster` document, two roles, and a total route-to-role table; deactivation clears the credential digest and takes effect on the next request; the deployment secret keeps full rights and is answered before the roster is read, so no roster state can lock an installation out; operator changes record who made them (`src/installation-config.ts`, `src/worker.ts`, `src/reservation-day.ts`; tests in `test/staff-roster.test.ts`, `test/worker.test.ts`, `tests-browser/install.spec.ts`). Attribution is written but not yet readable in the interface | Stage S3 |
 
 ### Notifications
 
