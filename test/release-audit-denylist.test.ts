@@ -61,7 +61,11 @@ test("refuses a denylist that is not a regular file", () => {
 });
 
 test("refuses a denylist outside the repository and the system temp roots, named or linked", () => {
-  const outside = join(homedir(), ".release-audit-denylist-test-target");
+  // The home directory is the one place that is neither the repository nor a
+  // system temp root on both a developer machine and CI. mkdtemp rather than a
+  // fixed name, because the cleanup below deletes whatever this points at.
+  const outsideRoot = mkdtempSync(join(homedir(), ".release-audit-denylist-test-"));
+  const outside = join(outsideRoot, "terms.txt");
   writeFileSync(outside, "unreleased-codename\n");
   try {
     const named = runAudit(outside);
@@ -82,7 +86,7 @@ test("refuses a denylist outside the repository and the system temp roots, named
       /denylist path is not under the repository or a system temp directory/,
     );
   } finally {
-    rmSync(outside, { force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
   }
 });
 
