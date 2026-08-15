@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
+  constants,
   existsSync,
   fstatSync,
   lstatSync,
@@ -180,8 +181,11 @@ const openConfinedDenylist = (path, { optional }) => {
   }
   // One handle carries both the type check and the read. Statting a name and
   // then reading that name again resolves it twice, so a symlink swapped in
-  // between would send the read somewhere the check never saw.
-  const handle = openSync(canonical, "r");
+  // between would send the read somewhere the check never saw. Refusing to
+  // follow a link closes the same gap for the path itself: realpath already
+  // resolved every component, so anything still a link here appeared after the
+  // containment check and would take the read somewhere that check never saw.
+  const handle = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
     fail("denylist path is not a regular file");
