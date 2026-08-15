@@ -1604,8 +1604,16 @@ const applyRosterCommand = (
   } else {
     if (current.active) return rosterFailure("STAFF_UNAVAILABLE");
     // A new credential, always: the previous digest was destroyed at
-    // deactivation and there is nothing to restore.
-    member = { ...current, active: true, credentialDigest: command.credentialDigest };
+    // deactivation and there is nothing to restore. `deactivatedAt` goes with
+    // it — the record is in the list the roster hands out, and an active member
+    // still carrying the date they were stopped describes a state that is not
+    // true of them any more.
+    member = {
+      ...current,
+      active: true,
+      credentialDigest: command.credentialDigest,
+      deactivatedAt: null,
+    };
   }
 
   const members = [...roster.members];
@@ -1929,7 +1937,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       )
       .toArray();
     const row = rows[0];
-    if (rows.length !== 1 || row?.singleton !== 1) return corruptStorage();
+    if (rows.length !== 1 || row.singleton !== 1) return corruptStorage();
     let parsed: unknown;
     try {
       parsed = JSON.parse(row.roster_json);

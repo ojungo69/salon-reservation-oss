@@ -154,3 +154,34 @@ test("a failed roster refresh does not take the new credential with it", async (
     /^[A-Za-z0-9_-]{43}$/,
   );
 });
+
+test("an issued credential does not survive signing out, or a second sign-in", async ({
+  page,
+}) => {
+  await page.goto("/setup");
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+  await expect(page.locator("#staff-submit")).toBeEnabled();
+
+  await page.fill("#staff-display-name", "検証 交代");
+  await page.click("#staff-submit");
+  await expect(page.locator("[data-staff-credential-value]")).toHaveText(
+    /^[A-Za-z0-9_-]{43}$/,
+  );
+
+  // Signing out is the owner saying they are finished. The box goes with the
+  // session, or the next person at this screen reads somebody's credential off
+  // it.
+  await page.click("#setup-logout");
+  await expect(page.locator("[data-staff-credential]")).toBeHidden();
+  await expect(page.locator("[data-staff-credential-value]")).toBeEmpty();
+
+  // And it does not come back on the next sign-in, which is the same screen
+  // with the same nodes still in it.
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+  await expect(page.locator("[data-staff-credential]")).toBeHidden();
+  await expect(page.locator("[data-staff-credential-value]")).toBeEmpty();
+});

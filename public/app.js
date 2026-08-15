@@ -2892,6 +2892,12 @@ const startSetup = async () => {
     }
   });
   logoutButton.addEventListener("click", () => {
+    // Here and not in `showLoggedOut`, because the two ways a session ends are
+    // not the same. A refused refresh ends it against the owner's wishes, and
+    // clearing there would destroy a credential the server had already minted.
+    // Pressing this button is the owner saying they are finished, which
+    // includes being finished with what is on screen.
+    setCredential("");
     showLoggedOut();
     setStatus(authStatus, "ログアウトしました。", "success");
   });

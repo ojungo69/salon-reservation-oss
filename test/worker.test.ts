@@ -4101,6 +4101,21 @@ describe("S3 staff and role boundary", () => {
     );
     expect(stopped.status).toBe(409);
     expect(((await stopped.json()) as { error: { code: string } }).error.code).toBe("LAST_OWNER");
+
+    // A dry run is a rehearsal, and a rehearsal that reports success for a
+    // create the real command would refuse is worse than no rehearsal. The
+    // limit is checked before the dry run returns, not after it, and this is
+    // what says so: move the check and this asks for a 200 and gets one.
+    const rehearsed = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "受付 C", role: "staff", dryRun: true },
+      ownerHeaders,
+    );
+    expect(rehearsed.status).toBe(409);
+    expect(((await rehearsed.json()) as { error: { code: string } }).error.code).toBe(
+      "ROSTER_FULL",
+    );
+
     const listed = await SELF.fetch("https://example.test/api/admin/staff", {
       headers: ownerHeaders,
     });
