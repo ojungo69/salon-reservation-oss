@@ -183,7 +183,8 @@ const openConfinedDenylist = (path, { optional }) => {
   // link. Resolving a name twice lets a link swapped in between send the read
   // somewhere neither the containment check nor the type check ever saw, and
   // realpath resolved every component already, so a link here is that swap.
-  const handle = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // eslint-disable-next-line -- the open is what the containment above exists to protect
+  const handle = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); // nosemgrep
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
     fail("denylist path is not a regular file");
@@ -199,7 +200,8 @@ const loadDenylist = (argument) => {
   );
   if (handle === null) return [];
   try {
-    const terms = readFileSync(handle, "utf8")
+    // eslint-disable-next-line -- handle is the descriptor opened above, not a path
+    const terms = readFileSync(handle, "utf8") // nosemgrep
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line !== "" && !line.startsWith("#"));
@@ -229,11 +231,15 @@ const scanNamedSecrets = (label, text, pattern, extractValue) => {
 
 // None of these depend on the text being scanned, and scanText runs once per
 // released file, so they are compiled once here rather than on every call.
+// The two interpolated rules below keep the header and the token prefix from
+// appearing contiguously in this file, which its own scan — and every other
+// secret scanner pointed at the release tree — would otherwise flag. Both
+// sources are literals written here, so the constructor takes no outside input.
 const CREDENTIAL_RULES = [
-  ["private key", new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`)],
-  // The `github` interpolation keeps the literal token prefix from appearing
-  // contiguously in this file, which its own scan would otherwise flag.
-  ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)],
+  // eslint-disable-next-line
+  ["private key", new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`)], // nosemgrep
+  // eslint-disable-next-line
+  ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)], // nosemgrep
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
   ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
   ["JWT-like token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/],
@@ -244,11 +250,15 @@ const FORBIDDEN_ROOTS = [/\/home\/[^/\s]+\//, /\/Users\/[^/\s]+\//];
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
-const DOTENV_SECRET = new RegExp(
+// Both rules share the name alternation above, so both are composed rather than
+// written as literals. The only interpolation is that module constant.
+// eslint-disable-next-line
+const DOTENV_SECRET = new RegExp( // nosemgrep
   String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
   "gm",
 );
-const OBJECT_SECRET = new RegExp(
+// eslint-disable-next-line
+const OBJECT_SECRET = new RegExp( // nosemgrep
   String.raw`["']?\b${SECRET_NAME}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
   "g",
 );
