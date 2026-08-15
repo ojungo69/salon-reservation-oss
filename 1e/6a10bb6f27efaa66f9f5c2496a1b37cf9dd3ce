@@ -1,0 +1,22 @@
+scripts/release-audit.mjs
+  s_3ac342c3240e69::t_f8b0a5a63dee1f 186-187
+  s_3ac342c3240e69::t_e3c1b78fcb850c 234-237,239-242
+  s_3ac342c3240e69::t_182d8d4708db4b 203-204
+  s_3ac342c3240e69::t_28c2e3d4460ba5 253-256,260-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "1e6a10bb6f27efaa66f9f5c2496a1b37cf9dd3ce",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
