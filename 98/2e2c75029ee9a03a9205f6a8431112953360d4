@@ -1,0 +1,21 @@
+specs/005-staff-role-boundary/tasks.md
+  s_3ac342c3240e69::t_df66c996b7e4a9 1-201
+specs/005-staff-role-boundary/spec.md
+  s_3ac342c3240e69::t_3846cdb450cb7c 284-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "982e2c75029ee9a03a9205f6a8431112953360d4",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
