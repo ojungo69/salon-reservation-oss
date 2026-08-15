@@ -1,0 +1,19 @@
+specs/005-staff-role-boundary/research.md
+  s_3ac342c3240e69::t_eb9f7e96fdc39d 221-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "cb326291eb3bbd2f746fda6fbfdc476fa1fcc002",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
