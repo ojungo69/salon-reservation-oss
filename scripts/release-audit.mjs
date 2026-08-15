@@ -193,10 +193,7 @@ const openConfinedDenylist = (path, { optional }) => {
     fail("this platform cannot open the denylist without following links");
   }
   // eslint-disable-next-line security/detect-non-literal-fs-filename
-  const handle = openSync(
-    canonical,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
+  const handle = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
     fail("denylist path is not a regular file");
