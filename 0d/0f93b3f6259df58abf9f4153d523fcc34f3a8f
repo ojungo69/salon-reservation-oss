@@ -1,0 +1,19 @@
+scripts/release-audit.mjs
+  s_95d3eaeb07d2f1::t_5acdee504de20c 245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0d0f93b3f6259df58abf9f4153d523fcc34f3a8f",
+  "prompts": {},
+  "sessions": {
+    "s_95d3eaeb07d2f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aa54209-9db9-4f5e-b7c8-0c15d4430519",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
