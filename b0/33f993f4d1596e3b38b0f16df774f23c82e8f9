@@ -1,0 +1,52 @@
+public/setup.html
+  s_3ac342c3240e69::t_ac144d992f4d73 277-314,316-318
+  s_3ac342c3240e69::t_7317ea4c7a02d9 54,63
+  s_3ac342c3240e69::t_a346edf01205e2 315
+test/worker.test.ts
+  s_3ac342c3240e69::t_aff7c54a9bf33d 3825-3826,3828
+  s_3ac342c3240e69::t_4fb65017d45f02 3819-3820,3847-3852
+  s_3ac342c3240e69::t_fa440cd17d629e 3822-3823,3830-3845
+  s_3ac342c3240e69::t_1c7432c2c53d12 3760-3818,3821,3824,3827,3829,3846,3853-3880
+public/admin.html
+  s_3ac342c3240e69::t_9ec0bb33b7fbc1 50,59
+public/app.js
+  s_3ac342c3240e69::t_89d9804f701d48 2805,2808
+  s_3ac342c3240e69::t_f461fa23cddc3a 2852-2857
+  s_3ac342c3240e69::t_574c38166b4d80 2301-2310
+  s_3ac342c3240e69::t_53b7e1fc81919c 2868-2896
+  s_3ac342c3240e69::t_15697190411c2c 2693-2789
+src/worker.ts
+  s_3ac342c3240e69::t_1e74cb6d90e5aa 385-388
+  s_3ac342c3240e69::t_96a7b431dade8e 1621-1623
+tests-browser/install.spec.ts
+  s_3ac342c3240e69::t_20188f890c6ea1 71-113
+  s_211aa7fe546c35::t_909bbe0bed0469 70
+public/styles.css
+  s_3ac342c3240e69::t_612f4c0f1689c5 975,999-1000,1013
+specs/005-staff-role-boundary/research.md
+  s_3ac342c3240e69::t_4f7363a9e34a5e 351-377
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b033f993f4d1596e3b38b0f16df774f23c82e8f9",
+  "prompts": {},
+  "sessions": {
+    "s_211aa7fe546c35": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffdcb-e994-7732-bb4e-56faff6022eb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
