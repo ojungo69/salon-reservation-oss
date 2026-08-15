@@ -2690,70 +2690,76 @@ const startSetup = async () => {
     return state;
   };
 
-  // Hiding the box and forgetting the string are the same act. A credential the
+  // One function owns whether a credential is on screen and what it says.
+  // Hiding the box and forgetting the string are the same act: a credential the
   // page still holds in a hidden node is a second copy of something the product
-  // promises to show exactly once.
-  const hideCredential = () => {
-    staffCredential.hidden = true;
-    staffCredentialValue.textContent = "";
+  // promises to show exactly once. An empty value therefore hides rather than
+  // showing an empty box — the deactivate path returns no credential.
+  const setCredential = (credential) => {
+    staffCredentialValue.textContent = credential || "";
+    staffCredential.hidden = !credential;
   };
 
+  // Deliberately does not touch the credential box. This runs when the session
+  // ends, and a session can end *because* the refresh after a successful
+  // issuance was refused — clearing here would destroy the one copy of a
+  // credential the server had already minted. It is cleared when a session
+  // begins instead, so the next person to authenticate never sees it.
   const clearRoster = (note) => {
-    staffList.replaceChildren(createElement("p", "empty-note", note));
-    staffCount.textContent = "有効 0人";
+    renderRoster([], note);
     staffFields.disabled = true;
     staffSubmit.disabled = true;
-    hideCredential();
     staffForm.reset();
   };
 
-  // The credential is in the response to the command that minted it and nowhere
-  // else, so it is shown until the next roster action rather than for a timeout:
-  // the owner decides when they have finished copying it.
-  const showCredential = (credential) => {
-    if (!credential) return;
-    staffCredentialValue.textContent = credential;
-    staffCredential.hidden = false;
-  };
-
-  const rosterCommand = async (path, confirmation, button) => {
-    if (confirmation && !window.confirm(confirmation)) return;
-    button.disabled = true;
-    hideCredential();
+  // The list is a second request, and it can fail on its own. Refreshing it is
+  // not part of whether the command succeeded, so it is reported separately: a
+  // stale list is a stale list, and telling an owner their change failed when
+  // it did not is how the same person gets added twice.
+  const refreshRoster = async () => {
     try {
-      const result = await ownerApi(path, { method: "POST", body: "{}" });
-      // Shown before the refresh, never after. The credential exists in this
-      // one response and nowhere else, so a failed `loadRoster` must not be
-      // able to take it down with it — the member would exist with a
-      // credential nobody ever saw, recoverable only by rotating again.
-      showCredential(result.credential);
       await loadRoster();
-      setStatus(
-        staffStatus,
-        result.credential
-          ? "新しい認証情報を発行しました。前の認証情報は次の操作から使えません。"
-          : "停止しました。次の操作から認証できません。",
-        "success",
-      );
+      return true;
     } catch (error) {
-      button.disabled = false;
-      if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
+      if (!handleOwnerError(error)) {
+        setStatus(staffStatus, `${error.message} 一覧は最新ではありません。`, "error");
+      }
+      return false;
     }
   };
 
-  const renderRoster = (members) => {
+  const rosterCommand = async (path, outcome, confirmation, button) => {
+    if (confirmation && !window.confirm(confirmation)) return;
+    button.disabled = true;
+    setCredential("");
+    let result;
+    try {
+      result = await ownerApi(path, { method: "POST", body: "{}" });
+    } catch (error) {
+      button.disabled = false;
+      if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
+      return;
+    }
+    // Committed before the refresh, never after. The credential exists in this
+    // one response and nowhere else, so a failed `loadRoster` must not be able
+    // to take it — or the news that the change happened — down with it. It then
+    // stays on screen until the next roster action or the next sign-in, rather
+    // than for a timeout: the owner decides when they have finished copying.
+    setCredential(result.credential);
+    setStatus(staffStatus, outcome, "success");
+    await refreshRoster();
+  };
+
+  const renderRoster = (
+    members,
+    emptyNote = "まだ誰も登録されていません。運営者トークンだけがこの設置を操作できます。",
+  ) => {
     staffList.replaceChildren();
     // "有効", not a bare number: a stopped member is still listed below, and a
     // chip reading "0人" beside a visible card reads as "nobody is registered".
     staffCount.textContent = `有効 ${members.filter(({ active }) => active).length}人`;
     if (members.length === 0) {
-      staffList.append(
-        createElement(
-          "p",
-          "empty-note",
-          "まだ誰も登録されていません。運営者トークンだけがこの設置を操作できます。",
-        ),
-      );
+      staffList.append(createElement("p", "empty-note", emptyNote));
       return;
     }
     for (const member of members) {
@@ -2770,22 +2776,36 @@ const startSetup = async () => {
         member.role === "owner" ? "運営者 / 設定と外部連携も変更できる" : "スタッフ / 日々の予約対応",
       );
       const actions = createElement("div", "detail-actions");
-      const action = (label, path, confirmation = "") => {
+      const action = (label, path, outcome, confirmation = "") => {
         const button = createElement("button", "text-button", label);
         button.type = "button";
-        button.addEventListener("click", () => void rosterCommand(path, confirmation, button));
+        button.addEventListener(
+          "click",
+          () => void rosterCommand(path, outcome, confirmation, button),
+        );
         actions.append(button);
       };
       const base = `/api/admin/staff/${encodeURIComponent(member.id)}`;
       if (member.active) {
-        action("認証情報を再発行する", `${base}/rotate`);
+        action(
+          "認証情報を再発行する",
+          `${base}/rotate`,
+          "新しい認証情報を発行しました。前の認証情報は次の操作から使えません。",
+        );
         action(
           "停止する",
           `${base}/deactivate`,
+          "停止しました。次の操作から認証できません。",
           `${member.displayName} を停止します。今の認証情報は使えなくなり、再開しても元には戻りません。続けますか？`,
         );
       } else {
-        action("再開して認証情報を発行する", `${base}/reactivate`);
+        // Not "the previous credential stopped working": deactivation destroyed
+        // it, so there is no previous credential for this to be true of.
+        action(
+          "再開して認証情報を発行する",
+          `${base}/reactivate`,
+          "再開しました。新しい認証情報を発行しています。以前の認証情報は使えません。",
+        );
       }
       article.append(state, summary, actions);
       staffList.append(article);
@@ -2797,7 +2817,6 @@ const startSetup = async () => {
     renderRoster(members);
     staffFields.disabled = false;
     staffSubmit.disabled = false;
-    return members;
   };
 
   const showLoggedOut = (message = "") => {
@@ -2856,17 +2875,16 @@ const startSetup = async () => {
     if (!authForm.reportValidity()) return;
     ownerToken = tokenInput.value;
     tokenInput.value = "";
+    // A new session starts with no credential on screen, whoever the last one
+    // belonged to.
+    setCredential("");
     setStatus(authStatus, "認証して設定を読み込んでいます。");
     try {
       await loadSetup();
       logoutButton.hidden = false;
       await loadReceipt();
       if (!ownerToken) return;
-      try {
-        await loadRoster();
-      } catch (error) {
-        if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
-      }
+      await refreshRoster();
       if (!ownerToken) return;
       setStatus(authStatus, "認証しました。トークンはこのページを閉じると消えます。", "success");
     } catch (error) {
@@ -2887,7 +2905,7 @@ const startSetup = async () => {
       return;
     }
     staffSubmit.disabled = true;
-    hideCredential();
+    setCredential("");
     setStatus(staffStatus, "スタッフを登録しています。");
     try {
       const result = await ownerApi("/api/admin/staff", {
@@ -2895,10 +2913,10 @@ const startSetup = async () => {
         body: JSON.stringify({ displayName, role: staffRole.value }),
       });
       staffForm.reset();
-      // Before the refresh, for the same reason as in `rosterCommand`.
-      showCredential(result.credential);
-      await loadRoster();
+      // Committed before the refresh, for the same reason as in `rosterCommand`.
+      setCredential(result.credential);
       setStatus(staffStatus, "登録しました。認証情報は下に一度だけ表示します。", "success");
+      await refreshRoster();
     } catch (error) {
       staffSubmit.disabled = false;
       if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");

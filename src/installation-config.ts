@@ -636,7 +636,12 @@ const canonicalJson = (value: unknown): string => {
     .join(",")}}`;
 };
 
-const sha256Hex = async (value: string): Promise<string> => {
+/**
+ * Exported because the Worker mints staff credentials and needs the same
+ * encoding this object stores digests in. One definition, so the two cannot
+ * disagree about case or padding and stop matching.
+ */
+export const sha256Hex = async (value: string): Promise<string> => {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
@@ -1361,7 +1366,7 @@ const timingSafeEqualHex = (left: string, right: string): boolean => {
 
 export type StaffRole = "owner" | "staff";
 
-export type StaffMember = {
+type StaffMember = {
   id: string;
   displayName: string;
   role: StaffRole;
@@ -1374,12 +1379,11 @@ export type StaffMember = {
   deactivatedAt: string | null;
 };
 
-export type StaffRoster = {
+type StaffRoster = {
   version: 1;
   members: StaffMember[];
 };
 
-const STAFF_ROSTER_KEYS = ["version", "members"] as const;
 const STAFF_MEMBER_KEYS = [
   "id",
   "displayName",
@@ -1434,7 +1438,7 @@ const parseStaffMember = (value: unknown): StaffMember => {
 };
 
 export const parseStaffRoster = (value: unknown): StaffRoster => {
-  if (!isRecord(value) || !hasExactKeys(value, STAFF_ROSTER_KEYS)) {
+  if (!isRecord(value) || !hasExactKeys(value, ["version", "members"])) {
     return corruptStorage();
   }
   // A document from a future version is refused rather than migrated: this
@@ -1454,9 +1458,9 @@ export const hasActiveOwner = (roster: StaffRoster): boolean =>
   roster.members.some(({ role, active }) => role === "owner" && active);
 
 /** A staff record as anyone outside this object may see it: never the digest. */
-export type PublicStaffMember = Omit<StaffMember, "credentialDigest">;
+type PublicStaffMember = Omit<StaffMember, "credentialDigest">;
 
-export const publicStaffMember = ({
+const publicStaffMember = ({
   credentialDigest: _digest,
   ...rest
 }: StaffMember): PublicStaffMember => rest;
@@ -1466,7 +1470,7 @@ export const publicStaffMember = ({
  * plaintext ever exists, so every command that issues a credential carries the
  * digest in rather than computing one here.
  */
-export type RosterCommand =
+type RosterCommand =
   | {
       operation: "staff.create";
       displayName: string;
@@ -1480,10 +1484,11 @@ export type RosterCommand =
 
 export type RosterFailureCode =
   | "BAD_REQUEST"
-  | "NOT_FOUND_OR_UNAUTHORIZED"
+  | "STAFF_UNAVAILABLE"
   | "VERSION_CONFLICT"
   | "LAST_OWNER"
-  | "ROSTER_FULL";
+  | "ROSTER_FULL"
+  | "UNAUTHORIZED";
 
 /**
  * The roster is one document read in full on every staff-credentialled request,
@@ -1554,8 +1559,8 @@ const rosterFailure = (code: RosterFailureCode): { ok: false; code: RosterFailur
  * Pure: the caller decides whether to store the result.
  *
  * An unknown identifier and an ineligible one answer the same
- * `NOT_FOUND_OR_UNAUTHORIZED`, so the endpoint never confirms which identifiers
- * are real to a caller probing them.
+ * `STAFF_UNAVAILABLE`, so the endpoint never confirms which identifiers are
+ * real to a caller probing them.
  */
 const applyRosterCommand = (
   roster: StaffRoster,
@@ -1583,21 +1588,21 @@ const applyRosterCommand = (
 
   const index = roster.members.findIndex(({ id }) => id === command.staffId);
   const current = roster.members[index];
-  if (current === undefined) return rosterFailure("NOT_FOUND_OR_UNAUTHORIZED");
+  if (current === undefined) return rosterFailure("STAFF_UNAVAILABLE");
 
   let member: StaffMember;
   if (command.operation === "staff.rotate") {
     // Rotating a record that cannot authenticate would put a live digest on an
     // inactive member, which the parser refuses and revocation depends on.
-    if (!current.active) return rosterFailure("NOT_FOUND_OR_UNAUTHORIZED");
+    if (!current.active) return rosterFailure("STAFF_UNAVAILABLE");
     member = { ...current, credentialDigest: command.credentialDigest };
   } else if (command.operation === "staff.deactivate") {
-    if (!current.active) return rosterFailure("NOT_FOUND_OR_UNAUTHORIZED");
+    if (!current.active) return rosterFailure("STAFF_UNAVAILABLE");
     // Clearing the digest is the revocation. The record survives with its
     // identifier and role so past attribution stays resolvable.
     member = { ...current, active: false, credentialDigest: "", deactivatedAt: now };
   } else {
-    if (current.active) return rosterFailure("NOT_FOUND_OR_UNAUTHORIZED");
+    if (current.active) return rosterFailure("STAFF_UNAVAILABLE");
     // A new credential, always: the previous digest was destroyed at
     // deactivation and there is nothing to restore.
     member = { ...current, active: true, credentialDigest: command.credentialDigest };
@@ -1855,20 +1860,27 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return clone(this.#readStoredState().state);
   }
 
-  // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
-
-  #lineTableExists(): boolean {
+  /**
+   * Whether one of this object's `__`-prefixed side tables has been provisioned
+   * yet. Absent is a legitimate state — it is where every installation starts —
+   * so the readers below distinguish it from a table that exists and has lost
+   * its row, which is corruption.
+   */
+  #tableExists(name: string): boolean {
     return (
       this.ctx.storage.sql
         .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__line_lifecycle'",
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+          name,
         )
         .toArray().length > 0
     );
   }
 
+  // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
+
   #readLineLifecycle(): LineLifecycle | null {
-    if (!this.#lineTableExists()) return null;
+    if (!this.#tableExists("__line_lifecycle")) return null;
     const rows = this.ctx.storage.sql
       .exec<{ singleton: number; lifecycle_json: string }>(
         "SELECT singleton, lifecycle_json FROM __line_lifecycle",
@@ -1907,20 +1919,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   // ---- Staff roster storage (own `__` table; settings JSON untouched) ----
 
-  #rosterTableExists(): boolean {
-    return (
-      this.ctx.storage.sql
-        .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__staff_roster'",
-        )
-        .toArray().length > 0
-    );
-  }
-
   // Answers null for an installation that has never had a roster, which is the
   // state every installation is in until an owner adds the first member.
   #readRoster(): { roster: StaffRoster; rosterJson: string } | null {
-    if (!this.#rosterTableExists()) return null;
+    if (!this.#tableExists("__staff_roster")) return null;
     const rows = this.ctx.storage.sql
       .exec<{ singleton: number; roster_json: string }>(
         "SELECT singleton, roster_json FROM __staff_roster",
@@ -1958,6 +1960,12 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * lost update into a refusal instead of silent corruption.
    */
   #writeRoster(roster: StaffRoster, previousJson: string | null): boolean {
+    // Validated before the table is created, because the two statements are not
+    // in one transaction: a parser that threw after the `CREATE` would leave a
+    // table holding no rows, which `#readRoster` reads as corruption forever and
+    // which no screen can repair. Unreachable while everything
+    // `applyRosterCommand` builds parses — the ordering is what keeps it so.
+    const rosterJson = JSON.stringify(parseStaffRoster(roster));
     const sql = this.ctx.storage.sql;
     sql.exec(`
       CREATE TABLE IF NOT EXISTS __staff_roster (
@@ -1969,10 +1977,16 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       `INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
        ON CONFLICT(singleton) DO UPDATE SET roster_json = excluded.roster_json
        WHERE roster_json = ?`,
-      JSON.stringify(parseStaffRoster(roster)),
+      rosterJson,
       previousJson ?? "",
     );
-    return write.rowsWritten === 1;
+    if (write.rowsWritten === 1) return true;
+    // Same anomaly check `executeCommand`'s compare-and-swap makes: a count
+    // that is neither 0 nor 1 is not a lost race, and reporting it as one would
+    // tell an owner their `staff.create` failed while the member is in the
+    // roster holding a credential the response threw away.
+    if (write.rowsWritten !== 0) throw new Error("Invalid roster CAS result");
+    return false;
   }
 
   /**
@@ -2016,11 +2030,32 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * roster somebody else just edited can do something the caller never asked
    * for. A lost race is reported as a conflict and the operator re-reads.
    */
-  async executeRosterCommand(input: unknown): Promise<RosterCommandResult> {
+  async executeRosterCommand(
+    input: unknown,
+    actorId: unknown,
+  ): Promise<RosterCommandResult> {
     const command = parseRosterCommand(input);
     if (command === null) return rosterFailure("BAD_REQUEST");
+    if (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId))) {
+      return rosterFailure("BAD_REQUEST");
+    }
     const stored = this.#readRoster();
     const roster = stored?.roster ?? EMPTY_ROSTER;
+    // Re-checked here, not just at the gate. The Worker authorized this caller
+    // before the request body arrived, and on this surface that gap is the
+    // difference between an operation finishing with the rights it opened with
+    // and an operation restoring rights that were taken away while it was open.
+    // Read in the same synchronous turn as the write below, so the roster this
+    // decision is made against is the roster the command lands on.
+    // `null` is the deployment secret, which no roster command can revoke.
+    if (
+      actorId !== null &&
+      !roster.members.some(
+        ({ id, role, active }) => id === actorId && role === "owner" && active,
+      )
+    ) {
+      return rosterFailure("UNAUTHORIZED");
+    }
     const applied = applyRosterCommand(
       roster,
       command,

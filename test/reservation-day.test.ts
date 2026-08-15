@@ -1,7 +1,14 @@
 import { env, reset, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DayConfig, ReservationDay } from "../src/reservation-day.ts";
+import type { DayActor, DayConfig, ReservationDay } from "../src/reservation-day.ts";
+
+// The four owner-path day methods require an acting identity, because a receipt
+// with no actor is the state FR-014 forbids. These tests are not about who
+// acted, so they say "the deployment secret did" — the actor the Worker passes
+// when an installation is driven by its own token.
+const TEST_ACTOR = { kind: "break_glass" } as const;
+
 
 type Service = {
   id: string;
@@ -43,17 +50,23 @@ type TargetReservationDay = ReservationDay & {
     serviceIds: string[],
     reservationId?: string,
   ): Promise<unknown>;
+  // Third parameter included deliberately: without it this type contradicts the
+  // real signature, and nothing typechecks these files (`tsconfig.json` covers
+  // `src/` only), so the contradiction would not surface anywhere.
   transitionOwner(
     config: TargetDayConfig,
     input: Record<string, unknown>,
+    actor: DayActor,
   ): Promise<unknown>;
   createClosure(
     config: TargetDayConfig,
     input: Record<string, unknown>,
+    actor: DayActor,
   ): Promise<unknown>;
   removeClosure(
     config: TargetDayConfig,
     input: Record<string, unknown>,
+    actor: DayActor,
   ): Promise<unknown>;
 };
 
@@ -410,7 +423,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
       const input = createInput(config, { serviceIds: ["service-cut"] });
       const created = scenario.publicCreate
         ? await stub.createPublic(config, input)
-        : await stub.createOwner(config, input);
+        : await stub.createOwner(config, input, TEST_ACTOR);
       expect(created).toMatchObject({ ok: true });
 
       if (scenario.action === "complete" || scenario.action === "no_show") {
@@ -429,6 +442,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         "transitionOwner",
         config,
         command,
+        TEST_ACTOR
       );
       expect(transitioned).toMatchObject({
         ok: true,
@@ -436,7 +450,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         replayed: false,
       });
 
-      const replay = await callTarget(stub, "transitionOwner", config, command);
+      const replay = await callTarget(stub, "transitionOwner", config, command, TEST_ACTOR);
       expect(replay).toMatchObject({
         ok: true,
         status: scenario.status,
@@ -486,6 +500,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         endTime: "11:00",
         label: "架空の全体休止",
       },
+      TEST_ACTOR
     );
     expect(nonCanonical).toEqual({ ok: false, code: "BAD_REQUEST" });
 
@@ -497,11 +512,11 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
       endTime: "13:00",
       label: "架空の全日休業",
     };
-    expect(await callTarget(stub, "createClosure", day, command)).toMatchObject({
+    expect(await callTarget(stub, "createClosure", day, command, TEST_ACTOR)).toMatchObject({
       ok: true,
       replayed: false,
     });
-    expect(await callTarget(stub, "createClosure", day, command)).toMatchObject({
+    expect(await callTarget(stub, "createClosure", day, command, TEST_ACTOR)).toMatchObject({
       ok: true,
       replayed: true,
     });
@@ -525,6 +540,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           endTime: "11:00",
           label: "架空チェア A の整備",
         },
+        TEST_ACTOR
       ),
     ).toMatchObject({ ok: true });
 
@@ -565,6 +581,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           endTime: "10:30",
           label: "既存予約と重なる整備",
         },
+        TEST_ACTOR
       ),
     ).toEqual({ ok: false, code: "UNAVAILABLE" });
   });
@@ -585,7 +602,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
       startTime: "11:00",
     };
 
-    expect(await callTarget(stub, "transitionOwner", day, command)).toMatchObject({
+    expect(await callTarget(stub, "transitionOwner", day, command, TEST_ACTOR)).toMatchObject({
       ok: true,
       reservationId: reservationIdOf(created),
       resourceId: "resource-chair-b",
@@ -593,7 +610,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
       status: "pending",
       replayed: false,
     });
-    expect(await callTarget(stub, "transitionOwner", day, command)).toMatchObject({
+    expect(await callTarget(stub, "transitionOwner", day, command, TEST_ACTOR)).toMatchObject({
       ok: true,
       reservationId: reservationIdOf(created),
       replayed: true,
@@ -645,7 +662,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         action: "reschedule",
         resourceId: "resource-chair-a",
         startTime: "09:30",
-      }),
+      }, TEST_ACTOR),
     ).toMatchObject({
       ok: true,
       reservationId,
@@ -672,6 +689,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           resourceId: "resource-chair-b",
           startTime: "12:00",
         }),
+        TEST_ACTOR
       );
       const acceptedReschedule = {
         commandId: crypto.randomUUID(),
@@ -682,7 +700,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         startTime: "11:00",
       };
       expect(
-        await callTarget(stub, "transitionOwner", sameDay, acceptedReschedule),
+        await callTarget(stub, "transitionOwner", sameDay, acceptedReschedule, TEST_ACTOR),
       ).toMatchObject({ ok: true, replayed: false, startTime: "11:00" });
 
       now.mockReturnValue(Date.parse(`${sameDay.date}T01:30:00.000Z`));
@@ -704,6 +722,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
             resourceId: "resource-chair-b",
             startTime: "09:00",
           }),
+          TEST_ACTOR
         ),
       ).toEqual({ ok: false, code: "UNAVAILABLE" });
       expect(
@@ -714,7 +733,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           action: "reschedule",
           resourceId: "resource-chair-a",
           startTime: "10:00",
-        }),
+        }, TEST_ACTOR),
       ).toEqual({ ok: false, code: "UNAVAILABLE" });
       expect(await stub.listOwner(sameDay)).toMatchObject({
         reservations: expect.arrayContaining([
@@ -739,10 +758,10 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           action: "reschedule",
           resourceId: "resource-chair-a",
           startTime: "11:00",
-        }),
+        }, TEST_ACTOR),
       ).toEqual({ ok: false, code: "UNAVAILABLE" });
       expect(
-        await callTarget(stub, "transitionOwner", sameDay, acceptedReschedule),
+        await callTarget(stub, "transitionOwner", sameDay, acceptedReschedule, TEST_ACTOR),
       ).toMatchObject({ ok: true, replayed: true, startTime: "11:00" });
       expect(await stub.createPublic(sameDay, acceptedInput)).toMatchObject({
         ok: true,
@@ -782,6 +801,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           resourceId: "resource-chair-b",
           startTime: "11:00",
         },
+        TEST_ACTOR
       ),
     ).toEqual({ ok: false, code: "UNAVAILABLE" });
     expect(await conflictStub.listOwner(conflictDay)).toMatchObject({
@@ -823,6 +843,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           resourceId: "resource-chair-b",
           startTime: "11:00",
         },
+        TEST_ACTOR
       ),
     ).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
     expect(await rollbackStub.listOwner(rollbackDay)).toMatchObject({
@@ -923,7 +944,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         date: maxDay.date,
         reservationId: reservationIdOf(creates[95]),
         action: "cancel",
-      }),
+      }, TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "cancelled" });
     expect(
       await stub.availability(
@@ -950,7 +971,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         action: "reschedule",
         resourceId: "resource-8",
         startTime: "11:45",
-      }),
+      }, TEST_ACTOR),
     ).toMatchObject({ ok: true, startTime: "11:45" });
 
     const approvals = await Promise.all(
@@ -965,6 +986,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
             reservationId: reservationIdOf(created),
             action: "approve",
           },
+          TEST_ACTOR
         ),
       ),
     );
@@ -984,6 +1006,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
             reservationId: reservationIdOf(created),
             action: "cancel",
           },
+          TEST_ACTOR
         ),
       ),
     );
@@ -1000,7 +1023,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         action: "reschedule",
         resourceId: "resource-1",
         startTime: "09:00",
-      }),
+      }, TEST_ACTOR),
     ).toMatchObject({ ok: true, startTime: "09:00" });
     expect(
       await stub.availability(
@@ -1021,6 +1044,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
           reservationId: reservationIdOf(creates[0]),
           action: "approve",
         },
+        TEST_ACTOR
       ),
     ).toEqual({ ok: false, code: "CAPACITY_REACHED" });
 
@@ -1066,7 +1090,7 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
         startTime: "11:00",
         endTime: "12:00",
         label: "架空の設備点検",
-      }),
+      }, TEST_ACTOR),
     ).toMatchObject({ ok: true, replayed: false });
 
     const healthy = await stub.listOwner(corruptDay);
@@ -1338,6 +1362,7 @@ describe("S2 calendar outbox substrate", () => {
       const created = await stub.createOwner(
         calendarDay,
         createInput(calendarDay, { serviceIds: ["service-cut"] }),
+        TEST_ACTOR
       );
       expect(created).toMatchObject({ ok: true, status: "approved" });
       const initial = await stub.drainOutbox({ consumer: "calendar" });
@@ -1353,7 +1378,8 @@ describe("S2 calendar outbox substrate", () => {
           date: calendarDay.date,
           reservationId: reservationIdOf(created),
           action,
-        }),
+        },
+          TEST_ACTOR),
       ).toMatchObject({ ok: true, status: action === "complete" ? "completed" : "no_show" });
       await expect(stub.drainOutbox({ consumer: "calendar" })).resolves.toEqual({
         events: [],
@@ -1420,12 +1446,18 @@ describe("S2 calendar outbox substrate", () => {
       more: false,
     });
     expect(
-      await call(stub, "transitionOwner", configured(day, { calendar: true }), {
-        commandId: crypto.randomUUID(),
-        date: day.date,
-        reservationId: reservationIdOf(created),
-        action: "approve",
-      }),
+      await call(
+        stub,
+        "transitionOwner",
+        configured(day, { calendar: true }),
+        {
+          commandId: crypto.randomUUID(),
+          date: day.date,
+          reservationId: reservationIdOf(created),
+          action: "approve",
+        },
+        TEST_ACTOR,
+      ),
     ).toMatchObject({ ok: true, status: "approved" });
 
     const migrated = await runInDurableObject(stub, (_instance, state) => ({
@@ -1540,6 +1572,7 @@ describe("T012 pending expiry", () => {
       await stub.createOwner(
         expiring,
         createInput(expiring, { startTime: "12:00", serviceIds: ["service-cut"] }),
+        TEST_ACTOR
       ),
     );
 
@@ -1590,7 +1623,7 @@ describe("T012 pending expiry", () => {
           reservationId,
           action,
           ...(action === "reject" ? { reason: "架空の理由" } : {}),
-        }),
+        }, TEST_ACTOR),
       ).toEqual({ ok: false, code: "NOT_FOUND_OR_UNAUTHORIZED" });
       expect(await stub.listOwner(target)).toMatchObject({
         ok: true,

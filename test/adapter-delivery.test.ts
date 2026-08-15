@@ -17,6 +17,13 @@ import {
   SUITE_PURGE_AT,
 } from "./line-helpers.ts";
 
+// The four owner-path day methods require an acting identity, because a receipt
+// with no actor is the state FR-014 forbids. These tests are not about who
+// acted, so they say "the deployment secret did" — the actor the Worker passes
+// when an installation is driven by its own token.
+const TEST_ACTOR = { kind: "break_glass" } as const;
+
+
 // Future-dated fixtures derived from the real clock (~1 year ahead): every
 // alarm the code schedules lands after the real wall clock, so the runtime
 // never auto-fires one — tests drive alarms explicitly and stay deterministic.
@@ -208,7 +215,7 @@ const driveAuthorityPurge = async (): Promise<void> => {
 describe("adapter event foundation", () => {
   it("keeps adapter tables invisible to legacy callers while still refusing unknown tables", async () => {
     const reservationId = await createPending();
-    const approved = await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    const approved = await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     expect(approved).toMatchObject({ ok: true, status: "approved" });
 
     expect(await adapterTableCount()).toBe(2);
@@ -244,13 +251,14 @@ describe("adapter event foundation", () => {
 
   it("assigns deterministic event ids from a dedicated monotonic sequence", async () => {
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     const cancelled = await dayStub().transitionOwner(adapterDay(), {
       commandId: crypto.randomUUID(),
       date: day.date,
       reservationId,
       action: "cancel",
-    });
+    },
+      TEST_ACTOR);
     expect(cancelled).toMatchObject({ ok: true, status: "cancelled" });
 
     expect(await outboxRows()).toMatchObject([
@@ -270,7 +278,7 @@ describe("adapter event foundation", () => {
 
   it("refuses an outbox row whose event id does not match its date and sequence", async () => {
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     await runInDurableObject(dayStub(), (_instance, state) => {
       state.storage.sql.exec(
         "UPDATE __adapter_outbox SET event_id = 'wrong#1' WHERE consumer = 'line'",
@@ -286,7 +294,7 @@ describe("adapter event foundation", () => {
 
   it("acknowledges only the returned generation when event ids repeat", async () => {
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     await runInDurableObject(dayStub(), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO __adapter_outbox
@@ -310,6 +318,7 @@ describe("adapter event foundation", () => {
     await dayStub().transitionOwner(
       { ...adapterDay(), purgeAt: Date.now() + 86_400_000 },
       approveInput(reservationId),
+      TEST_ACTOR
     );
 
     expect(await outboxRows()).toMatchObject([{ purge_at: day.purgeAt }]);
@@ -320,6 +329,7 @@ describe("adapter event foundation", () => {
     const result = await dayStub().transitionOwner(
       adapterDay({ leaseNotAfter: NOW - 1 }),
       approveInput(reservationId),
+      TEST_ACTOR
     );
     expect(result).toEqual({ ok: false, code: "RETRY_CONFIG" });
 
@@ -337,6 +347,7 @@ describe("adapter event foundation", () => {
     const approved = await dayStub().transitionOwner(
       adapterDay({ phase: "deactivating" }),
       approveInput(reservationId),
+      TEST_ACTOR
     );
     expect(approved).toMatchObject({ ok: true, status: "approved" });
     expect(await adapterTableCount()).toBe(0);
@@ -346,13 +357,14 @@ describe("adapter event foundation", () => {
     // Emit both events while the delivery object is inactive so the automatic
     // post-commit poke cannot race this test's own choreography.
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     await dayStub().transitionOwner(adapterDay(), {
       commandId: crypto.randomUUID(),
       date: day.date,
       reservationId,
       action: "cancel",
-    });
+    },
+      TEST_ACTOR);
     expect(await outboxRows()).toHaveLength(2);
 
     const activated = await deliveryStub().activate({ generation: 1 });
@@ -379,7 +391,7 @@ describe("adapter event foundation", () => {
 
   it("cancels stale-generation events at the receiver", async () => {
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay({ generation: 1 }), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay({ generation: 1 }), approveInput(reservationId), TEST_ACTOR);
 
     const activated = await deliveryStub().activate({ generation: 2 });
     expect(activated).toMatchObject({ ok: true });
@@ -444,7 +456,7 @@ describe("adapter event foundation", () => {
     // after the authority disabled — exactly the writer the priority-0 branch
     // exists for. The automatic handoff poke must refuse it too.
     const reservationId = await createPending();
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     expect(await outboxRows()).toHaveLength(1);
 
     const before = await deliveryCounts();
@@ -498,7 +510,7 @@ describe("adapter event foundation", () => {
     async () => {
       // A leftover stale-generation row on a day the poke never revisits.
       const reservationId = await createPending();
-      await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+      await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
       expect(await outboxRows()).toHaveLength(1);
 
       await deliveryStub().activate({ generation: 2 });
@@ -522,7 +534,7 @@ describe("adapter event foundation", () => {
   it("re-pokes lazily on next use after a died handoff", async () => {
     const reservationId = await createPending();
     // Handoff target inactive at commit time: rows stay behind.
-    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId));
+    await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
     expect(await outboxRows()).toHaveLength(1);
 
     await deliveryStub().activate({ generation: 1 });
@@ -1009,7 +1021,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
     return reservationId;
@@ -1020,7 +1032,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
 
     const queued = await deliveryRows();
@@ -1051,7 +1063,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     await runDurableObjectAlarm(deliveryStub());
 
@@ -1085,7 +1097,7 @@ describe("delivery pipeline", () => {
       const reservationId = await createPending(pDate);
       await activateGen1();
       await finalizedLink(reservationId);
-      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
       await deliveryStub().pokeDay({ date: pDate });
 
       await runDurableObjectAlarm(deliveryStub());
@@ -1139,7 +1151,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
 
     await runDurableObjectAlarm(deliveryStub());
@@ -1166,7 +1178,7 @@ describe("delivery pipeline", () => {
     if (!minted.ok) throw new Error("mint failed");
 
     // Event committed between intent and consent: held, not acked away.
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "held" }]);
 
@@ -1183,7 +1195,8 @@ describe("delivery pipeline", () => {
       date: pDate,
       reservationId,
       action: "cancel",
-    });
+    },
+      TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "queued", type: "cancel" }]);
     await runDurableObjectAlarm(deliveryStub());
@@ -1196,7 +1209,7 @@ describe("delivery pipeline", () => {
     const unfollowedAt = Date.now();
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
 
@@ -1305,7 +1318,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
 
     await runDurableObjectAlarm(deliveryStub());
@@ -1344,7 +1357,7 @@ describe("delivery pipeline", () => {
         );
       }
     });
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await ledgerReasons()).toEqual([{ reason: "overflow", event_type: "approve" }]);
     expect((await counterMap())["disposition:overflow"]).toBe(1);
@@ -1384,7 +1397,7 @@ describe("delivery pipeline", () => {
 
     // A stale projection commits an outbox row after the disable.
     const reservationId = await createPending(pDate);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
 
     const dump = () =>
       runInDurableObject(deliveryStub(), (_instance, state) => {
@@ -1428,7 +1441,7 @@ describe("delivery pipeline", () => {
     { timeout: 120_000 },
     async () => {
       const reservationId = await createPending(pDate);
-      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
       await activateGen1();
       await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
         for (let seq = 2; seq <= ADAPTER.OUTBOX_DRAIN_BATCH + 1; seq += 1) {
@@ -1480,7 +1493,7 @@ describe("delivery pipeline", () => {
           drained: 0,
         });
       });
-      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+      await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
       expect(await outboxRows(dayStub({ date: pDate }))).toHaveLength(1);
       await runInDurableObject(deliveryStub(), (instance) => {
         delete (instance as unknown as Record<string, unknown>).pokeDay;
@@ -1548,7 +1561,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     // A failed finalize attempt shows up as a count, not an identity.
     await deliveryStub().finalizeLink({ nonce: "f".repeat(64), subject: SUBJECT });
@@ -1570,7 +1583,7 @@ describe("delivery pipeline", () => {
 
   it("purges one consumer's day rows and drops tables only when no consumer remains", async () => {
     const reservationId = await createPending(pDate);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     // A synthetic second consumer's pending row must survive a LINE purge.
     await runInDurableObject(dayStub({ date: pDate }), (_instance, state) => {
       state.storage.sql.exec(
@@ -1612,7 +1625,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
     expect((await deliveryCounts()).links).toBe(1);
@@ -1738,7 +1751,7 @@ describe("delivery pipeline", () => {
         Date.now() - 1_000,
       );
     });
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toEqual([]);
     expect(await ledgerReasons()).toEqual([
@@ -1753,7 +1766,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
 
@@ -1917,7 +1930,7 @@ describe("delivery pipeline", () => {
     });
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     await runDurableObjectAlarm(deliveryStub());
 
@@ -2012,7 +2025,8 @@ describe("delivery pipeline", () => {
       date: pDate,
       reservationId: approveId,
       action: "approve",
-    });
+    },
+      TEST_ACTOR);
     const approveBody = await drainPush();
     expect(approveBody).toContain(wording.approve);
     expect(approveBody).not.toContain(wording.reject);
@@ -2027,7 +2041,8 @@ describe("delivery pipeline", () => {
       reservationId: rejectId,
       action: "reject",
       reason: "架空の受付都合",
-    });
+    },
+      TEST_ACTOR);
     const rejectBody = await drainPush();
     expect(rejectBody).toContain(wording.reject);
     expect(rejectBody).not.toContain(wording.approve);
@@ -2038,7 +2053,8 @@ describe("delivery pipeline", () => {
       date: pDate,
       reservationId: rescheduleId,
       action: "approve",
-    });
+    },
+      TEST_ACTOR);
     await drainPush(); // approve wording already covered
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
       commandId: crypto.randomUUID(),
@@ -2047,7 +2063,8 @@ describe("delivery pipeline", () => {
       action: "reschedule",
       startTime: "12:00",
       resourceId: "resource-chair-a",
-    });
+    },
+      TEST_ACTOR);
     const rescheduleBody = await drainPush();
     expect(rescheduleBody).toContain(wording.reschedule);
     expect(rescheduleBody).not.toContain(wording.approve);
@@ -2059,14 +2076,16 @@ describe("delivery pipeline", () => {
       date: pDate,
       reservationId: cancelId,
       action: "approve",
-    });
+    },
+      TEST_ACTOR);
     await drainPush();
     await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), {
       commandId: crypto.randomUUID(),
       date: pDate,
       reservationId: cancelId,
       action: "cancel",
-    });
+    },
+      TEST_ACTOR);
     const cancelBody = await drainPush();
     expect(cancelBody).toContain(wording.cancel);
     expect(cancelBody).not.toContain(wording.approve);
@@ -2089,7 +2108,7 @@ describe("delivery pipeline", () => {
     const reservationId = await createPending(pDate);
     await activateGen1();
     await finalizedLink(reservationId);
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     // Age the outbox event past the next-guaranteed-visit rule, then poke.
     const lateBy =
       (ADAPTER.HANDOFF_TERMINAL_LEAD_S - fullCycleBoundS(WORST_CASE_PARTITIONS) + 1) * 1000;
@@ -2135,7 +2154,7 @@ describe("delivery pipeline", () => {
       return;
     }
 
-    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId));
+    await dayStub({ date: pDate }).transitionOwner(pAdapterDay(), pApprove(reservationId), TEST_ACTOR);
     await deliveryStub().pokeDay({ date: pDate });
     expect(await deliveryRows()).toMatchObject([
       { status: "awaiting-configuration", attempt: 0 },

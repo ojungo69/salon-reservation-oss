@@ -134,8 +134,16 @@ Two constraints, both learned in this repository:
 **Suite**: `test:worker`
 
 `POST /api/admin/staff` with `dryRun: true` on an installation with no roster: assert the response
-reports `wouldBeFirstMember: true` and `rosterValid: true`, that no credential is returned, and that
+reports `wouldBeFirstMember: true`, that there is no `credential` key at all, and that
 `GET /api/admin/staff` still answers `{ "members": [] }` afterwards.
+
+There is no `rosterValid: true` in the body. Reaching a `200` *is* the validation — the same parser
+the write would run has already accepted the document — and a field that can only ever hold one
+value tells a reader nothing. A refused input is a `400`.
+
+**No screen calls this.** The dry run is an operator-invoked API affordance for rehearsing a
+migration against a real installation, which is what FR-020 asks for; the roster panel creates
+members directly. If a later slice gives it a client, this note is what should change.
 
 ---
 

@@ -3983,14 +3983,23 @@ describe("S3 staff and role boundary", () => {
     expect(await attribution()).toEqual(rows);
   });
 
-  it("writes zero rows when the roster moved under a command", async () => {
-    // No sequence of requests can reach this: `executeRosterCommand` has no
-    // suspension point between reading the roster and writing it, so the
-    // compare-and-swap always matches. What is under test is the assumption the
-    // guard rests on — that `ON CONFLICT DO UPDATE … WHERE` reports
-    // `rowsWritten: 0` on a failed match rather than writing anyway or throwing.
-    // If a workerd upgrade changed that, the guard would be silently dead and
-    // every other test here would still pass.
+  it("reports zero rows written when a conditional upsert's WHERE does not match", async () => {
+    // Read the name literally: this exercises **workerd's** SQL, not
+    // `#writeRoster`. Delete the `WHERE roster_json = ?` clause from production
+    // and this still passes — nothing here calls `executeRosterCommand`.
+    //
+    // That is not an oversight to fix by reaching into the private method. No
+    // sequence of requests can make `#writeRoster` lose its compare-and-swap:
+    // `executeRosterCommand` has no suspension point between reading the roster
+    // and writing it, so the previous document is always the current one and
+    // `VERSION_CONFLICT` is unreachable by construction. The clause exists for
+    // the day someone introduces an `await` up there.
+    //
+    // What *is* testable, and what this covers, is the assumption that clause
+    // rests on: that `ON CONFLICT DO UPDATE … WHERE` reports `rowsWritten: 0`
+    // on a failed match rather than writing anyway or throwing. If a workerd
+    // upgrade changed that, the guard would be silently dead and nothing else
+    // in this file would notice.
     await addStaff("owner", "店長");
     const config = env.INSTALLATION_CONFIG.getByName(
       "installation",
@@ -4099,20 +4108,15 @@ describe("S3 staff and role boundary", () => {
     expect(((await listed.json()) as { members: unknown[] }).members).toHaveLength(200);
   });
 
-  it("keeps the deployment secret answerable when the shared rate bucket is spent", async () => {
+  it("spends one bucket, so a spent one tells a caller nothing about its credential", async () => {
     const staff = await addStaff("staff", "受付 A");
     const keys: string[] = [];
-    // Everything except the deployment secret's own lane is exhausted — which
-    // is what a salon looks like when someone on the office network has spent
-    // the per-address bucket, deliberately or not. Staff and owner share that
-    // address, so a single bucket would let the person being revoked spend the
-    // budget their own revocation needs.
     const spentEnv = Object.create(env) as Env;
     Object.defineProperty(spentEnv, "OWNER_RATE_LIMITER", {
       value: {
         limit: async ({ key }: { key: string }) => {
           keys.push(key);
-          return { success: key.startsWith("break-glass:") };
+          return { success: false };
         },
       },
     });
@@ -4122,16 +4126,67 @@ describe("S3 staff and role boundary", () => {
         spentEnv,
       );
 
-    expect((await through(bearer(staff.credential))).status).toBe(429);
-    expect((await through(garbage)).status).toBe(429);
-    // Not merely un-refused: answered, from the same address, in the same
-    // second, on the same route the two calls above were just refused on.
-    expect((await through(ownerHeaders)).status).toBe(200);
-    expect(keys).toEqual([
-      "unknown:owner-schedule",
-      "unknown:owner-schedule",
-      "break-glass:owner-schedule",
-    ]);
+    // The deployment secret is refused exactly as the wrong credentials are.
+    // That is the property, not an oversight: any budget the correct secret can
+    // reach and a wrong guess cannot is free confirmation of a guess, at
+    // whatever rate the attacker likes. A reserved lane was tried here and
+    // reverted for precisely that reason — see the comment in `operatorGate`.
+    for (const headers of [bearer(staff.credential), garbage, ownerHeaders]) {
+      expect((await through(headers)).status).toBe(429);
+    }
+    // One key kind, chosen before any credential is looked at, so the key
+    // cannot encode which credential was presented.
+    expect(new Set(keys)).toEqual(new Set(["unknown:owner-schedule"]));
+    expect(keys).toHaveLength(3);
+  });
+
+  it("refuses a roster command from an owner who was stopped after the gate ran", async () => {
+    const first = await addStaff("owner", "店長");
+    const second = await addStaff("owner", "副店長");
+
+    // The gate authorized `second` at the moment the request opened. What the
+    // object sees is the roster as it stands when the command lands, and by
+    // then `first` has stopped them. Reproduced by calling the object the way a
+    // request whose body arrived late would: the authorization already granted,
+    // the roster already moved.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${second.member.id}/deactivate`,
+      {},
+      bearer(first.credential),
+    );
+    expect(stopped.status).toBe(200);
+
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    const late = await config.executeRosterCommand(
+      {
+        operation: "staff.reactivate",
+        staffId: second.member.id,
+        credentialDigest: "c".repeat(64),
+      },
+      second.member.id,
+    );
+    // Not merely un-granted: refused, so no credential is minted for a record
+    // whose owner was revoked while their request was still arriving.
+    expect(late).toEqual({ ok: false, code: "UNAUTHORIZED" });
+
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: bearer(first.credential),
+    });
+    const { members } = (await listed.json()) as {
+      members: Array<{ id: string; active: boolean }>;
+    };
+    expect(members.find(({ id }) => id === second.member.id)?.active).toBe(false);
+
+    // The deployment secret is not in the roster and cannot be revoked from it,
+    // so it still repairs what the roster did.
+    const repaired = await jsonRequest(
+      `/api/admin/staff/${second.member.id}/reactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(repaired.status).toBe(200);
   });
 
   it("refuses everyone the same way when the roster is empty", async () => {

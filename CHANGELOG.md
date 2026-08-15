@@ -11,6 +11,22 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Added
 
+- Staff accounts with their own credentials, so operating the installation no longer means holding
+  the deployment secret. An owner adds people on the setup screen, gives each one either the `owner`
+  or the `staff` role, and hands them a credential shown exactly once. `staff` covers the day-to-day
+  booking work — the schedule, taking and moving reservations, closures — and reaches nothing else.
+  Stopping someone takes effect on their next request and does not delete them: the record stays so
+  past attribution keeps resolving. Reactivation issues a new credential, because the old one was
+  destroyed rather than suspended. Up to 200 records, stopped ones included.
+- `GET`/`POST /api/admin/staff` and `POST /api/admin/staff/:id/{rotate,deactivate,reactivate}`, all
+  owner-only. `POST /api/admin/staff` accepts `dryRun: true` to validate a migration without writing.
+- Attribution for operator-initiated reservation changes: creating, transitioning, and opening or
+  removing a closure now record which account made the change, kept alongside that day's data and
+  deleted with it. The stored value is the account identifier, never the display name, so editing a
+  name does not rewrite history. Nothing reads this back in the interface yet.
+- The privacy documents and the served privacy page describe what a staff record holds, what it
+  deliberately does not, and the two retention terms — a staff record for the life of the
+  installation, attribution for the life of the day it belongs to.
 - Issue forms for bug reports, feature requests, and non-sensitive support questions, plus a pull
   request checklist covering verification, security and privacy, idempotency, documentation, and
   rollback.
@@ -33,6 +49,10 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Changed
 
+- The operator screen's credential field accepts a staff credential as readily as the deployment
+  secret. The deployment secret keeps working on every route, including when the roster is empty,
+  unreadable, or has no active owner — it is never checked against the roster and cannot be revoked
+  from it.
 - Dependabot no longer proposes `@types/node` major updates, which track Node.js majors and have to
   move together with `.nvmrc` and `engines.node`. `CONTRIBUTING.md` now also explains why every
   Dependabot npm pull request starts red — the release audit pins each direct dependency's version

@@ -6,15 +6,19 @@ runs against — the test suite asserts one case per row.
 
 ## The gate
 
-`ownerGate(request, env, route)` becomes `operatorGate(request, env, route, required)`:
+`ownerGate(request, env, route)` becomes `operatorGate(request, env, route)`:
 
 ```ts
 type Required = "owner" | "staff";   // "staff" means "staff or owner"
 
 const operatorGate = async (
-  request: Request, env: AppEnv, route: string, required: Required,
-): Promise<{ actor: Actor } | Response> => { … }
+  request: Request, env: AppEnv, route: OperatorRoute,
+): Promise<{ actor: Actor } | { response: Response }> => { … }
 ```
+
+The required role is not a parameter. It is looked up from `ROUTE_ROLE[route]` — see "The role check
+is total" below — so a caller cannot pass a role the route's own entry disagrees with. `ownerGate`
+survives as a thin wrapper for the handlers that need "may this caller proceed" and nothing more.
 
 Order of operations, unchanged from today except for step 3:
 
@@ -115,6 +119,11 @@ The shapes are in [roster-api.md](./roster-api.md).
 const ROUTE_ROLE: Record<OperatorRoute, Required> = { … };   // no index signature, no default
 ```
 
-`OperatorRoute` is the union of the bucket names. Adding a route without adding it to this record is
-a type error, not a route that quietly defaults to one side. That is what "no route unaccounted for"
-means in code rather than in a checklist.
+`OperatorRoute` is the union of the bucket names. Adding a *bucket* without adding it to this record
+is a type error, not a bucket that quietly defaults to one side.
+
+What it does not do, and what no type can do from here: a new `/api/admin/…` entry in the route table
+that never calls the gate at all compiles and ships ungated, because nothing ties a route-table entry
+to a bucket. The route-by-route test in the worker suite is what catches that today, and it is a
+hand-maintained list. Making it structural means carrying the required role on the route-table entry
+and gating inside the dispatcher — a change worth making, and not one this slice makes.

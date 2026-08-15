@@ -139,8 +139,10 @@ not for `#expire`, which has no actor at all.
 
 ### `Actor`
 
-The result of resolving a bearer token. Produced by `ownerGate`, consumed by the role check and by
-whichever mutation follows.
+The result of resolving a bearer token. Produced by `operatorGate`, consumed by the role check and by
+whichever mutation follows. `ownerGate` is a thin wrapper over it for handlers that need only "may
+this caller proceed" and deliberately discards the actor; a route that records who acted, or that
+re-checks the actor at the mutation, calls `operatorGate` directly.
 
 ```ts
 type Actor =

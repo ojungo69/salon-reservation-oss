@@ -150,11 +150,19 @@ against a route it is allowed to reach.
 This is the specification's "static per-person credentials, not sessions" assumption made concrete:
 no issuance endpoint, no expiry, no refresh. Deactivation is what ends access.
 
-**Which route does the client verify against?** `GET /api/admin/availability` — the cheapest
-`staff`-allowed route, no side effects, and it works for both roles. A `200` means the credential is
-live; a `401` means it is not, with no way for the client to tell whether it was wrong or revoked,
-which is the same thing from its point of view.
+**Which route does the client verify against?** `GET /api/admin/schedule` — the operator screen's
+first read anyway, `staff`-allowed, no side effects, and it works for both roles. A `200` means the
+credential is live; a `401` means it is not, with no way for the client to tell whether it was wrong
+or revoked, which is the same thing from its point of view. Signing in is therefore not a separate
+request: the screen loads, and loading is the check.
 
-**How does the client learn its role?** From the response to `GET /api/admin/staff`: `200` means
-owner, `401` means staff. The client uses this only to decide which panels to render — it is a
-convenience, never a boundary. Every enforcement decision is made server-side on every request.
+**How does the client learn its role?** It does not, and deliberately so.
+
+An earlier draft had the operator screen probe `GET /api/admin/staff` and read `200` as owner, `401`
+as staff, to decide which panels to render. That was dropped before implementation. It buys a
+disclaimer that the client-side role is decorative, and a request whose failure has to be specially
+excused so it does not look like a session ending — and it asks an owner-only route to answer the
+question FR-005 forbids it from answering. The roster panel lives on the setup screen, which is
+owner-gated by the reads that precede it, so the question never arises there. Everywhere else the
+server refuses what a role may not do. A screen that offers an action the caller cannot take is a
+smaller problem than a screen that lies about why.

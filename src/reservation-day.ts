@@ -2007,7 +2007,11 @@ export class ReservationDay extends DurableObject<Env> {
     response: StoredSuccess,
     operation: string,
     subjectId: string,
-    actor: DayActor | null = null,
+    // No default. A receipt written without saying who wrote it is exactly the
+    // state FR-014 forbids, and a default turns forgetting into that state
+    // silently. `null` is a deliberate statement that nobody operated — the
+    // customer paths — and it has to be written down. (FR-014)
+    actor: DayActor | null,
   ): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO adapter_receipts
@@ -2944,6 +2948,8 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           "public-cancel",
           input.reservationId,
+          // A customer cancelling their own booking is not an operator action.
+          null,
         );
         this.#writeMeta(
           effective,

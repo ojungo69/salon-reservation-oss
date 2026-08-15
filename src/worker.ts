@@ -4,6 +4,7 @@ import {
   evaluateInstallationReadiness,
   InstallationConfig,
   projectPublicConfig,
+  sha256Hex,
   type InstallationSettings,
   type InstallationState,
   type LineContext,
@@ -93,6 +94,12 @@ const ERROR_MESSAGES = {
     "最後の運営者アカウントを無効化することはできません。先に別の運営者アカウントを追加してください。",
   ROSTER_FULL:
     "登録できるスタッフの上限に達しました。停止済みのスタッフも記録として残るため、上限には含まれます。",
+  // Deliberately one message for "no such person" and "not in a state this
+  // action applies to": the screen must not become a way to find out which
+  // identifiers are real. It names the roster rather than reusing the
+  // reservation wording, which is what an owner would otherwise be shown.
+  STAFF_UNAVAILABLE:
+    "対象のスタッフが見つからないか、この操作を実行できる状態ではありません。一覧を読み込み直してください。",
   UNAUTHORIZED: "認証情報を確認できませんでした。",
   VERSION_CONFLICT: "設定が更新されています。最新の状態を読み込み直してください。",
   LINE_LINK_CONFLICT:
@@ -217,11 +224,12 @@ const requireMutationOrigin = (request: Request, url: URL): Response | null =>
 const rateKey = (request: Request, route: string): string =>
   `${request.headers.get("cf-connecting-ip") ?? "unknown"}:${route}`;
 
-const limitedByKey = async (limiter: RateLimit, key: string): Promise<boolean> =>
-  !(await limiter.limit({ key })).success;
-
-const limited = (limiter: RateLimit, request: Request, route: string): Promise<boolean> =>
-  limitedByKey(limiter, rateKey(request, route));
+const limited = async (
+  limiter: RateLimit,
+  request: Request,
+  route: string,
+): Promise<boolean> =>
+  !(await limiter.limit({ key: rateKey(request, route) })).success;
 
 const rateLimited = (): Response =>
   errorResponse(429, "RATE_LIMITED", { "retry-after": "60" });
@@ -277,10 +285,15 @@ const lineSecretPresent = (env: AppEnv): boolean => {
  * owner"; `owner` means owner only.
  *
  * Deliberately a total record over a closed union rather than a lookup with a
- * default: a route added later without a decision recorded here fails to
+ * default: a *bucket* added later without a decision recorded here fails to
  * compile instead of quietly inheriting whichever side the default happened to
  * be. The keys are the rate-limiter bucket names the routes already used, so
  * this table and the limiter cannot drift apart.
+ *
+ * It does not, and from here cannot, catch a new `/api/admin/…` entry in the
+ * route table that never calls the gate at all: nothing ties a route to a
+ * bucket. The route-by-route test in the worker suite is the guard for that,
+ * and it is a hand-maintained list.
  */
 const ROUTE_ROLE = {
   "owner-availability": "staff",
@@ -314,9 +327,6 @@ type Actor =
 
 const bearerToken = (request: Request): string | null =>
   request.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/)?.[1] ?? null;
-
-const sha256Hex = async (value: string): Promise<string> =>
-  [...(await sha256(value))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
 /**
  * A staff credential, in the shape of the customer's management key: 32 random
@@ -352,13 +362,12 @@ const breakGlassAuthenticated = async (
  *
  * Order matters and is load-bearing:
  *
- *  1. The deployment secret is checked from the environment. A match answers
+ *  1. The rate limiter runs first and is not an authorization decision, so no
+ *     role bypasses it and no credential can buy its way past it.
+ *  2. The deployment secret is checked from the environment. A match answers
  *     without touching storage, so an installation whose roster is corrupt,
  *     empty, or absent still lets its operator in — and an installation that
  *     has never added staff pays nothing at all.
- *  2. The rate limiter runs before any authorization decision is acted on, so
- *     no role bypasses it. Its outcome only selects which budget is spent: the
- *     secret's own lane, or the shared per-address bucket everyone else uses.
  *  3. Only a credential that is *not* the deployment secret reaches the roster.
  *
  * Both refusals below answer an identical 401. A `403` for insufficient role
@@ -373,25 +382,32 @@ const operatorGate = async (
   env: AppEnv,
   route: OperatorRoute,
 ): Promise<{ actor: Actor } | { response: Response }> => {
-  // The deployment secret is answered first only to decide which budget the
-  // request spends; it still spends one. Its lane is keyed by the fact of
-  // holding the secret rather than by the caller's address, so it is a budget
-  // nobody without the secret can consume. That matters because staff and owner
-  // share one salon's network: on a per-address bucket, the person being
-  // revoked could spend the budget their own revocation needs, from the same
-  // office connection. Everyone else stays on the shared per-address bucket, so
-  // guessing the secret is rate limited exactly as it was. (FR-004, FR-009)
-  const breakGlass = await breakGlassAuthenticated(request, env);
-  const budget = breakGlass === "accepted" ? `break-glass:${route}` : rateKey(request, route);
-  if (await limitedByKey(env.OWNER_RATE_LIMITER, budget)) {
+  // One bucket, spent before any credential is examined, and deliberately so.
+  //
+  // A reserved lane for the deployment secret was tried and reverted: selecting
+  // the budget from whether the presented candidate matched turned the limiter
+  // into an oracle. Exhaust the address bucket, and a wrong guess answers 429
+  // while a right one does not — which is unlimited free confirmation of a
+  // guess, and strictly worse than what it was meant to fix. Anything that
+  // gives the correct secret a different outcome here has that shape.
+  //
+  // What it was meant to fix is real and remains: staff and owner share one
+  // salon's connection, so a staff member can spend this bucket and leave their
+  // own revocation answering 429 for a minute at a time. That is a delay, it
+  // clears itself, and the operator's remedy is another connection. Recorded as
+  // R15 rather than traded for an oracle. (FR-004, FR-009)
+  if (await limited(env.OWNER_RATE_LIMITER, request, route)) {
     return { response: rateLimited() };
   }
+  const breakGlass = await breakGlassAuthenticated(request, env);
   if (breakGlass === "unavailable") {
     return { response: errorResponse(503, "TEMPORARILY_UNAVAILABLE") };
   }
-  const refused = {
+  // Built where it is returned, not above: every authorized request was paying
+  // for a serialized error body it then discarded.
+  const refused = () => ({
     response: errorResponse(401, "UNAUTHORIZED", { "www-authenticate": "Bearer" }),
-  };
+  });
   if (breakGlass === "accepted") return { actor: { kind: "break_glass", role: "owner" } };
 
   // Only now, with the deployment secret already answered, is the roster
@@ -399,12 +415,30 @@ const operatorGate = async (
   // is absent, empty, or corrupt cannot be reached from above this line, so no
   // state of it can lock the installation's holder out. (FR-009, FR-017)
   const provided = bearerToken(request);
-  if (provided === null) return refused;
+  if (provided === null) return refused();
   const resolved = await installationStub(env).resolveActor(await sha256Hex(provided));
-  if (resolved === null) return refused;
-  if (ROUTE_ROLE[route] === "owner" && resolved.role !== "owner") return refused;
+  if (resolved === null) return refused();
+  if (ROUTE_ROLE[route] === "owner" && resolved.role !== "owner") return refused();
   return { actor: { kind: "staff", role: resolved.role, staffId: resolved.staffId } };
 };
+
+/**
+ * Who a roster command is being run by, as the object needs to see them.
+ *
+ * The gate authorized this caller before the request body existed; a slow body
+ * leaves a window in which the roster can change underneath an authorization
+ * that has already been given. On the day partition that window is the bound
+ * R13 accepts — an operation completes with the rights it opened with. On the
+ * roster it is not, because the operations here *are* the rights: a deactivated
+ * owner finishing a slow `reactivate` on themselves would undo their own
+ * revocation and walk away with a fresh credential. So the identifier travels
+ * to the object, which re-checks it in the same synchronous turn as the write.
+ *
+ * `null` is the deployment secret, which is not in the roster and cannot be
+ * revoked from it.
+ */
+const rosterActor = (actor: Actor): string | null =>
+  actor.kind === "staff" ? actor.staffId : null;
 
 /**
  * The day partition records who acted, not what they may do, so the role the
@@ -1619,10 +1653,27 @@ const handleLineStatus = async (
   });
 };
 
+/**
+ * Exhaustive, in the shape `failureResponse` uses, and for the same reason: a
+ * code added to `RosterFailureCode` without a status decided here is a compile
+ * error rather than a silent 409. This function used to fall through, and every
+ * code added to it since inherited 409 by accident until someone noticed.
+ */
 const rosterFailureStatus = (code: RosterFailureCode): number => {
-  if (code === "BAD_REQUEST") return 400;
-  if (code === "NOT_FOUND_OR_UNAUTHORIZED") return 404;
-  return 409;
+  switch (code) {
+    case "BAD_REQUEST":
+      return 400;
+    // The object refused the actor the gate had already accepted, which means
+    // the roster moved under an authorized request. Answered as the gate would.
+    case "UNAUTHORIZED":
+      return 401;
+    case "STAFF_UNAVAILABLE":
+      return 404;
+    case "VERSION_CONFLICT":
+    case "LAST_OWNER":
+    case "ROSTER_FULL":
+      return 409;
+  }
 };
 
 /**
@@ -1666,8 +1717,8 @@ const handleStaffRoster = async (
     const originFailure = requireMutationOrigin(request, url);
     if (originFailure !== null) return originFailure;
   }
-  const gate = await ownerGate(request, env, "owner-staff");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-staff");
+  if ("response" in gate) return gate.response;
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
   if (request.method === "GET") {
     return json({ members: await installationStub(env).listRoster() });
@@ -1690,13 +1741,16 @@ const handleStaffRoster = async (
   const dryRun = body.dryRun === true;
   const credential = dryRun ? "" : newStaffCredential();
   return rosterResponse(
-    await installationStub(env).executeRosterCommand({
-      operation: "staff.create",
-      displayName: body.displayName,
-      role: body.role,
-      credentialDigest: dryRun ? DRY_RUN_DIGEST : await sha256Hex(credential),
-      dryRun,
-    }),
+    await installationStub(env).executeRosterCommand(
+      {
+        operation: "staff.create",
+        displayName: body.displayName,
+        role: body.role,
+        credentialDigest: dryRun ? DRY_RUN_DIGEST : await sha256Hex(credential),
+        dryRun,
+      },
+      rosterActor(gate.actor),
+    ),
     credential,
     201,
   );
@@ -1714,8 +1768,12 @@ const handleStaffCredential = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-staff-credential");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-staff-credential");
+  if ("response" in gate) return gate.response;
+  // An identifier that is not a UUID cannot name a member, and answering it
+  // differently from one that simply does not exist would let the status code
+  // confirm the shape of a real identifier. Same treatment reservation ids get.
+  if (!UUID.test(staffId)) return errorResponse(404, "STAFF_UNAVAILABLE");
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
@@ -1727,11 +1785,14 @@ const handleStaffCredential = async (
   const issues = operation !== "staff.deactivate";
   const credential = issues ? newStaffCredential() : "";
   return rosterResponse(
-    await installationStub(env).executeRosterCommand({
-      operation,
-      staffId,
-      ...(issues ? { credentialDigest: await sha256Hex(credential) } : {}),
-    }),
+    await installationStub(env).executeRosterCommand(
+      {
+        operation,
+        staffId,
+        ...(issues ? { credentialDigest: await sha256Hex(credential) } : {}),
+      },
+      rosterActor(gate.actor),
+    ),
     credential,
     200,
   );

@@ -416,3 +416,75 @@ happened" needs a separate append-only record with its own retention, its own pr
 its own storage cost. It is not the same artifact as attribution and should not be smuggled in by
 widening this one. Reaching a replay in the first place needs the original client-generated
 command identifier, which is not published anywhere.
+
+---
+
+## R15. Can a staff member deny the deployment secret by spending the rate limit?
+
+**Decision**: yes, for up to a minute at a time, and the limiter stays as it is.
+
+`operatorGate` rate limits before any credential is examined, keyed by client address and route. In
+a salon, staff and owner are on one connection, so a staff member can spend the
+`owner-staff-credential` bucket and leave their own deactivation answering `429`.
+
+**Why it is not fixed by a reserved lane**: the obvious repair — give the deployment secret a budget
+keyed by the fact of holding it — was implemented, reviewed, and reverted. It turns the limiter into
+an oracle: exhaust the address bucket, and a wrong guess answers `429` while the correct secret does
+not, which is unlimited free confirmation of a guess. Any scheme that gives the correct secret a
+different outcome at this point has that shape, because the outcome *is* the signal. The worker suite
+pins the property that replaced it — one bucket, chosen before any credential is looked at.
+
+**What the exposure actually is**: a delay, not a lockout. The bucket refills on its own, nothing is
+lost, and the operator's remedy is any other connection — a phone, tethering, anywhere off the salon
+network. Weighed against handing an attacker unthrottled verification of `OWNER_TOKEN` guesses, the
+delay is the cheaper failure.
+
+**What would close it properly**: per-credential accounting that never lets the outcome of the
+comparison select the budget — for instance an independently authenticated recovery path with its
+own limiter, rather than a lane selected by the secret being tested. That is a design with its own
+surface, and it belongs in a slice that can review it.
+
+---
+
+## R16. Why the singleton roster storage duplicates the LINE lifecycle storage
+
+**Decision**: it duplicates it, on purpose, for now.
+
+`#rosterTableExists` / `#readRoster` / `#writeRoster` is near-verbatim the shape of
+`#lineTableExists` / `#readLineLifecycle` / `#writeLineLifecycle` — the same `sqlite_master` probe,
+the same singleton-row guard, the same parse-and-round-trip check — differing in table name and in
+the compare-and-swap clause the roster adds.
+
+**Rationale**: unifying them into one `#readSingleton` / `#writeSingleton` pair is the right end
+state and would give the LINE lifecycle the compare-and-swap it currently lacks. It also rewrites a
+storage path this slice did not touch, on an adapter with its own saga and its own tests, after the
+roster's shape has already been through the security battery in the form written here. That is a
+refactor with its own review, not a line item in this one.
+
+**Recorded so it is a decision rather than an oversight**: the duplication is known, the LINE
+lifecycle's missing compare-and-swap is known, and both are follow-up work.
+
+---
+
+## R17. Why roster and settings changes are not attributed, when reservation changes are
+
+**Decision**: attribution covers operator-initiated *reservation* state changes and nothing else,
+which is what FR-014 asks for. Creating, stopping, or rotating a staff member is not recorded, and
+neither is changing the installation's settings or its adapters.
+
+**Rationale**: attribution is a column of the reservation day's receipt. `#writeAttribution` writes
+into the same `transactionSync` as `#writeReceipt`, keyed by the same command identifier, and is
+purged with the day. That substrate is what makes it cheap, idempotent, and correctly retained.
+`InstallationConfig` has no receipt table to hang a row on — its command kernel recomputes settings
+and retries rather than replaying a receipt — so recording who changed the roster is not a matter of
+passing an actor one level further down. It is a second mechanism.
+
+**What this slice does do**: the acting member's identifier already reaches `executeRosterCommand`,
+because the object re-checks that the actor is still an active owner before it writes (see R13 for
+why that check is here and not only at the gate). Recording it, rather than only checking it, is the
+step a later slice would take.
+
+**Known consequence, stated rather than discovered later**: "who deactivated this account" and "who
+changed the LINE secret" cannot be answered today, and answering them means building an audit
+substrate in `InstallationConfig`, not extending `__attribution`. `docs/PARITY.md` says what
+attribution covers so this boundary is visible from outside the specification too.
