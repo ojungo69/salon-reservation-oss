@@ -3608,3 +3608,165 @@ describe("T035 guided setup API", () => {
     feedSecret = token;
   });
 });
+
+/**
+ * The staff and role boundary (specs/005-staff-role-boundary).
+ *
+ * SC-004 asks for the boundary to be verified route by route with no route
+ * unaccounted for, so the two tables below are that verification: every
+ * operator path this Worker serves appears in exactly one of them, and the
+ * assertions are driven from the tables rather than written out one by one.
+ * A route added without a row here has no test, which is the failure this
+ * arrangement is meant to make obvious.
+ */
+describe("S3 staff and role boundary", () => {
+  const bearer = (credential: string) => ({ authorization: `Bearer ${credential}` });
+  const garbage = bearer("not-a-credential-0123456789abcdefghijklmnop");
+
+  const call = (method: string, path: string, headers: Record<string, string>) =>
+    method === "GET"
+      ? SELF.fetch(`https://example.test${path}`, { headers })
+      : jsonRequest(path, {}, headers, method);
+
+  const addStaff = async (role: "owner" | "staff", displayName: string) => {
+    const response = await jsonRequest(
+      "/api/admin/staff",
+      { displayName, role },
+      ownerHeaders,
+    );
+    expect(response.status).toBe(201);
+    return (await response.json()) as {
+      member: { id: string; role: string; active: boolean };
+      credential: string;
+    };
+  };
+
+  // Methods are load-bearing: every handler answers 405 before the gate runs,
+  // so a row with the wrong method would assert nothing about authorization.
+  // `/api/admin/setup` is GET and PUT — never POST.
+  const ownerOnly = (staffId: string): Array<[string, string]> => [
+    ["GET", "/api/admin/setup"],
+    ["PUT", "/api/admin/setup"],
+    ["POST", "/api/admin/setup/live"],
+    ["GET", "/api/admin/installation-receipt"],
+    ["POST", "/api/admin/line/settings"],
+    ["POST", "/api/admin/line/enable"],
+    ["POST", "/api/admin/line/disable"],
+    ["GET", "/api/admin/line/status"],
+    ["GET", "/api/admin/calendar/status"],
+    ["POST", "/api/admin/calendar/reconcile"],
+    ["GET", "/api/admin/staff"],
+    ["POST", "/api/admin/staff"],
+    ["POST", `/api/admin/staff/${staffId}/rotate`],
+    ["POST", `/api/admin/staff/${staffId}/deactivate`],
+    ["POST", `/api/admin/staff/${staffId}/reactivate`],
+  ];
+
+  const schedulePath = `/api/admin/schedule?startDate=${day.date}&days=1`;
+  const adminAvailabilityPath = (reservationId: string) =>
+    `/api/admin/availability?${new URLSearchParams({
+      date: day.date,
+      serviceId: "service-cut",
+      reservationId,
+    })}`;
+
+  const dayToDay = (reservationId: string): Array<[string, string]> => [
+    ["GET", adminAvailabilityPath(reservationId)],
+    ["GET", schedulePath],
+    ["POST", "/api/admin/reservations"],
+    ["POST", `/api/admin/reservations/${reservationId}/transition`],
+    ["POST", "/api/admin/closures"],
+    ["POST", `/api/admin/closures/${crypto.randomUUID()}/remove`],
+  ];
+
+  it("issues a credential once and never returns it or a digest again", async () => {
+    const created = await addStaff("staff", "受付 A");
+    expect(created.credential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(created.member.active).toBe(true);
+
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: ownerHeaders,
+    });
+    expect(listed.status).toBe(200);
+    const body = await listed.text();
+    expect(body).not.toContain(created.credential);
+    expect(body).not.toContain("credentialDigest");
+    expect(JSON.parse(body).members).toHaveLength(1);
+  });
+
+  it("refuses a staff credential on every owner-only route, exactly as it refuses a bad one", async () => {
+    const staff = await addStaff("staff", "受付 A");
+    for (const [method, path] of ownerOnly(staff.member.id)) {
+      const refusedStaff = await call(method, path, bearer(staff.credential));
+      const refusedGarbage = await call(method, path, garbage);
+      expect(refusedStaff.status, `${method} ${path}`).toBe(401);
+      expect(refusedGarbage.status, `${method} ${path}`).toBe(401);
+      // Indistinguishable, so a staff credential cannot use these routes to
+      // learn that it is valid somewhere else.
+      expect(await refusedStaff.text(), `${method} ${path}`).toBe(
+        await refusedGarbage.text(),
+      );
+      expect(refusedStaff.headers.get("www-authenticate")).toBe(
+        refusedGarbage.headers.get("www-authenticate"),
+      );
+    }
+  });
+
+  it("accepts a staff credential on every day-to-day route", async () => {
+    await enableLiveInstallation();
+    const staff = await addStaff("staff", "受付 A");
+    for (const [method, path] of dayToDay(crypto.randomUUID())) {
+      const response = await call(method, path, bearer(staff.credential));
+      // The gate is what is under test, so a 400 from the handler for an empty
+      // body still proves the credential got through. A 401 does not.
+      expect(response.status, `${method} ${path}`).not.toBe(401);
+      const refused = await call(method, path, garbage);
+      expect(refused.status, `${method} ${path} with a bad credential`).toBe(401);
+    }
+  });
+
+  it("lets a staff credential actually read the day, not merely pass the gate", async () => {
+    await enableLiveInstallation();
+    const staff = await addStaff("staff", "受付 A");
+    const schedule = await SELF.fetch(`https://example.test${schedulePath}`, {
+      headers: bearer(staff.credential),
+    });
+    expect(schedule.status).toBe(200);
+    // And take a booking, which is the day-to-day work the role exists for.
+    const fixture = await publicCreateBody();
+    const {
+      turnstileToken: _turnstileToken,
+      replayOnly: _replayOnly,
+      ...body
+    } = fixture.body;
+    const created = await jsonRequest(
+      "/api/admin/reservations",
+      body,
+      bearer(staff.credential),
+    );
+    expect(created.status).toBe(201);
+  });
+
+  it("gives an owner-role roster member the owner routes", async () => {
+    const owner = await addStaff("owner", "店長");
+    const receipt = await SELF.fetch(
+      "https://example.test/api/admin/installation-receipt",
+      { headers: bearer(owner.credential) },
+    );
+    expect(receipt.status).toBe(200);
+  });
+
+  it("refuses everyone the same way when the roster is empty", async () => {
+    for (const [method, path] of ownerOnly(crypto.randomUUID())) {
+      const response = await call(method, path, garbage);
+      expect(response.status, `${method} ${path}`).toBe(401);
+    }
+    // An installation with no roster behaves exactly as it does today: the
+    // deployment secret is the only credential, and it still works.
+    const receipt = await SELF.fetch(
+      "https://example.test/api/admin/installation-receipt",
+      { headers: ownerHeaders },
+    );
+    expect(receipt.status).toBe(200);
+  });
+});

@@ -61,10 +61,17 @@ records and nothing joins them.
 
 ### Invariants enforced on every write
 
-1. **At least one active `owner`.** Any command whose resulting document has zero members with
-   `role === "owner" && active === true` is refused. This covers deactivation today and, by being
-   stated as a property of the *result* rather than of the operation, covers role changes and
-   removals a later slice adds. (FR-011)
+1. **No command takes away the last active `owner`.** A command is refused when the roster *had* a
+   member with `role === "owner" && active === true` and the resulting document does not. Stated as
+   a property of the *result* rather than of the operation, so role changes and record removals a
+   later slice adds are covered by the same line. (FR-011)
+
+   Note the shape carefully: it is **not** "the roster must always contain an active owner". A
+   roster of staff alone is legitimate and is the likely first state — the `OWNER_TOKEN` holder
+   administers the installation and adds people who are not owners. Requiring an owner-role member
+   to exist would forbid creating that roster, and would then refuse to deactivate anyone in it.
+   What FR-011 protects against is an installation *losing* its last in-roster owner, which is why
+   the rule is about removal.
 2. **Unique `id`.** Enforced at parse time, not only at creation.
 3. **Digest present iff active.** `active === true` requires 64 hex characters; `active === false`
    requires `""`. A record cannot be inactive and still hold a live digest, which is what makes
