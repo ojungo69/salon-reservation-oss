@@ -1,0 +1,25 @@
+public/privacy.html
+  s_3ac342c3240e69::t_e7ea242957ea94 55-62
+docs/PARITY.md
+  s_3ac342c3240e69::t_f8faaceb429133 85
+docs/PRIVACY.md
+  s_3ac342c3240e69::t_d4c9b0921285a2 21-53,67-69,124-129
+docs/ROADMAP.md
+  s_3ac342c3240e69::t_fe124159fc6f25 42,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "99c2f3cb50663fed64e50f9e0ebcbd91da4d1b67",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
