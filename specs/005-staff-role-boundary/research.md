@@ -218,8 +218,12 @@ worth stating: that loop **retries** on a lost CAS, and the roster must **refuse
 is a single attempt returning a conflict, which is also what the specification's edge case asks for —
 "the later write is refused rather than silently overwriting".
 
-**Alternative considered**: a monotonically increasing `rosterVersion` echoed by the client.
-Rejected as a second concurrency mechanism where one already exists.
+**Alternative considered**: a `rosterVersion` integer column compared instead of the document.
+Rejected as a second concurrency mechanism where one already exists — and the reason comparing the
+whole document is affordable is the same reason the naive credential scan is: the roster is bounded
+by the size of one salon, so the string in the `WHERE` clause is a few kilobytes at worst. A version
+column would have to be maintained, validated, and kept honest against the document it describes,
+which is more moving parts than the thing it saves.
 
 ---
 
