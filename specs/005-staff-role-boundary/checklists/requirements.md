@@ -47,8 +47,25 @@ wrong, not merely differently implemented — so they are stated rather than def
 - [x] IV. Transactional Integrity: FR-028 — replay semantics and the command pipeline are unchanged
 - [x] V. Public-Safe Surface: FR-025 — no real staff data in the repository
 
+## Adversarial Review
+
+Twenty findings were raised against this specification from four independent lenses; each had to
+survive two refuters before it counted. Three survived, and all three were wording defects rather
+than structural ones. Their fixes are in the document:
+
+- FR-014 asserted that attribution rides on the reservation command kernel. Verified false: in
+  `src/reservation-day.ts`, `approve` (`#applyOwnerTransitionAction`) and `complete` / `no_show`
+  (`#applyOwnerOutcomeTransition`) change status without executing a command at all. FR-014 now
+  states the outcome and leaves the mechanism to planning, where it is the largest open question.
+- FR-011 guarded a demote operation and the retention assumption ended a record with a delete
+  operation. Neither operation is defined anywhere in this slice, and a delete would contradict
+  FR-013 and FR-016. Both passages now describe only what exists.
+- FR-005 required refusals to be distinguishable "in the recorded audit", but nothing in this slice
+  creates an audit of refused requests, and `ownerGate` in `src/worker.ts` records nothing. The
+  caller-side property, which is the one that matters here, is unchanged.
+
 ## Open Items
 
-None. Every question the recon surfaced is answered either as a functional requirement or as a
-recorded assumption. The Assumptions section states each decision and why the alternative was not
-taken, so a reviewer who disagrees has a specific claim to argue with.
+The mechanism by which an acting identity reaches a state change that executes no kernel command is
+open by design. It is a planning question that needs the code in front of it, not a specification
+decision, and FR-014 is written so that any mechanism satisfying it is acceptable.

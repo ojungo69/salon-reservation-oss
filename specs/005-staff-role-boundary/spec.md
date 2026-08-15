@@ -157,9 +157,9 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 - **FR-004**: The rate limiter and the same-origin mutation check MUST run before and independently
   of any role decision, keeping their current per-route buckets. Neither is an authorization
   decision and neither may be bypassed by any role.
-- **FR-005**: A refusal for insufficient role MUST be distinguishable from a refusal for a bad
-  credential in the recorded audit but MUST NOT be distinguishable to the caller in a way that
-  reveals whether a credential is valid for some other route.
+- **FR-005**: A refusal for insufficient role MUST NOT be distinguishable to the caller from a
+  refusal for a bad credential in a way that reveals whether a credential is valid for some other
+  route.
 
 **Identity and credentials**
 
@@ -179,7 +179,9 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 
 - **FR-010**: Deactivating a staff member MUST take effect on their next request. No authorization
   decision may be cached anywhere that would delay it.
-- **FR-011**: The system MUST refuse to deactivate or demote the last active `owner`-role account.
+- **FR-011**: The system MUST refuse any roster operation that would leave the installation with no
+  active `owner`-role account — deactivation today, and equally any role-change or record-removal
+  operation a later slice adds.
 - **FR-012**: The offboarding procedure MUST be documented as covering the credentials that
   deactivation does not reach: the calendar feed token, the LINE channel secret, and the Google
   calendar credentials are installation-level secrets that an offboarded person may still hold a
@@ -189,9 +191,10 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 
 **Attribution**
 
-- **FR-014**: Every operator-initiated reservation command MUST carry the acting identity, using the
-  actor the command kernel already accepts, so attribution is recorded by the same mechanism that
-  already records the command.
+- **FR-014**: Every operator-initiated reservation state change MUST record the acting identity,
+  whether or not that change executes a command through the reservation command kernel, subject to
+  FR-015 and FR-016. How the identity reaches the record is a planning decision; the requirement is
+  that no operator-initiated state change is recorded without one.
 - **FR-015**: Attribution MUST record the staff identifier, never the display name, so a later
   change or removal of the name does not rewrite history and the history does not itself become a
   second copy of personal data.
@@ -218,8 +221,9 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 - **FR-022**: The privacy document and the served privacy page MUST gain a staff data category
   stating what a staff record contains, why, how long it is kept, how the credential is protected,
   and what deactivation deletes and retains.
-- **FR-023**: The operator checklist in the privacy document MUST gain staff retention and deletion
-  terms, so an installation cannot go live with staff accounts without stating them.
+- **FR-023**: The operator checklist in the privacy document MUST gain staff retention terms,
+  including what leaving does and does not remove, so an installation cannot go live with staff
+  accounts without stating them.
 - **FR-024**: A deletion or export request scoped to someone's customer record MUST NOT reach their
   staff record or the attribution of their operator actions, and the reverse MUST also hold.
 - **FR-025**: No real staff name, credential, or identifier may enter this repository, including in
@@ -246,7 +250,7 @@ answer identically whether the staff roster is empty, populated, or entirely abs
   is stored. One live credential per staff member; rotation replaces it.
 - **Break-glass credential**: the deployment's `OWNER_TOKEN`. Always `owner`, never in the roster,
   never revocable from inside the application.
-- **Attribution**: the acting identity recorded on an operator-initiated command — the staff
+- **Attribution**: the acting identity recorded on an operator-initiated state change — the staff
   identifier, or the break-glass identity when the deployment secret was used.
 
 ## Success Criteria *(mandatory)*
@@ -294,8 +298,11 @@ this specification makes, not an open item.
   the staff member's to erase, and recording the identifier rather than the name keeps the history
   from becoming a second store of personal data.
 - **Staff records follow the installation's own retention, not a booking date's.** Booking retention
-  is driven by a per-date purge that a staff record has no place in; a staff record ends when the
-  operator deletes it, and deactivation is not deletion.
+  is driven by a per-date purge that a staff record has no place in. A staff record is retained for
+  the life of the installation; deactivation is the only end-of-service operation this slice defines,
+  and deactivation is not deletion — the record survives with its identifier and role per FR-013. A
+  delete operation, if one is ever wanted, is a later decision that has to be reconciled with FR-013
+  and FR-016 first.
 - **The break-glass credential is permanent.** Retiring `OWNER_TOKEN` would remove the only recovery
   path that survives a corrupted roster, in a system where storage cannot be rolled back with code.
 - **In-flight adapter sagas are not aborted by revocation.** They are alarm-driven and never consult
