@@ -794,9 +794,8 @@ const startCustomer = async () => {
         ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
         : pickAutoResource(loaded.resources, requestedResource);
       resourceSelect.value = assigned?.id ?? "";
-      if (assigned === null) {
-        clearAssignedResource();
-      } else {
+      clearAssignedResource();
+      if (assigned !== null) {
         assignedResource.textContent = `担当・設備は「${assigned.label}」を自動で割り当てました。`;
         assignedResource.hidden = false;
       }
@@ -2090,12 +2089,11 @@ const startAdmin = async () => {
     if (!ownerCreateForm.reportValidity() || selectedOwnerServiceIds().length === 0) {
       return "サービス、担当・設備、開始時間、お客様情報を確認してください。";
     }
-    if (
-      Array.from(ownerName.value.trim()).length < 1 ||
-      Array.from(ownerName.value.trim()).length > 80 ||
-      Array.from(ownerContact.value.trim()).length < 3 ||
-      Array.from(ownerContact.value.trim()).length > 200
-    ) {
+    // Code points, not UTF-16 units: the limits the server enforces count
+    // characters, so an emoji in a name must not read as two.
+    const nameLength = [...ownerName.value.trim()].length;
+    const contactLength = [...ownerContact.value.trim()].length;
+    if (nameLength < 1 || nameLength > 80 || contactLength < 3 || contactLength > 200) {
       return "お名前は80文字以内、ご連絡先は3〜200文字で入力してください。";
     }
     return null;

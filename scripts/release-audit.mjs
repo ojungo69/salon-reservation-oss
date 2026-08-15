@@ -225,40 +225,42 @@ const scanNamedSecrets = (label, text, pattern, extractValue) => {
   }
 };
 
+// None of these depend on the text being scanned, and scanText runs once per
+// released file, so they are compiled once here rather than on every call.
+const CREDENTIAL_RULES = [
+  ["private key", new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`)],
+  // The `github` interpolation keeps the literal token prefix from appearing
+  // contiguously in this file, which its own scan would otherwise flag.
+  ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)],
+  ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
+  ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
+  ["JWT-like token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/],
+  ["live payment secret", /\bsk_live_[A-Za-z0-9]{16,}\b/],
+  ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
+];
+const FORBIDDEN_ROOTS = ["home", "Users"].map(
+  (name) => new RegExp(String.raw`/${name}/[^/\s]+/`),
+);
+const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const SECRET_NAME =
+  "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
+const DOTENV_SECRET = new RegExp(
+  String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
+  "gm",
+);
+const OBJECT_SECRET = new RegExp(
+  String.raw`["']?\b${SECRET_NAME}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
+  "g",
+);
+
 const scanText = (label, text, denylist) => {
-  const privateKeyHeader = new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`);
-  const rules = [
-    ["private key", privateKeyHeader],
-    // The `github` interpolation keeps the literal token prefix from appearing
-    // contiguously in this file, which its own scan would otherwise flag.
-    ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)],
-    ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
-    ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
-    ["JWT-like token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/],
-    ["live payment secret", /\bsk_live_[A-Za-z0-9]{16,}\b/],
-    ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
-  ];
-  const forbiddenRoots = ["home", "Users"].map(
-    (name) => new RegExp(String.raw`/${name}/[^/\s]+/`),
-  );
-  const email = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-  const secretName =
-    "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
-  const dotenvSecret = new RegExp(
-    String.raw`^\s*(?:export\s+)?${secretName}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
-    "gm",
-  );
-  const objectSecret = new RegExp(
-    String.raw`["']?\b${secretName}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
-    "g",
-  );
-  for (const [name, pattern] of rules) {
+  for (const [name, pattern] of CREDENTIAL_RULES) {
     if (pattern.test(text)) fail(`${name} pattern found in ${label}`);
   }
-  if (forbiddenRoots.some((pattern) => pattern.test(text))) {
+  if (FORBIDDEN_ROOTS.some((pattern) => pattern.test(text))) {
     fail(`private absolute path found in ${label}`);
   }
-  for (const match of text.matchAll(email)) {
+  for (const match of text.matchAll(EMAIL)) {
     const value = match[0].toLowerCase();
     if (!value.endsWith("@example.invalid") && !value.endsWith("@users.noreply.github.com")) {
       fail(`non-public email found in ${label}`);
@@ -268,8 +270,8 @@ const scanText = (label, text, denylist) => {
   for (const term of denylist) {
     if (lower.includes(term.toLowerCase())) fail(`private denylist term found in ${label}`);
   }
-  scanNamedSecrets(label, text, dotenvSecret, (match) => match[2] ?? match[3] ?? match[4]);
-  scanNamedSecrets(label, text, objectSecret, (match) => match[3]);
+  scanNamedSecrets(label, text, DOTENV_SECRET, (match) => match[2] ?? match[3] ?? match[4]);
+  scanNamedSecrets(label, text, OBJECT_SECRET, (match) => match[3]);
 };
 
 const scanPublicText = (paths, denylist) => {
