@@ -1,0 +1,45 @@
+package.json
+  s_3ac342c3240e69::t_d75d8b78335188 36
+test/staff-roster.test.ts
+  s_3ac342c3240e69::t_6b871eb6f230cf 1-137
+specs/005-staff-role-boundary/data-model.md
+  s_3ac342c3240e69::t_f8a6716e0d6a4f 64-74
+src/installation-config.ts
+  s_3ac342c3240e69::t_4ad8aca570a596 1393-1402
+  s_3ac342c3240e69::t_3fc44160caafb2 1343-1361
+  s_3ac342c3240e69::t_286e5cbf377160 1981-2015
+  s_3ac342c3240e69::t_74d5a4fc1b8a3d 1337-1342,1362-1392,1403-1409,1411-1435,1437-1455
+  s_3ac342c3240e69::t_6706669acc1901 1436
+  s_3ac342c3240e69::t_e51022fd20c2a6 1456-1493,1536-1592,1600-1602
+  s_3ac342c3240e69::t_e17fb55cfd5cff 1494-1535
+  s_3ac342c3240e69::t_e7ac130e098b0f 1593-1599
+  s_3ac342c3240e69::t_de21aaea6b824e 1892-1980
+  s_3ac342c3240e69::t_85fbd757fdca72 1410
+src/worker.ts
+  s_3ac342c3240e69::t_46d9d0bb88e18f 11
+  s_3ac342c3240e69::t_3b2afe75b12850 273-294,297-301
+  s_3ac342c3240e69::t_97987e52920485 402,1599-1616,1623-1712,1714,2617,2620,2623
+  s_3ac342c3240e69::t_0ff7bee3eab846 317-332
+  s_3ac342c3240e69::t_0528e364280c44 1617-1622
+  s_3ac342c3240e69::t_c45b16743f4969 295-296
+  s_3ac342c3240e69::t_0e9c950785d6e1 302-316,333-335,341-342,348-396,400
+  s_3ac342c3240e69::t_0a8629a0e12930 12-13,91-92,403,1713,2588,2611-2616,2618-2619,2621-2622,2624-2625
+test/worker.test.ts
+  s_3ac342c3240e69::t_2bcd0cb500ae4e 3611-3772
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "dac2a69d8f0574bb6b3a750a5890e7c8f967c39c",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
