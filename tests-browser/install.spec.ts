@@ -57,4 +57,28 @@ test("an owner completes the installation through the setup screen", async ({ pa
     return (await response.json()).mode;
   });
   expect(mode).toBe("live");
+
+  // Signing out restores the notice a visitor would see, and the installation
+  // has been published since this page loaded, so the demo notice it opened
+  // with is no longer true.
+  await page.click("#setup-logout");
+  await expect(page.locator("#setup-location-name")).toBeDisabled();
+  await expect(page.locator("[data-setup-mode-notice]")).not.toContainText("デモ");
+  await expect(page.locator("[data-setup-mode-notice]")).toContainText("公開予約を受け付けています");
+});
+
+/**
+ * The signed-out notice follows the publication mode, which the page learns
+ * from the public config. When that read fails the page has nothing better to
+ * say than the notice it was served with, and blanking the banner would leave
+ * an operator with no statement of the publication state at all.
+ */
+test("the setup screen keeps its served notice when the public config is unreachable", async ({
+  page,
+}) => {
+  await page.route("**/api/config", (route) => route.abort("failed"));
+  await page.goto("/setup");
+
+  await expect(page.locator("#setup-auth-status")).toContainText("公開設定を読み込めませんでした");
+  await expect(page.locator("[data-setup-mode-notice]")).toContainText("デモ");
 });

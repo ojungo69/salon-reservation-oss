@@ -208,6 +208,16 @@ const setupHelpText = (authenticated, pending, accepting, setupState) => {
   return "要確認の項目を修正して設定を保存してください。";
 };
 
+const setupModeNoticeText = (accepting, mode) => {
+  if (accepting) {
+    return "現在は公開予約を受け付けています。設定変更後も、保存済みの予約内容は書き換わりません。";
+  }
+  if (mode === "live") {
+    return "公開設定は有効のままですが、保護設定が不足しているため予約受付は停止中です。要確認の項目を復旧してください。";
+  }
+  return "現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。";
+};
+
 const firstVisible = (root, selector) =>
   [...root.querySelectorAll(selector)].find((el) => !el.closest("[hidden]"));
 
@@ -778,6 +788,35 @@ const startCustomer = async () => {
     updateActions();
   };
 
+  const applyResourceSelection = (loaded, requestedResource) => {
+    if (!resourceChoiceExposed()) {
+      const assigned = pending
+        ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
+        : pickAutoResource(loaded.resources, requestedResource);
+      resourceSelect.value = assigned?.id ?? "";
+      clearAssignedResource();
+      if (assigned !== null) {
+        assignedResource.textContent = `担当・設備は「${assigned.label}」を自動で割り当てました。`;
+        assignedResource.hidden = false;
+      }
+    } else if (loaded.resources.some(({ id }) => id === requestedResource)) {
+      resourceSelect.value = requestedResource;
+    } else if (loaded.resources.length === 1 && !pending) {
+      resourceSelect.value = loaded.resources[0].id;
+    }
+  };
+
+  const finishAvailabilityLoad = (sequence) => {
+    if (sequence === availabilitySequence) {
+      root.removeAttribute("aria-busy");
+      // A response landing while the details step is open must not leave the
+      // card showing the previous selection's services or totals.
+      if (journeyStep === "details") renderSummaryCard();
+      else if (journeyStep === "review") renderReview();
+    }
+    setPendingMode();
+  };
+
   const loadAvailability = async ({ quiet = false, preferredResource, preferredTime } = {}) => {
     const serviceIds = pending?.request.serviceIds ?? selectedServiceIds();
     const date = pending?.request.date ?? dateInput.value;
@@ -800,21 +839,7 @@ const startCustomer = async () => {
       for (const resource of loaded.resources) {
         resourceSelect.append(new Option(resource.label, resource.id));
       }
-      const requestedResource = pending?.request.resourceId ?? previousResource;
-      if (!resourceChoiceExposed()) {
-        const assigned = pending
-          ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
-          : pickAutoResource(loaded.resources, requestedResource);
-        resourceSelect.value = assigned?.id ?? "";
-        assignedResource.textContent = assigned
-          ? `担当・設備は「${assigned.label}」を自動で割り当てました。`
-          : "";
-        assignedResource.hidden = assigned === null;
-      } else if (loaded.resources.some(({ id }) => id === requestedResource)) {
-        resourceSelect.value = requestedResource;
-      } else if (loaded.resources.length === 1 && !pending) {
-        resourceSelect.value = loaded.resources[0].id;
-      }
+      applyResourceSelection(loaded, pending?.request.resourceId ?? previousResource);
       resourceSelect.disabled = Boolean(pending);
       renderSlots(pending?.request.startTime ?? previousTime);
       availabilityHelp.textContent = `${loaded.occupiedMinutes}分の予約枠です。送信時にもう一度確認します。`;
@@ -825,14 +850,7 @@ const startCustomer = async () => {
       resetAvailability();
       if (!quiet) setStatus(status, error.message, "error");
     } finally {
-      if (sequence === availabilitySequence) {
-        root.removeAttribute("aria-busy");
-        // A response landing while the details step is open must not leave the
-        // card showing the previous selection's services or totals.
-        if (journeyStep === "details") renderSummaryCard();
-        else if (journeyStep === "review") renderReview();
-      }
-      setPendingMode();
+      finishAvailabilityLoad(sequence);
     }
   };
 
@@ -917,6 +935,57 @@ const startCustomer = async () => {
     applyCompactServices();
   };
 
+  const resumePendingSubmission = async () => {
+    dateInput.value = pending.request.date;
+    nameInput.value = pending.request.customerName;
+    contactInput.value = pending.request.contact;
+    consentInput.checked = true;
+    await loadAvailability({
+      quiet: true,
+      preferredResource: pending.request.resourceId,
+      preferredTime: pending.request.startTime,
+    });
+    setPendingMode();
+    setStatus(status, "前回の送信結果が未確認です。同じ内容を再送して結果を確認できます。", "error");
+    setStep("review", { history: "replace", focus: false });
+  };
+
+  const restoreSavedDraft = async (draft, selected, today) => {
+    dateInput.value = draft.date ?? today;
+    if (draft.serviceIds.length && draft.date) {
+      await loadAvailability({
+        quiet: true,
+        preferredResource: draft.resourceId,
+        preferredTime: draft.startTime,
+      });
+    }
+    const slots = (availability?.resources ?? []).flatMap((resource) =>
+      resource.startTimes.map((startTime) => ({
+        resourceId: resource.id,
+        date: dateInput.value,
+        startTime,
+      })),
+    );
+    const restored = restoreJourneyDraft(draft, {
+      settingsVersion: config.settingsVersion,
+      serviceIds: config.services.map(({ id }) => id),
+      resourceIds: (availability?.resources ?? []).map(({ id }) => id),
+      slots,
+    });
+    if (!restored) return;
+    if (restored.serviceIds.join() !== selected.join()) renderServices(restored.serviceIds);
+    dateInput.value = restored.date ?? today;
+    if (availability) {
+      // Under automatic assignment loadAvailability already picked the value.
+      if (resourceChoiceExposed()) resourceSelect.value = restored.resourceId ?? "";
+      renderSlots(restored.startTime);
+    }
+    setStep(restored.step, { history: "replace", focus: false });
+    if (restored.step === "selection" && draft.step !== "selection") {
+      setStatus(status, "保存した選択内容が変わっていたため、最初の手順から確認してください。", "error");
+    }
+  };
+
   try {
     config = await api("/api/config");
     applyPublicConfig(config);
@@ -930,57 +999,9 @@ const startCustomer = async () => {
     const draft = readDraft();
     const selected = pending?.request.serviceIds ?? draft?.serviceIds ?? [];
     renderServices(selected);
-    if (pending) {
-      dateInput.value = pending.request.date;
-      nameInput.value = pending.request.customerName;
-      contactInput.value = pending.request.contact;
-      consentInput.checked = true;
-      await loadAvailability({
-        quiet: true,
-        preferredResource: pending.request.resourceId,
-        preferredTime: pending.request.startTime,
-      });
-      setPendingMode();
-      setStatus(status, "前回の送信結果が未確認です。同じ内容を再送して結果を確認できます。", "error");
-      setStep("review", { history: "replace", focus: false });
-    } else if (draft) {
-      dateInput.value = draft.date ?? today;
-      if (draft.serviceIds.length && draft.date) {
-        await loadAvailability({
-          quiet: true,
-          preferredResource: draft.resourceId,
-          preferredTime: draft.startTime,
-        });
-      }
-      const slots = (availability?.resources ?? []).flatMap((resource) =>
-        resource.startTimes.map((startTime) => ({
-          resourceId: resource.id,
-          date: dateInput.value,
-          startTime,
-        })),
-      );
-      const restored = restoreJourneyDraft(draft, {
-        settingsVersion: config.settingsVersion,
-        serviceIds: config.services.map(({ id }) => id),
-        resourceIds: (availability?.resources ?? []).map(({ id }) => id),
-        slots,
-      });
-      if (restored) {
-        if (restored.serviceIds.join() !== selected.join()) renderServices(restored.serviceIds);
-        dateInput.value = restored.date ?? today;
-        if (availability) {
-          // Under automatic assignment loadAvailability already picked the value.
-          if (resourceChoiceExposed()) resourceSelect.value = restored.resourceId ?? "";
-          renderSlots(restored.startTime);
-        }
-        setStep(restored.step, { history: "replace", focus: false });
-        if (restored.step === "selection" && draft.step !== "selection") {
-          setStatus(status, "保存した選択内容が変わっていたため、最初の手順から確認してください。", "error");
-        }
-      }
-    } else {
-      setStep("selection", { history: "replace", focus: false });
-    }
+    if (pending) await resumePendingSubmission();
+    else if (draft) await restoreSavedDraft(draft, selected, today);
+    else setStep("selection", { history: "replace", focus: false });
     if (config.mode !== "live") {
       setStatus(status, "現在はデモ・設定中です。実在する方の情報は入力しないでください。", "error");
     }
@@ -1039,58 +1060,107 @@ const startCustomer = async () => {
     setStep(event.state?.journeyStep ?? "selection", { history: false });
   });
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  // True when the gesture is already answered and must not reach the network.
+  const submitGuardBlocked = () => {
     if (pending && Date.now() - pending.retryAt >= DAY_MS) {
       clearPendingMutation();
       pending = null;
       setPendingMode();
       setStep("selection", { history: "replace" });
       setStatus(status, "未確認の送信内容は24時間を過ぎたため削除しました。最新の空き時間から選び直してください。", "error");
-      return;
+      return true;
     }
-    const retrying = Boolean(pending);
-    if (!retrying && config.mode !== "live") {
+    // A retry of a pending submission skips the pre-flight checks below.
+    if (pending) return false;
+    if (config.mode !== "live") {
       setStatus(status, "公開予約はまだ有効ではありません。設定完了後にお試しください。", "error");
-      return;
+      return true;
     }
-    if (!retrying && getJourneyStep({ requestedStep: "review", selection: selection(), details: details() }) !== "review") {
+    if (getJourneyStep({ requestedStep: "review", selection: selection(), details: details() }) !== "review") {
       setStep("review");
-      return;
+      return true;
     }
-    if (!retrying && !turnstileToken) {
+    if (!turnstileToken) {
       setStatus(status, "自動送信防止の確認を完了してください。", "error");
+      return true;
+    }
+    return false;
+  };
+
+  // False when this gesture must stop here — left the review step, lost the
+  // token, or opened the duplicate dialog whose close handler resubmits.
+  const confirmNoDuplicate = async () => {
+    busy = true;
+    updateActions();
+    const lookupDate = dateInput.value;
+    let needsAcknowledgement = false;
+    try {
+      needsAcknowledgement = await lookupDuplicateAcknowledgement(lookupDate, api, readOwnedRecords);
+    } finally {
+      busy = false;
+      updateActions();
+    }
+    // The lookup can outlast the review screen: if the visitor left it, or
+    // came back through history with a different date, drop this gesture
+    // instead of submitting or warning about values it never checked.
+    if (journeyStep !== "review" || dateInput.value !== lookupDate) return false;
+    // The anti-bot token can expire while the lookup runs; a submission
+    // without it is doomed server-side, so ask for the check again instead.
+    if (!turnstileToken) {
+      setStatus(status, "自動送信防止の確認を完了してください。", "error");
+      return false;
+    }
+    if (needsAcknowledgement) {
+      // Esc closes without setting a value; clear the previous verdict so a
+      // stale "confirm" cannot replay as an acknowledgement.
+      duplicateDialog.returnValue = "";
+      duplicateDialog.showModal();
+      return false;
+    }
+    return true;
+  };
+
+  const handleSubmitError = async (error, retrying) => {
+    if (
+      [400, 404, 409, 413].includes(error.status)
+      || (!retrying && [403, 429].includes(error.status))
+    ) {
+      clearPendingMutation();
+      pending = null;
+    }
+    if (error.code !== "UNAVAILABLE" && error.code !== "CONFIGURATION_CONFLICT") {
+      setStatus(
+        status,
+        `${error.message}${pending ? " 同じ内容と管理キーで結果を再確認できます。" : ""}`,
+        "error",
+      );
       return;
     }
-    if (!retrying && !duplicateAcknowledged) {
-      busy = true;
-      updateActions();
-      const lookupDate = dateInput.value;
-      let needsAcknowledgement = false;
+    if (error.code === "CONFIGURATION_CONFLICT") {
       try {
-        needsAcknowledgement = await lookupDuplicateAcknowledgement(lookupDate, api, readOwnedRecords);
-      } finally {
-        busy = false;
-        updateActions();
-      }
-      // The lookup can outlast the review screen: if the visitor left it, or
-      // came back through history with a different date, drop this gesture
-      // instead of submitting or warning about values it never checked.
-      if (journeyStep !== "review" || dateInput.value !== lookupDate) return;
-      // The anti-bot token can expire while the lookup runs; a submission
-      // without it is doomed server-side, so ask for the check again instead.
-      if (!turnstileToken) {
-        setStatus(status, "自動送信防止の確認を完了してください。", "error");
-        return;
-      }
-      if (needsAcknowledgement) {
-        // Esc closes without setting a value; clear the previous verdict so a
-        // stale "confirm" cannot replay as an acknowledgement.
-        duplicateDialog.returnValue = "";
-        duplicateDialog.showModal();
+        const selected = selectedServiceIds();
+        config = await api("/api/config");
+        applyPublicConfig(config);
+        applyResourceMode();
+        applyAvailabilityNotice();
+        modeNotice.hidden = config.mode === "live";
+        dateInput.max = addDays(jstToday(), config.schedule.horizonDays - 1);
+        renderServices(selected.filter((id) => config.services.some((service) => service.id === id)));
+      } catch {
+        setStatus(status, "最新の公開設定を読み込めませんでした。再読み込みしてお試しください。", "error");
         return;
       }
     }
+    setStatus(status, "選んだ内容を現在受け付けられません。最新の空き時間から選び直してください。", "error");
+    setStep("selection", { history: "replace" });
+    await loadAvailability({ quiet: true });
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submitGuardBlocked()) return;
+    const retrying = Boolean(pending);
+    if (!retrying && !duplicateAcknowledged && !(await confirmNoDuplicate())) return;
     busy = true;
     form.setAttribute("aria-busy", "true");
     updateActions();
@@ -1159,39 +1229,7 @@ const startCustomer = async () => {
       setStatus(status, "予約の申請を受け付けました。", "success");
       focusWithoutScroll(result);
     } catch (error) {
-      if (
-        [400, 404, 409, 413].includes(error.status)
-        || (!retrying && [403, 429].includes(error.status))
-      ) {
-        clearPendingMutation();
-        pending = null;
-      }
-      if (error.code === "UNAVAILABLE" || error.code === "CONFIGURATION_CONFLICT") {
-        if (error.code === "CONFIGURATION_CONFLICT") {
-          try {
-            const selected = selectedServiceIds();
-            config = await api("/api/config");
-            applyPublicConfig(config);
-            applyResourceMode();
-            applyAvailabilityNotice();
-            modeNotice.hidden = config.mode === "live";
-            dateInput.max = addDays(jstToday(), config.schedule.horizonDays - 1);
-            renderServices(selected.filter((id) => config.services.some((service) => service.id === id)));
-          } catch {
-            setStatus(status, "最新の公開設定を読み込めませんでした。再読み込みしてお試しください。", "error");
-            return;
-          }
-        }
-        setStatus(status, "選んだ内容を現在受け付けられません。最新の空き時間から選び直してください。", "error");
-        setStep("selection", { history: "replace" });
-        await loadAvailability({ quiet: true });
-      } else {
-        setStatus(
-          status,
-          `${error.message}${pending ? " 同じ内容と管理キーで結果を再確認できます。" : ""}`,
-          "error",
-        );
-      }
+      await handleSubmitError(error, retrying);
     } finally {
       busy = false;
       form.removeAttribute("aria-busy");
@@ -1567,6 +1605,27 @@ const startAdmin = async () => {
     updateOwnerCreateControls();
   };
 
+  // The closing sentence every owner mutation failure appends. Only a conflict
+  // is worth re-reading the schedule for, and the sentence may claim the
+  // schedule was updated only when that read actually succeeded.
+  // Answers null when the reload ended in a 401: the reload has already put the
+  // logged-out screen up, and the failure line belongs to a screen that is gone.
+  // `settled` is read after the reload, not before, because the controls that
+  // start these mutations stay live through it and a second attempt made during
+  // the reload is what decides whether the sentence is still true.
+  const mutationFailureHint = async (error, { settled, retryHint, reload }) => {
+    let refreshed = false;
+    if (error.status === 409) {
+      try {
+        refreshed = (await reload()) === true;
+      } catch (reloadError) {
+        if (reloadError?.status === 401) return null;
+      }
+    }
+    if (!settled()) return retryHint;
+    return refreshed ? " 予定表を更新しました。" : "";
+  };
+
   const handleOwnerError = (error) => {
     if (error.status === 401) {
       showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
@@ -1669,8 +1728,13 @@ const startAdmin = async () => {
     } catch (error) {
       if (handleOwnerError(error)) return;
       if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
-      if (error.status === 409) await loadSchedule();
-      setStatus(closureStatus, `${error.message}${commands.has(key) ? " 同じ操作で結果を再確認できます。" : " 予定表を更新しました。"}`, "error");
+      const hint = await mutationFailureHint(error, {
+        settled: () => !commands.has(key),
+        retryHint: " 同じ操作で結果を再確認できます。",
+        reload: loadSchedule,
+      });
+      if (hint === null) return;
+      setStatus(closureStatus, `${error.message}${hint}`, "error");
       focusWithoutScroll(closureStatus);
     } finally {
       button.disabled = false;
@@ -1768,8 +1832,10 @@ const startAdmin = async () => {
     $("[data-schedule-board='week']").hidden = viewDays !== 7;
   };
 
+  // Answers whether it actually read. A caller that reports a refresh has to be
+  // able to tell a read from the early return that happens with no token or date.
   const loadSchedule = async (focusReservationId = null, requestedDate = dateInput.value) => {
-    if (!ownerToken || !requestedDate) return;
+    if (!ownerToken || !requestedDate) return false;
     setStatus(scheduleLive, viewDays === 1 ? "1日の予定を読み込んでいます。" : "7日間の予定を読み込んでいます。");
     try {
       schedule = await ownerApi(
@@ -1792,6 +1858,7 @@ const startAdmin = async () => {
       if (current) renderDetail(current, Boolean(focusReservationId));
       else if (selectedId) detail.hidden = true;
       setStatus(scheduleLive, `${schedule.startDate}から${schedule.days}日分を更新しました。`, "success");
+      return true;
     } catch (error) {
       if (handleOwnerError(error)) throw error;
       setStatus(scheduleLive, error.message, "error");
@@ -1907,6 +1974,20 @@ const startAdmin = async () => {
     updateOwnerCreateControls();
   };
 
+  const handleTransitionFailure = async (error, key, reservation) => {
+    if (handleOwnerError(error)) return;
+    if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
+    const hint = await mutationFailureHint(error, {
+      settled: () => !commands.has(key),
+      retryHint: " 同じ操作で結果を再確認できます。",
+      reload: () => loadSchedule(reservation.reservationId),
+    });
+    if (hint === null) return;
+    if (selectedReservation) renderDetail(selectedReservation, false);
+    setStatus(detailStatus, `${error.message}${hint}`, "error");
+    focusWithoutScroll(detail);
+  };
+
   const transitionReservation = async (action) => {
     if (!ownerToken || !selectedReservation) return;
     const reservation = selectedReservation;
@@ -1937,16 +2018,7 @@ const startAdmin = async () => {
         refreshed ? "success" : "error",
       );
     } catch (error) {
-      if (handleOwnerError(error)) return;
-      if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
-      if (error.status === 409) await loadSchedule(reservation.reservationId).catch(() => {});
-      if (selectedReservation) renderDetail(selectedReservation, false);
-      setStatus(
-        detailStatus,
-        `${error.message}${commands.has(key) ? " 同じ操作で結果を再確認できます。" : " 予定表を更新しました。"}`,
-        "error",
-      );
-      focusWithoutScroll(detail);
+      await handleTransitionFailure(error, key, reservation);
     }
   };
 
@@ -2027,24 +2099,48 @@ const startAdmin = async () => {
   ownerResource.addEventListener("change", () => renderOwnerTimes());
   ownerName.addEventListener("input", updateOwnerCreateControls);
   ownerContact.addEventListener("input", updateOwnerCreateControls);
+  const ownerCreateValidationError = () => {
+    if (!ownerToken) return "先に運営者認証を行ってください。";
+    if (ownerCreatePending) return null;
+    if (!ownerCreateForm.reportValidity() || selectedOwnerServiceIds().length === 0) {
+      return "サービス、担当・設備、開始時間、お客様情報を確認してください。";
+    }
+    // Code points, not UTF-16 units: the limits the server enforces count
+    // characters, so an emoji in a name must not read as two.
+    const nameLength = [...ownerName.value.trim()].length;
+    const contactLength = [...ownerContact.value.trim()].length;
+    if (nameLength < 1 || nameLength > 80 || contactLength < 3 || contactLength > 200) {
+      return "お名前は80文字以内、ご連絡先は3〜200文字で入力してください。";
+    }
+    return null;
+  };
+
+  const handleOwnerCreateError = async (error) => {
+    if (handleOwnerError(error)) return;
+    if ([400, 404, 409, 413].includes(error.status)) clearOwnerCreatePending();
+    if (error.code === "CONFIGURATION_CONFLICT") {
+      try {
+        config = await api("/api/config");
+        applyPublicConfig(config);
+        renderOwnerServices();
+      } catch {
+        setStatus(ownerCreateStatus, "最新の公開設定を読み込めませんでした。再読み込みしてお試しください。", "error");
+        return;
+      }
+    }
+    if (error.status === 409) await Promise.all([loadSchedule().catch(() => {}), loadOwnerAvailability()]);
+    setStatus(
+      ownerCreateStatus,
+      `${error.message}${ownerCreatePending ? " 同じ内容と管理キーで結果を再確認できます。" : ""}`,
+      "error",
+    );
+  };
+
   ownerCreateForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!ownerToken) {
-      setStatus(ownerCreateStatus, "先に運営者認証を行ってください。", "error");
-      return;
-    }
-    if (!ownerCreatePending && (!ownerCreateForm.reportValidity() || selectedOwnerServiceIds().length === 0)) {
-      setStatus(ownerCreateStatus, "サービス、担当・設備、開始時間、お客様情報を確認してください。", "error");
-      return;
-    }
-    if (
-      !ownerCreatePending &&
-      (Array.from(ownerName.value.trim()).length < 1 ||
-        Array.from(ownerName.value.trim()).length > 80 ||
-        Array.from(ownerContact.value.trim()).length < 3 ||
-        Array.from(ownerContact.value.trim()).length > 200)
-    ) {
-      setStatus(ownerCreateStatus, "お名前は80文字以内、ご連絡先は3〜200文字で入力してください。", "error");
+    const validationError = ownerCreateValidationError();
+    if (validationError !== null) {
+      setStatus(ownerCreateStatus, validationError, "error");
       return;
     }
     ownerCreateInFlight = true;
@@ -2095,24 +2191,7 @@ const startAdmin = async () => {
         refreshed ? "success" : "error",
       );
     } catch (error) {
-      if (handleOwnerError(error)) return;
-      if ([400, 404, 409, 413].includes(error.status)) clearOwnerCreatePending();
-      if (error.code === "CONFIGURATION_CONFLICT") {
-        try {
-          config = await api("/api/config");
-          applyPublicConfig(config);
-          renderOwnerServices();
-        } catch {
-          setStatus(ownerCreateStatus, "最新の公開設定を読み込めませんでした。再読み込みしてお試しください。", "error");
-          return;
-        }
-      }
-      if (error.status === 409) await Promise.all([loadSchedule().catch(() => {}), loadOwnerAvailability()]);
-      setStatus(
-        ownerCreateStatus,
-        `${error.message}${ownerCreatePending ? " 同じ内容と管理キーで結果を再確認できます。" : ""}`,
-        "error",
-      );
+      await handleOwnerCreateError(error);
     } finally {
       ownerCreateInFlight = false;
       logoutButton.disabled = false;
@@ -2132,6 +2211,19 @@ const startAdmin = async () => {
     closureStart.disabled = wholeDay;
     closureEnd.disabled = wholeDay;
   });
+  const handleClosureError = async (error) => {
+    if (handleOwnerError(error)) return;
+    if ([400, 404, 409, 413].includes(error.status)) closurePending = null;
+    const hint = await mutationFailureHint(error, {
+      settled: () => closurePending === null,
+      retryHint: " 同じ内容で結果を再確認できます。",
+      reload: loadSchedule,
+    });
+    if (hint === null) return;
+    setStatus(closureStatus, `${error.message}${hint}`, "error");
+    focusWithoutScroll(closureStatus);
+  };
+
   closureForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!ownerToken || (!closurePending && !closureForm.reportValidity())) return;
@@ -2175,15 +2267,7 @@ const startAdmin = async () => {
         refreshed ? "success" : "error",
       );
     } catch (error) {
-      if (handleOwnerError(error)) return;
-      if ([400, 404, 409, 413].includes(error.status)) closurePending = null;
-      if (error.status === 409) await loadSchedule().catch(() => {});
-      setStatus(
-        closureStatus,
-        `${error.message}${closurePending ? " 同じ内容で結果を再確認できます。" : " 予定表を更新しました。"}`,
-        "error",
-      );
-      focusWithoutScroll(closureStatus);
+      await handleClosureError(error);
     } finally {
       closureFields.disabled = !ownerToken || Boolean(closurePending);
       closureSubmit.disabled = !ownerToken;
@@ -2442,6 +2526,24 @@ const startSetup = async () => {
     setupHelp.textContent = setupHelpText(authenticated, pending, accepting, setupState);
   };
 
+  // The notice a visitor would see is the one that stays true after signing out,
+  // so a session that ends mid-save restores it rather than leaving the
+  // authenticated banner addressed to someone who is now logged out. It follows
+  // whether the installation is accepting, because that is what a visitor can
+  // tell: a live installation that is not ready is served the demo notice, and
+  // the repair instruction the operator sees is not addressed to a visitor.
+  // Takes whether the installation is accepting, not the mode alone: a live
+  // installation whose readiness is incomplete is not accepting, and telling a
+  // visitor otherwise is the one thing this notice must never do.
+  const loggedOutNoticeFor = (accepting) =>
+    accepting
+      ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
+      : setupModeNoticeText(false, "demo");
+  // The served page carries the demo notice as its own text, which is the right
+  // thing to keep showing when the config read that would replace it fails. It
+  // seeds the value so signing out never blanks the banner.
+  let loggedOutNotice = modeNotice.textContent.trim();
+
   const renderSetupState = (state) => {
     setupState = state;
     editingSettings = structuredClone(state.settings);
@@ -2474,11 +2576,8 @@ const startSetup = async () => {
     renderServiceEditors();
     updateReadiness(state.readiness);
     const accepting = state.mode === "live" && state.readiness.ready;
-    modeNotice.textContent = accepting
-      ? "現在は公開予約を受け付けています。設定変更後も、保存済みの予約内容は書き換わりません。"
-      : state.mode === "live"
-        ? "公開設定は有効のままですが、保護設定が不足しているため予約受付は停止中です。要確認の項目を復旧してください。"
-      : "現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。";
+    loggedOutNotice = loggedOutNoticeFor(accepting);
+    modeNotice.textContent = setupModeNoticeText(accepting, state.mode);
     modeNotice.dataset.tone = accepting ? "success" : "";
     updateSetupControls();
   };
@@ -2571,8 +2670,7 @@ const startSetup = async () => {
       renderReceipt(await ownerApi("/api/admin/installation-receipt"));
       setStatus(receiptStatus, "秘密情報を含まない設置受領書を更新しました。", "success");
     } catch (error) {
-      if (error.status === 401) showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-      else setStatus(receiptStatus, error.message, "error");
+      if (!handleOwnerError(error)) setStatus(receiptStatus, error.message, "error");
     }
   };
 
@@ -2597,15 +2695,29 @@ const startSetup = async () => {
     resourcesRoot.replaceChildren(createElement("p", "empty-note", "認証すると、初期の架空データを確認・編集できます。"));
     updateReadiness();
     clearReceipt();
+    // A save or toggle that ended in a 401 left its in-progress line behind.
+    setStatus(setupStatus, "");
+    modeNotice.textContent = loggedOutNotice;
+    modeNotice.dataset.tone = "";
     if (message) setStatus(authStatus, message, "error");
+  };
+
+  // The same check the operator screen keeps under this name. The two screens
+  // are separate closures with their own showLoggedOut, so the shape is shared
+  // rather than the function.
+  const handleOwnerError = (error) => {
+    if (error.status !== 401) return false;
+    showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
+    return true;
   };
 
   try {
     const config = await api("/api/config");
     applyPublicConfig(config);
-    modeNotice.textContent = config.mode === "live"
-      ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
-      : "現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。";
+    // The public config already reports demo for a live installation that is not
+    // ready, so its live is the accepting one.
+    loggedOutNotice = loggedOutNoticeFor(config.mode === "live");
+    modeNotice.textContent = loggedOutNotice;
   } catch {
     setStatus(authStatus, "公開設定を読み込めませんでした。接続を確認してください。", "error");
   }
@@ -2674,6 +2786,25 @@ const startSetup = async () => {
     renderServiceEditors();
   });
 
+  const handleSetupSaveError = async (error) => {
+    if ([400, 401, 409, 413].includes(error.status)) pendingUpdate = null;
+    if (handleOwnerError(error)) return;
+    if (error.code === "CONFIGURATION_CONFLICT") {
+      await loadSetup().catch(() => {});
+      setStatus(setupStatus, "ほかの画面で設定が更新されました。最新の内容を読み込みました。もう一度確認してください。", "error");
+      focusWithoutScroll(setupStatus);
+      return;
+    }
+    setStatus(setupStatus, `${error.message}${pendingUpdate ? " 同じ設定で結果を再確認できます。" : ""}`, "error");
+  };
+
+  const handleLiveToggleError = async (error) => {
+    if ([400, 401, 409, 413].includes(error.status)) pendingLive = null;
+    if (handleOwnerError(error)) return;
+    if (error.code === "CONFIGURATION_CONFLICT") await loadSetup().catch(() => {});
+    setStatus(setupStatus, `${error.message}${pendingLive ? " 同じ操作で結果を再確認できます。" : ""}`, "error");
+  };
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!ownerToken || !setupState) return;
@@ -2726,18 +2857,7 @@ const startSetup = async () => {
         "success",
       );
     } catch (error) {
-      if ([400, 401, 409, 413].includes(error.status)) pendingUpdate = null;
-      if (error.status === 401) {
-        showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-        return;
-      }
-      if (error.code === "CONFIGURATION_CONFLICT") {
-        await loadSetup().catch(() => {});
-        setStatus(setupStatus, "ほかの画面で設定が更新されました。最新の内容を読み込みました。もう一度確認してください。", "error");
-        focusWithoutScroll(setupStatus);
-      } else {
-        setStatus(setupStatus, `${error.message}${pendingUpdate ? " 同じ設定で結果を再確認できます。" : ""}`, "error");
-      }
+      await handleSetupSaveError(error);
     } finally {
       updateSetupControls();
     }
@@ -2769,13 +2889,7 @@ const startSetup = async () => {
       await loadReceipt();
       setStatus(setupStatus, state.mode === "live" ? "公開予約を有効にしました。" : "公開予約を停止し、デモへ戻しました。", "success");
     } catch (error) {
-      if ([400, 401, 409, 413].includes(error.status)) pendingLive = null;
-      if (error.status === 401) {
-        showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
-        return;
-      }
-      if (error.code === "CONFIGURATION_CONFLICT") await loadSetup().catch(() => {});
-      setStatus(setupStatus, `${error.message}${pendingLive ? " 同じ操作で結果を再確認できます。" : ""}`, "error");
+      await handleLiveToggleError(error);
     } finally {
       updateSetupControls();
     }
