@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -142,13 +151,18 @@ const realpathOrEmpty = (dir) => {
   }
 };
 
-const confineDenylistPath = (path) => {
+// Returns an open handle on the denylist, or null when an absent optional file
+// means "no private terms". The default path is confined like an explicit one:
+// it is gitignored, so a symlink planted there would otherwise read straight
+// past the containment an explicit argument has to satisfy.
+const openConfinedDenylist = (path, { optional }) => {
   // Assembler snapshots with TMPDIR=/tmp mktemp. Live terms stay outside both trees.
   // After realpath, only the repo and the fixed system temp roots are readable.
   let canonical;
   try {
     canonical = realpathSync(path);
-  } catch {
+  } catch (error) {
+    if (optional && error?.code === "ENOENT") return null;
     fail("denylist path is not readable");
   }
   const root = realpathSync(ROOT);
@@ -164,19 +178,26 @@ const confineDenylistPath = (path) => {
   ) {
     fail("denylist path is not under the repository or a system temp directory");
   }
-  if (!lstatSync(canonical).isFile()) fail("denylist path is not a regular file");
-  // The caller reads this canonical path, not the argument it was derived from:
-  // validating one path and reading another leaves a symlink-swap window open.
-  return canonical;
+  // One handle carries both the type check and the read. Statting a name and
+  // then reading that name again resolves it twice, so a symlink swapped in
+  // between would send the read somewhere the check never saw.
+  const handle = openSync(canonical, "r");
+  if (!fstatSync(handle).isFile()) {
+    closeSync(handle);
+    fail("denylist path is not a regular file");
+  }
+  return handle;
 };
 
 const loadDenylist = (argument) => {
-  const defaultPath = join(ROOT, ".release-private-denylist");
-  // The default path is deliberately not confined: a missing default file is the
-  // normal case and must stay the ENOENT-to-empty-list path below, not a failure.
-  const path = argument === null ? defaultPath : confineDenylistPath(resolve(argument));
+  const explicit = argument !== null;
+  const handle = openConfinedDenylist(
+    explicit ? resolve(argument) : join(ROOT, ".release-private-denylist"),
+    { optional: !explicit },
+  );
+  if (handle === null) return [];
   try {
-    const terms = readFileSync(path, "utf8")
+    const terms = readFileSync(handle, "utf8")
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line !== "" && !line.startsWith("#"));
@@ -188,18 +209,17 @@ const loadDenylist = (argument) => {
       fail("private denylist contains duplicate terms");
     }
     return terms;
-  } catch (error) {
-    if (argument === null && error?.code === "ENOENT") return [];
-    throw error;
+  } finally {
+    closeSync(handle);
   }
 };
 
 // The dotenv and object-literal secret rules differ only in which capture group
 // holds the value, so the loop is shared and the extraction is passed in.
-const scanNamedSecrets = (label, text, pattern, valueOf) => {
+const scanNamedSecrets = (label, text, pattern, extractValue) => {
   for (const match of text.matchAll(pattern)) {
     const name = match[1];
-    if (ALLOWED_NAMED_SECRETS.get(`${label}:${name}`) !== valueOf(match)) {
+    if (ALLOWED_NAMED_SECRETS.get(`${label}:${name}`) !== extractValue(match)) {
       fail(`credential-like value found in ${label}`);
     }
   }

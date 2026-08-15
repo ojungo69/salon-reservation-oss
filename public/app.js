@@ -794,10 +794,12 @@ const startCustomer = async () => {
         ? loaded.resources.find(({ id }) => id === requestedResource) ?? null
         : pickAutoResource(loaded.resources, requestedResource);
       resourceSelect.value = assigned?.id ?? "";
-      assignedResource.textContent = assigned
-        ? `担当・設備は「${assigned.label}」を自動で割り当てました。`
-        : "";
-      assignedResource.hidden = assigned === null;
+      if (assigned === null) {
+        clearAssignedResource();
+      } else {
+        assignedResource.textContent = `担当・設備は「${assigned.label}」を自動で割り当てました。`;
+        assignedResource.hidden = false;
+      }
     } else if (loaded.resources.some(({ id }) => id === requestedResource)) {
       resourceSelect.value = requestedResource;
     } else if (loaded.resources.length === 1 && !pending) {
@@ -1604,6 +1606,16 @@ const startAdmin = async () => {
     updateOwnerCreateControls();
   };
 
+  // The closing sentence every owner mutation failure appends. Only a conflict
+  // is worth re-reading the schedule for, and the sentence may claim the
+  // schedule was updated only when that read actually succeeded.
+  const mutationFailureHint = async (error, { settled, retryHint, reload }) => {
+    let refreshed = false;
+    if (error.status === 409) refreshed = await reload().then(() => true, () => false);
+    if (!settled) return retryHint;
+    return refreshed ? " 予定表を更新しました。" : "";
+  };
+
   const handleOwnerError = (error) => {
     if (error.status === 401) {
       showLoggedOut("認証の有効性を確認できませんでした。もう一度認証してください。");
@@ -1706,8 +1718,12 @@ const startAdmin = async () => {
     } catch (error) {
       if (handleOwnerError(error)) return;
       if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
-      if (error.status === 409) await loadSchedule();
-      setStatus(closureStatus, `${error.message}${commands.has(key) ? " 同じ操作で結果を再確認できます。" : " 予定表を更新しました。"}`, "error");
+      const hint = await mutationFailureHint(error, {
+        settled: !commands.has(key),
+        retryHint: " 同じ操作で結果を再確認できます。",
+        reload: loadSchedule,
+      });
+      setStatus(closureStatus, `${error.message}${hint}`, "error");
       focusWithoutScroll(closureStatus);
     } finally {
       button.disabled = false;
@@ -1947,13 +1963,13 @@ const startAdmin = async () => {
   const handleTransitionFailure = async (error, key, reservation) => {
     if (handleOwnerError(error)) return;
     if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
-    if (error.status === 409) await loadSchedule(reservation.reservationId).catch(() => {});
+    const hint = await mutationFailureHint(error, {
+      settled: !commands.has(key),
+      retryHint: " 同じ操作で結果を再確認できます。",
+      reload: () => loadSchedule(reservation.reservationId),
+    });
     if (selectedReservation) renderDetail(selectedReservation, false);
-    setStatus(
-      detailStatus,
-      `${error.message}${commands.has(key) ? " 同じ操作で結果を再確認できます。" : " 予定表を更新しました。"}`,
-      "error",
-    );
+    setStatus(detailStatus, `${error.message}${hint}`, "error");
     focusWithoutScroll(detail);
   };
 
@@ -2184,12 +2200,12 @@ const startAdmin = async () => {
   const handleClosureError = async (error) => {
     if (handleOwnerError(error)) return;
     if ([400, 404, 409, 413].includes(error.status)) closurePending = null;
-    if (error.status === 409) await loadSchedule().catch(() => {});
-    setStatus(
-      closureStatus,
-      `${error.message}${closurePending ? " 同じ内容で結果を再確認できます。" : " 予定表を更新しました。"}`,
-      "error",
-    );
+    const hint = await mutationFailureHint(error, {
+      settled: closurePending === null,
+      retryHint: " 同じ内容で結果を再確認できます。",
+      reload: loadSchedule,
+    });
+    setStatus(closureStatus, `${error.message}${hint}`, "error");
     focusWithoutScroll(closureStatus);
   };
 
@@ -2631,6 +2647,11 @@ const startSetup = async () => {
     return state;
   };
 
+  // The notice written before authenticating is the one that stays true after
+  // signing out, so a session that ends mid-save restores it rather than
+  // leaving the authenticated banner addressed to someone who is now logged out.
+  let loggedOutNotice = "";
+
   const showLoggedOut = (message = "") => {
     ownerToken = "";
     setupState = null;
@@ -2646,15 +2667,20 @@ const startSetup = async () => {
     resourcesRoot.replaceChildren(createElement("p", "empty-note", "認証すると、初期の架空データを確認・編集できます。"));
     updateReadiness();
     clearReceipt();
+    // A save or toggle that ended in a 401 left its in-progress line behind.
+    setStatus(setupStatus, "");
+    modeNotice.textContent = loggedOutNotice;
+    modeNotice.dataset.tone = "";
     if (message) setStatus(authStatus, message, "error");
   };
 
   try {
     const config = await api("/api/config");
     applyPublicConfig(config);
-    modeNotice.textContent = config.mode === "live"
+    loggedOutNotice = config.mode === "live"
       ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
-      : "現在はデモ・設定中です。公開予約は、4つの準備項目がすべて完了するまで有効になりません。";
+      : setupModeNoticeText(false, config.mode);
+    modeNotice.textContent = loggedOutNotice;
   } catch {
     setStatus(authStatus, "公開設定を読み込めませんでした。接続を確認してください。", "error");
   }

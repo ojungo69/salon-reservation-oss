@@ -2430,12 +2430,7 @@ export class ReservationDay extends DurableObject<Env> {
       type: "reservation.cancel",
       payload: { reservationId: input.reservationId },
     });
-    if (!cancelled.ok) {
-      return cancelled.error.code === "RESERVATION_NOT_FOUND" ||
-        cancelled.error.code === "RESERVATION_NOT_ACTIVE"
-        ? failure("NOT_FOUND_OR_UNAUTHORIZED")
-        : failure("TEMPORARILY_UNAVAILABLE");
-    }
+    if (!cancelled.ok) return cancelCommandFailure(cancelled.error.code);
     return {
       nextState: cancelled.state,
       status: input.action === "reject" ? "rejected" : "cancelled",

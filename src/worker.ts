@@ -2160,18 +2160,20 @@ const parseReconcileCursor = (
   return { ok: true, cursor: value.cursor };
 };
 
-// One reconciliation page: the caller owns the window arithmetic and the
-// authority stub, so `finishReconcile` still runs on the same stub instance.
-// A day that fails projection short-circuits the page as its own Response.
+// One reconciliation page. The caller keeps the authority stub, so
+// `finishReconcile` still runs on the same stub instance; the window arithmetic
+// stays here so the cursor the caller reports is decided in one place. A day
+// that fails projection short-circuits the page as that day's failure.
 const reconcileCalendarPage = async (
   env: AppEnv,
   url: URL,
   context: InstallationContext,
   authority: DurableObjectStub<CalendarAdapter>,
   cursor: string,
+  offset: number,
   pageSize: number,
 ): Promise<
-  | Response
+  | { failure: DayFailure }
   | { processedDates: number; projected: number; removed: number; nextCursor: string | null }
 > => {
   let processedDates = 0;
@@ -2187,7 +2189,7 @@ const reconcileCalendarPage = async (
       context,
       async (config) => dayStub(env, date).calendarProjection(config),
     );
-    if (!projection.ok) return failureResponse(projection);
+    if (!projection.ok) return { failure: projection };
     const reconciled = await authority.reconcileDay(projection);
     if (reconciled.deferred === true) {
       return { processedDates, projected, removed, nextCursor: date };
@@ -2196,7 +2198,12 @@ const reconcileCalendarPage = async (
     removed += reconciled.removed;
     processedDates += 1;
   }
-  return { processedDates, projected, removed, nextCursor: null };
+  // A full page that has not reached the horizon resumes on the next day.
+  const nextCursor =
+    offset + processedDates < context.settings.horizonDays
+      ? addDays(cursor, processedDates)
+      : null;
+  return { processedDates, projected, removed, nextCursor };
 };
 
 const handleCalendarReconcile = async (
@@ -2237,13 +2244,9 @@ const handleCalendarReconcile = async (
     }
     const pageSize = Math.min(7, context.settings.horizonDays - offset);
     const authority = calendarAdapterStub(env);
-    const page = await reconcileCalendarPage(env, url, context, authority, cursor, pageSize);
-    if (page instanceof Response) return page;
-    const { processedDates, projected, removed } = page;
-    const nextCursor =
-      page.nextCursor === null && offset + processedDates < context.settings.horizonDays
-        ? addDays(cursor, processedDates)
-        : page.nextCursor;
+    const page = await reconcileCalendarPage(env, url, context, authority, cursor, offset, pageSize);
+    if ("failure" in page) return failureResponse(page.failure);
+    const { processedDates, projected, removed, nextCursor } = page;
     await authority.finishReconcile({ nextCursor });
     return json({ ok: true, processedDates, projected, removed, nextCursor });
   } catch {
