@@ -192,7 +192,7 @@ const openConfinedDenylist = (path, { optional }) => {
   if (constants.O_NOFOLLOW === undefined || constants.O_NONBLOCK === undefined) {
     fail("this platform cannot open the denylist without following links");
   }
-  // eslint-disable-next-line
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   const handle = openSync(
     canonical,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -212,7 +212,7 @@ const loadDenylist = (argument) => {
   );
   if (handle === null) return [];
   try {
-    // eslint-disable-next-line
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
     const terms = readFileSync(handle, "utf8")
       .split("\n")
       .map((line) => line.trim())
@@ -247,14 +247,14 @@ const scanNamedSecrets = (label, text, pattern, extractValue) => {
 // appearing contiguously in this file, which its own scan — and every other
 // secret scanner pointed at the release tree — would otherwise flag. Both
 // sources are literals written here, so the constructor takes no outside input.
-// Every directive in this file names no rule on purpose. The repository has no
-// ESLint of its own; the analyser that reports these lines is hosted, runs its
-// own configuration, publishes no rule id, and honours only a bare directive on
-// the line above the one it reports.
+// The directives in this file name the eslint-plugin-security rules whose
+// checks they answer. The repository runs no ESLint of its own; they are there
+// for the hosted analysers that read them, which accept only a directive on the
+// line above the one they report.
 const CREDENTIAL_RULES = [
-  // eslint-disable-next-line
+  // eslint-disable-next-line security/detect-non-literal-regexp
   ["private key", new RegExp(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?${"PRIVATE KEY"}-----`)],
-  // eslint-disable-next-line
+  // eslint-disable-next-line security/detect-non-literal-regexp
   ["GitHub token", new RegExp(String.raw`\b${"github"}_pat_[A-Za-z0-9_]{20,}\b`)],
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
   ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
@@ -268,15 +268,15 @@ const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
 // Both rules share the name alternation above, so both are composed rather than
 // written as literals. The only interpolation is that module constant.
-// eslint-disable-next-line
+// eslint-disable-next-line security/detect-non-literal-regexp
 const DOTENV_SECRET = new RegExp(
-  // eslint-disable-next-line
+  // eslint-disable-next-line security/detect-non-literal-regexp
   String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
   "gm",
 );
-// eslint-disable-next-line
+// eslint-disable-next-line security/detect-non-literal-regexp
 const OBJECT_SECRET = new RegExp(
-  // eslint-disable-next-line
+  // eslint-disable-next-line security/detect-non-literal-regexp
   String.raw`["']?\b${SECRET_NAME}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
   "g",
 );
