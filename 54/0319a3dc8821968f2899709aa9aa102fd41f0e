@@ -1,0 +1,20 @@
+test/release-audit-denylist.test.ts
+  s_3ac342c3240e69::t_fb028b4ffdcbe6 89
+  s_3ac342c3240e69::t_edc8134512f846 64-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "540319a3dc8821968f2899709aa9aa102fd41f0e",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
