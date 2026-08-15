@@ -1848,6 +1848,67 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return "done";
   }
 
+  async #driveBeginDisableStep(
+    operation: LineSagaOperation,
+    authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
+    now: string,
+  ): Promise<void> {
+    await authority.beginDisable();
+    const finalPassAt = Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
+    // Pre-arm before recording the step so a crash between the two can
+    // only re-run the idempotent beginDisable, never lose the wake-up.
+    await this.ctx.storage.setAlarm(finalPassAt);
+    this.ctx.storage.transactionSync(() => {
+      const current = this.#readLineLifecycle();
+      if (current?.operation?.operationId !== operation.operationId) return;
+      this.#writeLineLifecycle({
+        ...current,
+        operation: { ...operation, step: "final-wait", finalPassAt },
+        updatedAt: now,
+      });
+    });
+  }
+
+  async #driveFinalWaitStep(
+    operation: LineSagaOperation,
+    authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
+    now: string,
+  ): Promise<void> {
+    if (operation.finalPassAt === null || Date.now() < operation.finalPassAt) {
+      await this.ctx.storage.setAlarm(
+        operation.finalPassAt ?? Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000,
+      );
+      return;
+    }
+    // The idempotent beginDisable re-call reports purge progress; the
+    // authority refuses completion until a post-lease full purge pass
+    // finished, so keep polling until it flips to disabled.
+    const progress = await authority.beginDisable();
+    if (!progress.purgeComplete) {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      return;
+    }
+    const completed = await authority.completeDisable();
+    if (completed.meta.state !== "disabled") {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      return;
+    }
+    this.ctx.storage.transactionSync(() => {
+      const current = this.#readLineLifecycle();
+      if (current?.operation?.operationId !== operation.operationId) return;
+      this.#writeLineLifecycle({
+        ...current,
+        phase: "disabled",
+        active: null,
+        // Draft cleared on disable completion: re-enabling re-enters
+        // identifiers deliberately.
+        draft: null,
+        operation: null,
+        updatedAt: now,
+      });
+    });
+  }
+
   async #driveLineSaga(): Promise<void> {
     for (let step = 0; step < 4; step += 1) {
       const lifecycle = this.#readLineLifecycle();
@@ -1861,56 +1922,11 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           return;
         }
         if (operation.step === "begin-disable") {
-          await authority.beginDisable();
-          const finalPassAt = Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
-          // Pre-arm before recording the step so a crash between the two can
-          // only re-run the idempotent beginDisable, never lose the wake-up.
-          await this.ctx.storage.setAlarm(finalPassAt);
-          this.ctx.storage.transactionSync(() => {
-            const current = this.#readLineLifecycle();
-            if (current?.operation?.operationId !== operation.operationId) return;
-            this.#writeLineLifecycle({
-              ...current,
-              operation: { ...operation, step: "final-wait", finalPassAt },
-              updatedAt: now,
-            });
-          });
+          await this.#driveBeginDisableStep(operation, authority, now);
           return;
         }
         if (operation.step === "final-wait") {
-          if (operation.finalPassAt === null || Date.now() < operation.finalPassAt) {
-            await this.ctx.storage.setAlarm(
-              operation.finalPassAt ?? Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000,
-            );
-            return;
-          }
-          // The idempotent beginDisable re-call reports purge progress; the
-          // authority refuses completion until a post-lease full purge pass
-          // finished, so keep polling until it flips to disabled.
-          const progress = await authority.beginDisable();
-          if (!progress.purgeComplete) {
-            await this.ctx.storage.setAlarm(Date.now() + 60_000);
-            return;
-          }
-          const completed = await authority.completeDisable();
-          if (completed.meta.state !== "disabled") {
-            await this.ctx.storage.setAlarm(Date.now() + 60_000);
-            return;
-          }
-          this.ctx.storage.transactionSync(() => {
-            const current = this.#readLineLifecycle();
-            if (current?.operation?.operationId !== operation.operationId) return;
-            this.#writeLineLifecycle({
-              ...current,
-              phase: "disabled",
-              active: null,
-              // Draft cleared on disable completion: re-enabling re-enters
-              // identifiers deliberately.
-              draft: null,
-              operation: null,
-              updatedAt: now,
-            });
-          });
+          await this.#driveFinalWaitStep(operation, authority, now);
           return;
         }
         return;

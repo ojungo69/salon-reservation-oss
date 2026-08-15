@@ -945,6 +945,81 @@ export class CalendarAdapter extends DurableObject<Env> {
     );
   }
 
+  #insertMetaRow(fingerprint: string, googleConfigured: boolean): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO meta
+             (singleton, state, generation, high_water, mode_fingerprint,
+              google_blocked_fingerprint, google_configured, google_seen,
+              begin_disable_at, purge_completed_at,
+              sweep_cursor, last_reconciled_at, reconcile_cursor)
+           VALUES (1, 'active', 1, 1, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+      fingerprint,
+      googleConfigured ? 1 : 0,
+      googleConfigured ? 1 : 0,
+    );
+  }
+
+  #reactivateMeta(
+    current: CalendarMeta,
+    fingerprint: string,
+    configuration: {
+      feedToken: string | null;
+      google: GoogleCalendarCredentials | null;
+    },
+    now: number,
+  ): void {
+    const generation = current.state === "active" ? current.generation : current.highWater + 1;
+    const googleChanged =
+      configuration.google !== null &&
+      (!current.googleConfigured || current.modeFingerprint !== fingerprint);
+    const blockedFingerprint =
+      configuration.google === null || googleChanged
+        ? null
+        : current.googleBlockedFingerprint;
+    this.ctx.storage.sql.exec(
+      `UPDATE meta SET state = 'active', generation = ?, high_water = MAX(high_water, ?),
+                  mode_fingerprint = ?, google_blocked_fingerprint = ?,
+                  google_configured = ?, google_seen = MAX(google_seen, ?),
+                  begin_disable_at = NULL, purge_completed_at = NULL
+           WHERE singleton = 1`,
+      generation,
+      generation,
+      fingerprint,
+      blockedFingerprint,
+      configuration.google === null ? 0 : 1,
+      configuration.google === null ? 0 : 1,
+    );
+    if (googleChanged) {
+      this.#requeueProjections({ ...current, generation });
+      this.#requeueConfigurationBlocked(generation, now);
+    }
+  }
+
+  #activateMeta(
+    configuration: {
+      feedToken: string | null;
+      google: GoogleCalendarCredentials | null;
+    },
+    fingerprint: string,
+  ): DayAdapterDescriptor {
+    const current = this.#readMeta();
+    const now = Date.now();
+    if (current === null) {
+      this.#insertMetaRow(fingerprint, configuration.google !== null);
+    } else {
+      this.#reactivateMeta(current, fingerprint, configuration, now);
+    }
+    const active = this.#readMeta();
+    if (active === null) throw new Error("calendar activation failed");
+    return {
+      consumer: "calendar" as const,
+      generation: active.generation,
+      phase: "active" as const,
+      leaseIssuedAt: now,
+      leaseNotAfter: now + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+    };
+  }
+
   async descriptor(): Promise<DayAdapterDescriptor | null> {
     const configuration = this.#configuration();
     if (configuration.feedToken === null && configuration.google === null) {
@@ -965,58 +1040,9 @@ export class CalendarAdapter extends DurableObject<Env> {
     const fingerprint = await sha256Hex(JSON.stringify(configuration.google));
     this.#ensureSchema();
     this.#pruneRetention(Date.now());
-    const descriptor = this.ctx.storage.transactionSync(() => {
-      const current = this.#readMeta();
-      const now = Date.now();
-      if (current === null) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO meta
-             (singleton, state, generation, high_water, mode_fingerprint,
-              google_blocked_fingerprint, google_configured, google_seen,
-              begin_disable_at, purge_completed_at,
-              sweep_cursor, last_reconciled_at, reconcile_cursor)
-           VALUES (1, 'active', 1, 1, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
-          fingerprint,
-          configuration.google === null ? 0 : 1,
-          configuration.google === null ? 0 : 1,
-        );
-      } else {
-        const generation = current.state === "active" ? current.generation : current.highWater + 1;
-        const googleChanged =
-          configuration.google !== null &&
-          (!current.googleConfigured || current.modeFingerprint !== fingerprint);
-        const blockedFingerprint =
-          configuration.google === null || googleChanged
-            ? null
-            : current.googleBlockedFingerprint;
-        this.ctx.storage.sql.exec(
-          `UPDATE meta SET state = 'active', generation = ?, high_water = MAX(high_water, ?),
-                  mode_fingerprint = ?, google_blocked_fingerprint = ?,
-                  google_configured = ?, google_seen = MAX(google_seen, ?),
-                  begin_disable_at = NULL, purge_completed_at = NULL
-           WHERE singleton = 1`,
-          generation,
-          generation,
-          fingerprint,
-          blockedFingerprint,
-          configuration.google === null ? 0 : 1,
-          configuration.google === null ? 0 : 1,
-        );
-        if (googleChanged) {
-          this.#requeueProjections({ ...current, generation });
-          this.#requeueConfigurationBlocked(generation, now);
-        }
-      }
-      const active = this.#readMeta();
-      if (active === null) throw new Error("calendar activation failed");
-      return {
-        consumer: "calendar" as const,
-        generation: active.generation,
-        phase: "active" as const,
-        leaseIssuedAt: now,
-        leaseNotAfter: now + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
-      };
-    });
+    const descriptor = this.ctx.storage.transactionSync(() =>
+      this.#activateMeta(configuration, fingerprint),
+    );
     await this.#armAlarm(Date.now() + ADAPTER.SWEEP_REARM_DELAY_S * 1_000);
     return descriptor;
   }
@@ -1264,6 +1290,120 @@ export class CalendarAdapter extends DurableObject<Env> {
     return { ok: true, body: renderCalendar(rows.map(projectionFromRow)) };
   }
 
+  #reconcileOverflowExceeded(
+    meta: CalendarMeta,
+    removedRows: ProjectionRow[],
+    prepared: Array<{ event: { reservationId: string } }>,
+  ): boolean {
+    if (!meta.googleSeen) return false;
+    const mutations = this.ctx.storage.sql
+      .exec<{ reservation_id: string; operation: string; status: string }>(
+        "SELECT reservation_id, operation, status FROM google_mutations",
+      )
+      .toArray();
+    const queued = new Set(mutations.map(({ reservation_id }) => reservation_id));
+    const required = new Set([
+      ...removedRows.map(({ reservation_id }) => reservation_id),
+      ...prepared.map(({ event }) => event.reservationId),
+    ]);
+    const missing = [...required].filter((reservationId) => !queued.has(reservationId));
+    const reclaimable = mutations.filter(
+      ({ reservation_id, operation, status }) =>
+        operation === "upsert" && status === "failed" && !required.has(reservation_id),
+    ).length;
+    return mutations.length + missing.length - reclaimable > CALENDAR_ROW_CAP;
+  }
+
+  #removeStaleProjections(removedRows: ProjectionRow[], meta: CalendarMeta): number {
+    const sql = this.ctx.storage.sql;
+    let removed = 0;
+    for (const row of removedRows) {
+      if (
+        meta.googleSeen &&
+        !this.#queueMutation(
+          row.reservation_id,
+          row.external_id,
+          "delete",
+          null,
+          meta.generation,
+          row.purge_at,
+          googleReady(meta),
+        )
+      ) {
+        throw new Error("calendar delete preflight failed");
+      }
+      sql.exec("DELETE FROM projections WHERE reservation_id = ?", row.reservation_id);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  #upsertProjections(
+    prepared: Array<{
+      event: Extract<DayCalendarProjectionResult, { ok: true }>["events"][number];
+      ids: { uid: string; externalId: string };
+    }>,
+    meta: CalendarMeta,
+    input: Extract<DayCalendarProjectionResult, { ok: true }>,
+  ): number {
+    const sql = this.ctx.storage.sql;
+    let projected = 0;
+    let projectionCount =
+      sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]?.n ?? 0;
+    for (const { event, ids } of prepared) {
+      const existing = sql
+        .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
+        .toArray()[0];
+      if (existing === undefined && projectionCount >= CALENDAR_ROW_CAP) {
+        this.#record("overflow", "reconcile");
+        this.#bump("disposition:overflow");
+        continue;
+      }
+      const projection: CalendarProjection = {
+        uid: ids.uid,
+        externalId: ids.externalId,
+        stampAt: existing?.stamp_at ?? event.stampAt,
+        startAt: calendarInstant(input.date, event.startTime),
+        endAt: calendarInstant(input.date, event.endTime),
+        serviceLabel: event.serviceLabel,
+        status: event.status === "pending" ? "tentative" : "confirmed",
+      };
+      sql.exec(
+        `INSERT OR REPLACE INTO projections
+           (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
+            service_label, status, purge_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        event.reservationId,
+        projection.externalId,
+        projection.uid,
+        input.date,
+        projection.stampAt,
+        projection.startAt,
+        projection.endAt,
+        projection.serviceLabel,
+        projection.status,
+        input.purgeAt,
+      );
+      if (
+        meta.googleSeen &&
+        !this.#queueMutation(
+          event.reservationId,
+          ids.externalId,
+          "upsert",
+          projection,
+          meta.generation,
+          input.purgeAt,
+          googleReady(meta),
+        )
+      ) {
+        throw new Error("calendar upsert preflight failed");
+      }
+      if (existing === undefined) projectionCount += 1;
+      projected += 1;
+    }
+    return projected;
+  }
+
   async reconcileDay(input: DayCalendarProjectionResult): Promise<{
     ok: true;
     projected: number;
@@ -1308,101 +1448,13 @@ export class CalendarAdapter extends DurableObject<Env> {
         .exec<ProjectionRow>("SELECT * FROM projections WHERE date = ?", input.date)
         .toArray()
         .filter(({ reservation_id }) => !wanted.has(reservation_id));
-      if (meta.googleSeen) {
-        const mutations = sql
-          .exec<{ reservation_id: string; operation: string; status: string }>(
-            "SELECT reservation_id, operation, status FROM google_mutations",
-          )
-          .toArray();
-        const queued = new Set(mutations.map(({ reservation_id }) => reservation_id));
-        const required = new Set([
-          ...removedRows.map(({ reservation_id }) => reservation_id),
-          ...prepared.map(({ event }) => event.reservationId),
-        ]);
-        const missing = [...required].filter((reservationId) => !queued.has(reservationId));
-        const reclaimable = mutations.filter(
-          ({ reservation_id, operation, status }) =>
-            operation === "upsert" && status === "failed" && !required.has(reservation_id),
-        ).length;
-        if (mutations.length + missing.length - reclaimable > CALENDAR_ROW_CAP) {
-          this.#record("overflow", "reconcile");
-          this.#bump("mutation_overflow");
-          return { ok: true as const, projected: 0, removed: 0, deferred: true as const };
-        }
+      if (this.#reconcileOverflowExceeded(meta, removedRows, prepared)) {
+        this.#record("overflow", "reconcile");
+        this.#bump("mutation_overflow");
+        return { ok: true as const, projected: 0, removed: 0, deferred: true as const };
       }
-      let removed = 0;
-      for (const row of removedRows) {
-        if (
-          meta.googleSeen &&
-          !this.#queueMutation(
-            row.reservation_id,
-            row.external_id,
-            "delete",
-            null,
-            meta.generation,
-            row.purge_at,
-            googleReady(meta),
-          )
-        ) {
-          throw new Error("calendar delete preflight failed");
-        }
-        sql.exec("DELETE FROM projections WHERE reservation_id = ?", row.reservation_id);
-        removed += 1;
-      }
-      let projected = 0;
-      let projectionCount =
-        sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM projections").toArray()[0]?.n ?? 0;
-      for (const { event, ids } of prepared) {
-        const existing = sql
-          .exec<ProjectionRow>("SELECT * FROM projections WHERE reservation_id = ?", event.reservationId)
-          .toArray()[0];
-        if (existing === undefined && projectionCount >= CALENDAR_ROW_CAP) {
-          this.#record("overflow", "reconcile");
-          this.#bump("disposition:overflow");
-          continue;
-        }
-        const projection: CalendarProjection = {
-          uid: ids.uid,
-          externalId: ids.externalId,
-          stampAt: existing?.stamp_at ?? event.stampAt,
-          startAt: calendarInstant(input.date, event.startTime),
-          endAt: calendarInstant(input.date, event.endTime),
-          serviceLabel: event.serviceLabel,
-          status: event.status === "pending" ? "tentative" : "confirmed",
-        };
-        sql.exec(
-          `INSERT OR REPLACE INTO projections
-             (reservation_id, external_id, uid, date, stamp_at, start_at, end_at,
-              service_label, status, purge_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          event.reservationId,
-          projection.externalId,
-          projection.uid,
-          input.date,
-          projection.stampAt,
-          projection.startAt,
-          projection.endAt,
-          projection.serviceLabel,
-          projection.status,
-          input.purgeAt,
-        );
-        if (
-          meta.googleSeen &&
-          !this.#queueMutation(
-            event.reservationId,
-            ids.externalId,
-            "upsert",
-            projection,
-            meta.generation,
-            input.purgeAt,
-            googleReady(meta),
-          )
-        ) {
-          throw new Error("calendar upsert preflight failed");
-        }
-        if (existing === undefined) projectionCount += 1;
-        projected += 1;
-      }
+      const removed = this.#removeStaleProjections(removedRows, meta);
+      const projected = this.#upsertProjections(prepared, meta, input);
       if (input.purgeAt > now) {
         this.#advanceProjectionWatermark(
           input.date,
@@ -1648,62 +1700,106 @@ export class CalendarAdapter extends DurableObject<Env> {
     });
   }
 
+  #parkGoogleMutationsAwaitingConfig(): void {
+    if (this.#hasSchema()) {
+      this.ctx.storage.sql.exec(
+        `UPDATE google_mutations SET status = 'awaiting-configuration', next_attempt_at = NULL,
+                  claimed_at = NULL, claimed_version = NULL
+           WHERE status IN ('queued', 'sending')`,
+      );
+    }
+  }
+
+  async #processOneGoogleMutation(
+    credentials: GoogleCalendarCredentials,
+    credentialFingerprint: string,
+  ): Promise<"advance" | "stop"> {
+    const claimNow = Date.now();
+    const row = this.#claimGoogle(claimNow);
+    if (row === null) return "stop";
+    const token = await getGoogleAccessToken(credentials, fetch, claimNow);
+    if (!token.ok) {
+      const kind = token.kind === "retryable" ? "retryable" : "configuration";
+      this.#settleGoogle(
+        row,
+        { kind, status: token.status },
+        Date.now(),
+        credentialFingerprint,
+      );
+      return "stop";
+    }
+    const event = parseUpsertPayload(row);
+    if (row.operation === "upsert" && event === null) {
+      this.#settleGoogle(
+        row,
+        { kind: "permanent", status: null },
+        Date.now(),
+        credentialFingerprint,
+      );
+      return "advance";
+    }
+    const outcome = await sendGoogleMutation(
+      credentials,
+      token.accessToken,
+      row.operation,
+      event,
+      row.external_id,
+      row.purge_at,
+    );
+    const settledAt = Date.now();
+    if (outcome.kind === "expired") {
+      this.#pruneRetention(settledAt);
+      return "advance";
+    }
+    this.#settleGoogle(row, outcome, settledAt, credentialFingerprint);
+    if (outcome.kind === "configuration") return "stop";
+    return "advance";
+  }
+
   async #processGoogle(now: number): Promise<void> {
     this.#pruneRetention(now);
     const credentials = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
     if (credentials === null) {
-      if (this.#hasSchema()) {
-        this.ctx.storage.sql.exec(
-          `UPDATE google_mutations SET status = 'awaiting-configuration', next_attempt_at = NULL,
-                  claimed_at = NULL, claimed_version = NULL
-           WHERE status IN ('queued', 'sending')`,
-        );
-      }
+      this.#parkGoogleMutationsAwaitingConfig();
       return;
     }
     const credentialFingerprint = await sha256Hex(JSON.stringify(credentials));
     if (this.#readMeta()?.googleBlockedFingerprint === credentialFingerprint) return;
     for (let index = 0; index < ADAPTER.SEND_BATCH; index += 1) {
-      const claimNow = Date.now();
-      const row = this.#claimGoogle(claimNow);
-      if (row === null) return;
-      const token = await getGoogleAccessToken(credentials, fetch, claimNow);
-      if (!token.ok) {
-        const kind = token.kind === "retryable" ? "retryable" : "configuration";
-        this.#settleGoogle(
-          row,
-          { kind, status: token.status },
-          Date.now(),
-          credentialFingerprint,
-        );
+      if (
+        (await this.#processOneGoogleMutation(credentials, credentialFingerprint)) === "stop"
+      ) {
         return;
       }
-      const event = parseUpsertPayload(row);
-      if (row.operation === "upsert" && event === null) {
-        this.#settleGoogle(
-          row,
-          { kind: "permanent", status: null },
-          Date.now(),
-          credentialFingerprint,
-        );
-        continue;
-      }
-      const outcome = await sendGoogleMutation(
-        credentials,
-        token.accessToken,
-        row.operation,
-        event,
-        row.external_id,
-        row.purge_at,
-      );
-      const settledAt = Date.now();
-      if (outcome.kind === "expired") {
-        this.#pruneRetention(settledAt);
-        continue;
-      }
-      this.#settleGoogle(row, outcome, settledAt, credentialFingerprint);
-      if (outcome.kind === "configuration") return;
     }
+  }
+
+  async #sweepDay(
+    cursor: string,
+    meta: CalendarMeta,
+  ): Promise<"advance" | "retain" | "fault" | "abandon"> {
+    let faulted = false;
+    let retainCursor = false;
+    try {
+      if (meta.state === "deactivating") {
+        await withDeadline(
+          this.env.RESERVATION_DAYS.getByName(
+            `single-location:${cursor}`,
+          ).purgeConsumer({ consumer: "calendar", throughGeneration: meta.generation }),
+          ADAPTER.SWEEP_RPC_DEADLINE_MS,
+        );
+      } else {
+        retainCursor = (await this.#drainDay(cursor, 1)).pending;
+      }
+    } catch {
+      this.#bump("sweep_faults");
+      faulted = true;
+    }
+    const current = this.#readMeta();
+    if (current?.state !== meta.state || current.generation !== meta.generation) return "abandon";
+    if (faulted) return "fault";
+    if (retainCursor) return "retain";
+    return "advance";
   }
 
   async #sweepStep(now: number): Promise<void> {
@@ -1721,27 +1817,10 @@ export class CalendarAdapter extends DurableObject<Env> {
     const final = shiftDate(dateJst(now), ADAPTER.SWEEP_FUTURE_DAYS);
     let cursor = meta.sweepCursor ?? first;
     for (let index = 0; index < ADAPTER.SWEEP_DAY_BATCH && cursor <= final; index += 1) {
-      let faulted = false;
-      let retainCursor = false;
-      try {
-        if (meta.state === "deactivating") {
-          await withDeadline(
-            this.env.RESERVATION_DAYS.getByName(
-              `single-location:${cursor}`,
-            ).purgeConsumer({ consumer: "calendar", throughGeneration: meta.generation }),
-            ADAPTER.SWEEP_RPC_DEADLINE_MS,
-          );
-        } else {
-          retainCursor = (await this.#drainDay(cursor, 1)).pending;
-        }
-      } catch {
-        this.#bump("sweep_faults");
-        faulted = true;
-      }
-      const current = this.#readMeta();
-      if (current?.state !== meta.state || current.generation !== meta.generation) return;
-      if (faulted) break;
-      if (retainCursor) continue;
+      const outcome = await this.#sweepDay(cursor, meta);
+      if (outcome === "abandon") return;
+      if (outcome === "fault") break;
+      if (outcome === "retain") continue;
       cursor = shiftDate(cursor, 1);
     }
     if (cursor <= final) {

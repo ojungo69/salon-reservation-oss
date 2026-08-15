@@ -12,6 +12,7 @@ import {
   pushMessage,
   serializeMessageV1,
   type MessageFragment,
+  type TokenResult,
 } from "./line-adapter.ts";
 import type { AdapterOutboxEvent } from "./reservation-day.ts";
 
@@ -25,6 +26,12 @@ const NONCE_FREE_ID = /^[0-9A-Za-z-]{1,64}$/;
 export type AdapterState = "never" | "active" | "deactivating" | "disabled";
 
 export type AdapterSnapshot = { messagingChannelId: string };
+
+type SendOutcome =
+  | { kind: "sent" }
+  | { kind: "retryable"; status: number | null }
+  | { kind: "terminal"; reason: string; status: number | null }
+  | { kind: "awaiting" };
 
 export type AdapterDeliveryMeta = {
   state: AdapterState;
@@ -1449,6 +1456,101 @@ export class AdapterDelivery extends DurableObject<Env> {
     });
   }
 
+  async #resolveDeliveryOutcome(
+    token: TokenResult,
+    claim: { subject: string; fragment: MessageFragment; firstAttemptAt: number },
+    row: DeliveryRow,
+  ): Promise<SendOutcome> {
+    if (!token.ok) {
+      return token.code === "RETRYABLE"
+        ? { kind: "retryable", status: null }
+        : { kind: "awaiting" };
+    }
+    const push = await pushMessage({
+      accessToken: token.accessToken,
+      to: claim.subject,
+      messages: serializeMessageV1(claim.fragment),
+      retryKey: row.retry_key,
+    });
+    if (push.ok) return { kind: "sent" };
+    if (push.code === "RETRYABLE") {
+      return { kind: "retryable", status: push.status };
+    }
+    if (push.code === "CONFIG_REJECTED") {
+      // Credentials the operator must fix: park it visibly instead of
+      // spending the retry ladder on the same rejection.
+      return { kind: "awaiting" };
+    }
+    return { kind: "terminal", reason: "rejected", status: push.status };
+  }
+
+  #applyDeliveryOutcome(
+    row: DeliveryRow,
+    claim: { subject: string; fragment: MessageFragment; firstAttemptAt: number },
+    outcome: SendOutcome,
+    now: number,
+  ): void {
+    // Outcome transaction: if the row is no longer ours (unlink or disable
+    // raced the fetch), drop the outcome — the send was retry-key safe.
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const fresh = sql
+        .exec<DeliveryRow>(
+          "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'sending'",
+          row.delivery_id,
+        )
+        .toArray()[0];
+      if (fresh === undefined) return;
+      if (outcome.kind === "sent") {
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        this.#bumpCounter("delivered", 1);
+        return;
+      }
+      if (outcome.kind === "terminal") {
+        this.#recordTerminal(outcome.reason, fresh.type, outcome.status);
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        return;
+      }
+      if (outcome.kind === "awaiting") {
+        // A rejection of the credentials themselves still counts as an
+        // attempt: without that, the five-minute configuration recheck would
+        // re-push the same doomed message until the retry-key window closed.
+        const configAttempts = fresh.attempt + 1;
+        if (configAttempts >= ADAPTER.RETRY_OFFSETS_S.length) {
+          this.#recordTerminal("configuration-lost", fresh.type);
+          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+          return;
+        }
+        sql.exec(
+          `UPDATE deliveries SET status = 'awaiting-configuration', claimed_at = NULL,
+                    attempt = ? WHERE delivery_id = ?`,
+          configAttempts,
+          fresh.delivery_id,
+        );
+        return;
+      }
+      const attempts = fresh.attempt + 1;
+      if (attempts >= ADAPTER.RETRY_OFFSETS_S.length) {
+        // Preserve the final provider status when a retryable outage uses up
+        // the ladder.
+        this.#recordTerminal("retry-exhausted", fresh.type, outcome.status);
+        sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
+        return;
+      }
+      // Absolute ladder from the first attempt, not now+delta — the whole
+      // schedule stays inside the 24 h retry-key window by construction.
+      const nextAt =
+        claim.firstAttemptAt + (ADAPTER.RETRY_OFFSETS_S[attempts] as number) * 1000;
+      sql.exec(
+        `UPDATE deliveries SET status = 'queued', claimed_at = NULL, attempt = ?,
+                  next_attempt_at = ? WHERE delivery_id = ?`,
+        attempts,
+        Math.max(nextAt, now + 1000),
+        fresh.delivery_id,
+      );
+    });
+  }
+
   async #sendDue(now: number): Promise<void> {
     const meta = this.#readMeta();
     if (meta.state !== "active" || meta.snapshot === null || !this.#secretPresent()) {
@@ -1474,95 +1576,8 @@ export class AdapterDelivery extends DurableObject<Env> {
       // closed from this validation through the start of the outbound fetch.
       const claim = this.#claimDueDelivery(row, meta, snapshot);
       if (claim === null) continue;
-
-      let outcome:
-        | { kind: "sent" }
-        | { kind: "retryable"; status: number | null }
-        | { kind: "terminal"; reason: string; status: number | null }
-        | { kind: "awaiting" };
-      if (!token.ok) {
-        outcome =
-          token.code === "RETRYABLE"
-            ? { kind: "retryable", status: null }
-            : { kind: "awaiting" };
-      } else {
-        const push = await pushMessage({
-          accessToken: token.accessToken,
-          to: claim.subject,
-          messages: serializeMessageV1(claim.fragment),
-          retryKey: row.retry_key,
-        });
-        if (push.ok) outcome = { kind: "sent" };
-        else if (push.code === "RETRYABLE") {
-          outcome = { kind: "retryable", status: push.status };
-        } else if (push.code === "CONFIG_REJECTED") {
-          // Credentials the operator must fix: park it visibly instead of
-          // spending the retry ladder on the same rejection.
-          outcome = { kind: "awaiting" };
-        } else {
-          outcome = { kind: "terminal", reason: "rejected", status: push.status };
-        }
-      }
-
-      // Outcome transaction: if the row is no longer ours (unlink or disable
-      // raced the fetch), drop the outcome — the send was retry-key safe.
-      this.ctx.storage.transactionSync(() => {
-        const sql = this.ctx.storage.sql;
-        const fresh = sql
-          .exec<DeliveryRow>(
-            "SELECT * FROM deliveries WHERE delivery_id = ? AND status = 'sending'",
-            row.delivery_id,
-          )
-          .toArray()[0];
-        if (fresh === undefined) return;
-        if (outcome.kind === "sent") {
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          this.#bumpCounter("delivered", 1);
-          return;
-        }
-        if (outcome.kind === "terminal") {
-          this.#recordTerminal(outcome.reason, fresh.type, outcome.status);
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          return;
-        }
-        if (outcome.kind === "awaiting") {
-          // A rejection of the credentials themselves still counts as an
-          // attempt: without that, the five-minute configuration recheck would
-          // re-push the same doomed message until the retry-key window closed.
-          const configAttempts = fresh.attempt + 1;
-          if (configAttempts >= ADAPTER.RETRY_OFFSETS_S.length) {
-            this.#recordTerminal("configuration-lost", fresh.type);
-            sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-            return;
-          }
-          sql.exec(
-            `UPDATE deliveries SET status = 'awaiting-configuration', claimed_at = NULL,
-                    attempt = ? WHERE delivery_id = ?`,
-            configAttempts,
-            fresh.delivery_id,
-          );
-          return;
-        }
-        const attempts = fresh.attempt + 1;
-        if (attempts >= ADAPTER.RETRY_OFFSETS_S.length) {
-          // Preserve the final provider status when a retryable outage uses up
-          // the ladder.
-          this.#recordTerminal("retry-exhausted", fresh.type, outcome.status);
-          sql.exec("DELETE FROM deliveries WHERE delivery_id = ?", fresh.delivery_id);
-          return;
-        }
-        // Absolute ladder from the first attempt, not now+delta — the whole
-        // schedule stays inside the 24 h retry-key window by construction.
-        const nextAt =
-          claim.firstAttemptAt + (ADAPTER.RETRY_OFFSETS_S[attempts] as number) * 1000;
-        sql.exec(
-          `UPDATE deliveries SET status = 'queued', claimed_at = NULL, attempt = ?,
-                  next_attempt_at = ? WHERE delivery_id = ?`,
-          attempts,
-          Math.max(nextAt, now + 1000),
-          fresh.delivery_id,
-        );
-      });
+      const outcome = await this.#resolveDeliveryOutcome(token, claim, row);
+      this.#applyDeliveryOutcome(row, claim, outcome, now);
     }
   }
 
