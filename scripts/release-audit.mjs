@@ -254,12 +254,12 @@ const SECRET_NAME =
 // written as literals. The only interpolation is that module constant.
 // eslint-disable-next-line
 const DOTENV_SECRET = new RegExp( // nosemgrep
-  String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`,
+  String.raw`^\s*(?:export\s+)?${SECRET_NAME}\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#]+))\s*(?:#.*)?$`, // nosemgrep
   "gm",
 );
 // eslint-disable-next-line
 const OBJECT_SECRET = new RegExp( // nosemgrep
-  String.raw`["']?\b${SECRET_NAME}\b["']?\s*:\s*(["'])([^"'\n]+)\2`,
+  String.raw`["']?\b${SECRET_NAME}\b["']?\s*:\s*(["'])([^"'\n]+)\2`, // nosemgrep
   "g",
 );
 
