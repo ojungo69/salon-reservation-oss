@@ -183,8 +183,15 @@ const openConfinedDenylist = (path, { optional }) => {
   // link. Resolving a name twice lets a link swapped in between send the read
   // somewhere neither the containment check nor the type check ever saw, and
   // realpath resolved every component already, so a link here is that swap.
+  // O_NONBLOCK is what lets the type check run at all: opening a FIFO without it
+  // waits for a writer that a planted denylist path never has to provide, so the
+  // audit would hang before fstat could reject it. It does nothing to a regular
+  // file, which is the only kind this goes on to read.
   // eslint-disable-next-line -- the open is what the containment above exists to protect
-  const handle = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); // nosemgrep
+  const handle = openSync( // nosemgrep
+    canonical,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
     fail("denylist path is not a regular file");
