@@ -179,12 +179,10 @@ const openConfinedDenylist = (path, { optional }) => {
   ) {
     fail("denylist path is not under the repository or a system temp directory");
   }
-  // One handle carries both the type check and the read. Statting a name and
-  // then reading that name again resolves it twice, so a symlink swapped in
-  // between would send the read somewhere the check never saw. Refusing to
-  // follow a link closes the same gap for the path itself: realpath already
-  // resolved every component, so anything still a link here appeared after the
-  // containment check and would take the read somewhere that check never saw.
+  // One handle carries the type check and the read, and it refuses to follow a
+  // link. Resolving a name twice lets a link swapped in between send the read
+  // somewhere neither the containment check nor the type check ever saw, and
+  // realpath resolved every component already, so a link here is that swap.
   const handle = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   if (!fstatSync(handle).isFile()) {
     closeSync(handle);
