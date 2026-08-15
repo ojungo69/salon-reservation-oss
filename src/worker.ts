@@ -382,6 +382,10 @@ const operatorGate = async (
   };
   if (breakGlass === "accepted") return { actor: { kind: "break_glass", role: "owner" } };
 
+  // Only now, with the deployment secret already answered, is the roster
+  // consulted. The order is what makes break-glass unconditional: a roster that
+  // is absent, empty, or corrupt cannot be reached from above this line, so no
+  // state of it can lock the installation's holder out. (FR-009, FR-017)
   const provided = bearerToken(request);
   if (provided === null) return refused;
   const resolved = await installationStub(env).resolveActor(await sha256Hex(provided));
@@ -1614,7 +1618,9 @@ const rosterResponse = (
 ): Response => {
   if (!result.ok) return errorResponse(rosterFailureStatus(result.code), result.code);
   if ("dryRun" in result) {
-    return json({ dryRun: true, wouldBeFirstMember: result.wouldBeFirstMember, rosterValid: true });
+    // No `valid: true`: reaching this line is the validation, and a field that
+    // can only hold one value tells a reader nothing. A refused input is a 400.
+    return json({ dryRun: true, wouldBeFirstMember: result.wouldBeFirstMember });
   }
   // Deactivation issues nothing, so the field is absent rather than empty: a
   // client must never find a `credential` key it could mistake for one.

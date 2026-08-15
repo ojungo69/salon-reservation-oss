@@ -348,3 +348,30 @@ Every unknown in the Technical Context is closed above. The specification's own 
 already settled the product-level questions (two roles, no sessions, staff can see customer contact
 details, attribution outlives the account, break-glass is permanent, sagas are not aborted), and
 none of them changed under research.
+
+---
+
+## R12. What happens to an installation whose stored roster cannot be parsed?
+
+**Decision**: it is answered as unreadable — `503 TEMPORARILY_UNAVAILABLE` on the roster's own
+routes, for every caller — and it is never guessed at, partially recovered, or silently replaced.
+Every other operator route keeps working for the deployment secret, because `operatorGate` reaches
+its break-glass verdict before the roster is consulted at all.
+
+**Rationale**: the roster is written only by `#writeRoster`, which parses the document before
+storing it, so the reachable causes of an unparseable document are storage-level damage and a
+version downgrade after a later version wrote a document this build does not understand. FR-021
+already states the rollback posture as forward-only, and US3's property is that *no sequence of
+roster operations* can lock everyone out — which remains true, because no roster operation can
+produce this state.
+
+What the installation keeps in that state is the thing that matters: the deployment secret runs
+every route, including the six a staff credential would have used. What it loses is staff accounts,
+until the document is repaired at the storage layer. That is a degraded installation, not a dead
+one, and the alternative — letting a create command overwrite a document it could not read — would
+destroy the record of who existed in order to make a screen work.
+
+**Alternative considered**: a reset command, gated on the deployment secret, that discards a corrupt
+document explicitly. Rejected for this slice as surface bought for a state no roster operation can
+reach. If a real installation ever reaches it, the evidence will say whether the repair belongs in
+the product or in the runbook.

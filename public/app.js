@@ -2298,6 +2298,16 @@ const startSetup = async () => {
   const receiptStatus = $("[data-receipt-status]");
   const receiptGuidance = $("[data-receipt-guidance]");
   const receiptGuidanceEmpty = $("[data-receipt-guidance-empty]");
+  const staffList = $("[data-staff-list]");
+  const staffCount = $("[data-staff-count]");
+  const staffForm = $("[data-staff-form]");
+  const staffFields = $("#staff-fields");
+  const staffSubmit = $("[data-staff-submit]");
+  const staffDisplayName = $("[data-staff-display-name]");
+  const staffRole = $("[data-staff-role]");
+  const staffCredential = $("[data-staff-credential]");
+  const staffCredentialValue = $("[data-staff-credential-value]");
+  const staffStatus = $("[data-staff-status]");
   const receiptDownload = createElement("button", "secondary-button", "JSONをダウンロード");
   let ownerToken = "";
   let setupState = null;
@@ -2680,6 +2690,103 @@ const startSetup = async () => {
     return state;
   };
 
+  const clearRoster = (note) => {
+    staffList.replaceChildren(createElement("p", "empty-note", note));
+    staffCount.textContent = "0人";
+    staffFields.disabled = true;
+    staffSubmit.disabled = true;
+    staffCredential.hidden = true;
+    staffCredentialValue.textContent = "";
+    staffForm.reset();
+  };
+
+  // The credential is in the response to the command that minted it and nowhere
+  // else, so it is shown until the next roster action rather than for a timeout:
+  // the owner decides when they have finished copying it.
+  const showCredential = (credential) => {
+    if (!credential) return;
+    staffCredentialValue.textContent = credential;
+    staffCredential.hidden = false;
+  };
+
+  const rosterCommand = async (path, confirmation, button) => {
+    if (confirmation && !window.confirm(confirmation)) return;
+    button.disabled = true;
+    staffCredential.hidden = true;
+    try {
+      const result = await ownerApi(path, { method: "POST", body: "{}" });
+      await loadRoster();
+      showCredential(result.credential);
+      setStatus(
+        staffStatus,
+        result.credential
+          ? "新しい認証情報を発行しました。前の認証情報は次の操作から使えません。"
+          : "停止しました。次の操作から認証できません。",
+        "success",
+      );
+    } catch (error) {
+      button.disabled = false;
+      if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
+    }
+  };
+
+  const renderRoster = (members) => {
+    staffList.replaceChildren();
+    staffCount.textContent = `${members.filter(({ active }) => active).length}人`;
+    if (members.length === 0) {
+      staffList.append(
+        createElement(
+          "p",
+          "empty-note",
+          "まだ誰も登録されていません。運営者トークンだけがこの設置を操作できます。",
+        ),
+      );
+      return;
+    }
+    for (const member of members) {
+      const article = createElement("article", "staff-item");
+      article.append(createElement("h3", "", member.displayName));
+      const state = createElement(
+        "span",
+        member.active ? "badge" : "badge badge-cancelled",
+        member.active ? "有効" : "停止中",
+      );
+      const summary = createElement(
+        "p",
+        "",
+        member.role === "owner" ? "運営者 / 設定と外部連携も変更できる" : "スタッフ / 日々の予約対応",
+      );
+      const actions = createElement("div", "detail-actions");
+      const action = (label, path, confirmation = "") => {
+        const button = createElement("button", "text-button", label);
+        button.type = "button";
+        button.addEventListener("click", () => void rosterCommand(path, confirmation, button));
+        actions.append(button);
+      };
+      const base = `/api/admin/staff/${encodeURIComponent(member.id)}`;
+      if (member.active) {
+        action("認証情報を再発行する", `${base}/rotate`);
+        action(
+          "停止する",
+          `${base}/deactivate`,
+          `${member.displayName} を停止します。今の認証情報は使えなくなり、再開しても元には戻りません。続けますか？`,
+        );
+      } else {
+        action("再開して認証情報を発行する", `${base}/reactivate`);
+      }
+      article.append(state, summary, actions);
+      staffList.append(article);
+    }
+  };
+
+  const loadRoster = async () => {
+    const { members } = await ownerApi("/api/admin/staff");
+    renderRoster(members);
+    staffFields.disabled = false;
+    staffSubmit.disabled = false;
+    return members;
+  };
+
   const showLoggedOut = (message = "") => {
     ownerToken = "";
     setupState = null;
@@ -2695,8 +2802,10 @@ const startSetup = async () => {
     resourcesRoot.replaceChildren(createElement("p", "empty-note", "認証すると、初期の架空データを確認・編集できます。"));
     updateReadiness();
     clearReceipt();
+    clearRoster("認証すると、登録済みのスタッフを表示します。");
     // A save or toggle that ended in a 401 left its in-progress line behind.
     setStatus(setupStatus, "");
+    setStatus(staffStatus, "");
     modeNotice.textContent = loggedOutNotice;
     modeNotice.dataset.tone = "";
     if (message) setStatus(authStatus, message, "error");
@@ -2740,6 +2849,12 @@ const startSetup = async () => {
       logoutButton.hidden = false;
       await loadReceipt();
       if (!ownerToken) return;
+      try {
+        await loadRoster();
+      } catch (error) {
+        if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
+      }
+      if (!ownerToken) return;
       setStatus(authStatus, "認証しました。トークンはこのページを閉じると消えます。", "success");
     } catch (error) {
       showLoggedOut(error.message);
@@ -2749,6 +2864,35 @@ const startSetup = async () => {
     showLoggedOut();
     setStatus(authStatus, "ログアウトしました。", "success");
   });
+
+  staffForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!staffForm.reportValidity()) return;
+    const displayName = staffDisplayName.value.trim();
+    if (displayName === "") {
+      setStatus(staffStatus, "画面に表示する名前を入力してください。", "error");
+      return;
+    }
+    staffSubmit.disabled = true;
+    staffCredential.hidden = true;
+    setStatus(staffStatus, "スタッフを登録しています。");
+    try {
+      const result = await ownerApi("/api/admin/staff", {
+        method: "POST",
+        body: JSON.stringify({ displayName, role: staffRole.value }),
+      });
+      staffForm.reset();
+      await loadRoster();
+      showCredential(result.credential);
+      setStatus(staffStatus, "登録しました。認証情報は下に一度だけ表示します。", "success");
+    } catch (error) {
+      staffSubmit.disabled = false;
+      if (!handleOwnerError(error)) setStatus(staffStatus, error.message, "error");
+    }
+  });
+  $("[data-staff-copy]").addEventListener("click", () =>
+    copyText(staffCredentialValue.textContent, staffStatus),
+  );
 
   form.addEventListener("focusin", (event) => {
     const stage = event.target.closest("[data-setup-step]");

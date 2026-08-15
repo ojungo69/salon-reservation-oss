@@ -68,6 +68,50 @@ test("an owner completes the installation through the setup screen", async ({ pa
 });
 
 /**
+ * The roster screen is where an owner hands out and takes away access, so the
+ * two moments that matter are that the credential is readable exactly once and
+ * that stopping someone is visible on the page afterwards. The name below is
+ * invented, as every fixture name in this repository is.
+ */
+test("an owner adds a staff member, reads the credential once, and stops them", async ({
+  page,
+}) => {
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/setup");
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+
+  await expect(page.locator("[data-staff-list]")).toContainText("まだ誰も登録されていません");
+  await expect(page.locator("[data-staff-credential]")).toBeHidden();
+
+  await page.fill("#staff-display-name", "検証 受付");
+  await page.selectOption("#staff-role", "staff");
+  await page.click("#staff-submit");
+
+  await expect(page.locator("#staff-status")).toContainText("一度だけ表示します");
+  const credential = await page.locator("[data-staff-credential-value]").innerText();
+  // 32 random bytes as base64url, which is the shape the Worker mints.
+  expect(credential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+  const member = page.locator(".staff-item").filter({ hasText: "検証 受付" });
+  await expect(member).toContainText("有効");
+  await expect(member).toContainText("日々の予約対応");
+  await expect(page.locator("[data-staff-count]")).toHaveText("1人");
+  await expectNoAxeViolations(page);
+  await expectNoHorizontalOverflow(page);
+
+  await member.getByRole("button", { name: "停止する" }).click();
+  await expect(member).toContainText("停止中");
+  await expect(page.locator("#staff-status")).toContainText("次の操作から認証できません");
+  await expect(page.locator("[data-staff-count]")).toHaveText("0人");
+  // The credential was in one response and is not in the page any more; there
+  // is no read that returns it and no second chance to copy it.
+  await expect(page.locator("[data-staff-credential]")).toBeHidden();
+  await expect(page.locator("[data-staff-list]")).not.toContainText(credential);
+});
+
+/**
  * The signed-out notice follows the publication mode, which the page learns
  * from the public config. When that read fails the page has nothing better to
  * say than the notice it was served with, and blanking the banner would leave

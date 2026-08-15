@@ -3757,6 +3757,127 @@ describe("S3 staff and role boundary", () => {
     expect(receipt.status).toBe(200);
   });
 
+  it("refuses a deactivated credential on the very next request", async () => {
+    await enableLiveInstallation();
+    const leaving = await addStaff("staff", "受付 A");
+    const staying = await addStaff("staff", "受付 B");
+    const read = (credential: string) =>
+      SELF.fetch(`https://example.test${schedulePath}`, { headers: bearer(credential) });
+
+    expect((await read(leaving.credential)).status).toBe(200);
+    expect((await read(staying.credential)).status).toBe(200);
+
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${leaving.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(200);
+    const body = (await stopped.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("credential");
+    expect((body.member as { active: boolean }).active).toBe(false);
+
+    // The very next request. There is no sleep, no retry, and no polling in
+    // this test, and the absence is the assertion: an authorization decision
+    // cached anywhere would need one of them to pass.
+    expect((await read(leaving.credential)).status).toBe(401);
+    expect((await read(staying.credential)).status).toBe(200);
+
+    // And the refusal is in storage rather than in the object's memory, so it
+    // survives the object being torn down and rebuilt.
+    await runInDurableObject(
+      env.INSTALLATION_CONFIG.getByName("installation") as DurableObjectStub<InstallationConfig>,
+      (_instance, state) => state.abort("evicted by the revocation test"),
+    ).catch(() => {});
+    expect((await read(leaving.credential)).status).toBe(401);
+    expect((await read(staying.credential)).status).toBe(200);
+  });
+
+  it("keeps the deployment secret working when the roster is corrupt or has no owner", async () => {
+    const only = await addStaff("owner", "店長");
+    const refused = await jsonRequest(
+      `/api/admin/staff/${only.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("LAST_OWNER");
+
+    // Corruption the parser cannot repair, written past every command path.
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    await runInDurableObject(config, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE __staff_roster SET roster_json = ?",
+        '{"version":9,"members":"not an array"}',
+      );
+    });
+
+    // Every gated bucket, still reachable by the deployment secret: the roster
+    // is consulted only after that check has already failed, so no roster can
+    // take it down with it. The one exception is the roster's own routes, which
+    // have to read the document they are about.
+    const staffId = crypto.randomUUID();
+    const routes = [...ownerOnly(staffId), ...dayToDay(crypto.randomUUID())];
+    for (const [method, path] of routes.filter(([, path]) => !path.startsWith("/api/admin/staff"))) {
+      const response = await call(method, path, ownerHeaders);
+      // Answered, not merely un-refused: a gate that consulted the roster first
+      // would let the unreadable document turn every one of these into a 503.
+      expect(response.status, `${method} ${path}`).not.toBe(401);
+      expect(response.status, `${method} ${path}`).toBeLessThan(500);
+    }
+
+    // The roster's own routes are the exception, because they have to read the
+    // document they are about. An unreadable one is answered as unreadable —
+    // never guessed at, never silently replaced. Repairing it is a storage
+    // operation rather than a screen operation; see research.md R12.
+    const listed = await call("GET", "/api/admin/staff", ownerHeaders);
+    expect(listed.status).toBe(503);
+    const created = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "店長", role: "owner" },
+      ownerHeaders,
+    );
+    expect(created.status).toBe(503);
+    expect(((await created.json()) as { error: { code: string } }).error.code).toBe(
+      "TEMPORARILY_UNAVAILABLE",
+    );
+
+    // A staff credential and a garbage one are still answered the same way, so
+    // the corruption tells a caller nothing it did not already know.
+    const staffAttempt = await call("GET", schedulePath, bearer(only.credential));
+    const garbageAttempt = await call("GET", schedulePath, garbage);
+    expect(staffAttempt.status).toBe(garbageAttempt.status);
+    expect(await staffAttempt.text()).toBe(await garbageAttempt.text());
+  });
+
+  it("answers the public routes identically with an empty roster and a populated one", async () => {
+    await enableLiveInstallation();
+    const publicRoutes = [
+      "/api/config",
+      `/api/availability?${new URLSearchParams({ date: day.date, serviceId: "service-cut" })}`,
+      "/api/privacy",
+    ];
+    const snapshot = async () =>
+      Promise.all(
+        publicRoutes.map(async (path) => {
+          const response = await SELF.fetch(`https://example.test${path}`);
+          return {
+            path,
+            status: response.status,
+            body: await response.text(),
+            headers: [...response.headers].filter(([name]) => name !== "date").sort(),
+          };
+        }),
+      );
+
+    const before = await snapshot();
+    await addStaff("staff", "受付 A");
+    await addStaff("owner", "店長");
+    expect(await snapshot()).toEqual(before);
+  });
+
   it("writes zero rows when the roster moved under a command", async () => {
     // No sequence of requests can reach this: `executeRosterCommand` has no
     // suspension point between reading the roster and writing it, so the

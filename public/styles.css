@@ -972,6 +972,7 @@ textarea::placeholder {
 .attention-list,
 .reservation-list,
 .closure-list,
+.staff-list,
 .week-summary-list {
   display: grid;
   gap: 0.65rem;
@@ -995,7 +996,8 @@ textarea::placeholder {
 }
 
 .reservation-list,
-.closure-list {
+.closure-list,
+.staff-list {
   margin-top: 1rem;
 }
 
@@ -1008,6 +1010,7 @@ textarea::placeholder {
 .booking-card,
 .attention-item,
 .closure-item,
+.staff-item,
 .week-summary-item {
   display: grid;
   gap: 0.35rem 0.75rem;
