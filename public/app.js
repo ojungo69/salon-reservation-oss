@@ -1617,8 +1617,7 @@ const startAdmin = async () => {
     let refreshed = false;
     if (error.status === 409) {
       try {
-        await reload();
-        refreshed = true;
+        refreshed = (await reload()) === true;
       } catch (reloadError) {
         if (reloadError?.status === 401) return null;
       }
@@ -1833,8 +1832,10 @@ const startAdmin = async () => {
     $("[data-schedule-board='week']").hidden = viewDays !== 7;
   };
 
+  // Answers whether it actually read. A caller that reports a refresh has to be
+  // able to tell a read from the early return that happens with no token or date.
   const loadSchedule = async (focusReservationId = null, requestedDate = dateInput.value) => {
-    if (!ownerToken || !requestedDate) return;
+    if (!ownerToken || !requestedDate) return false;
     setStatus(scheduleLive, viewDays === 1 ? "1日の予定を読み込んでいます。" : "7日間の予定を読み込んでいます。");
     try {
       schedule = await ownerApi(
@@ -1857,6 +1858,7 @@ const startAdmin = async () => {
       if (current) renderDetail(current, Boolean(focusReservationId));
       else if (selectedId) detail.hidden = true;
       setStatus(scheduleLive, `${schedule.startDate}から${schedule.days}日分を更新しました。`, "success");
+      return true;
     } catch (error) {
       if (handleOwnerError(error)) throw error;
       setStatus(scheduleLive, error.message, "error");
@@ -2527,15 +2529,16 @@ const startSetup = async () => {
   // The notice a visitor would see is the one that stays true after signing out,
   // so a session that ends mid-save restores it rather than leaving the
   // authenticated banner addressed to someone who is now logged out. It follows
-  // the publication mode, because a mode changed during the session is the mode
-  // a visitor sees once that session ends.
+  // whether the installation is accepting, because that is what a visitor can
+  // tell: a live installation that is not ready is served the demo notice, and
+  // the repair instruction the operator sees is not addressed to a visitor.
   // Takes whether the installation is accepting, not the mode alone: a live
   // installation whose readiness is incomplete is not accepting, and telling a
   // visitor otherwise is the one thing this notice must never do.
-  const loggedOutNoticeFor = (accepting, mode) =>
+  const loggedOutNoticeFor = (accepting) =>
     accepting
       ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
-      : setupModeNoticeText(false, mode);
+      : setupModeNoticeText(false, "demo");
   // The served page carries the demo notice as its own text, which is the right
   // thing to keep showing when the config read that would replace it fails. It
   // seeds the value so signing out never blanks the banner.
@@ -2573,7 +2576,7 @@ const startSetup = async () => {
     renderServiceEditors();
     updateReadiness(state.readiness);
     const accepting = state.mode === "live" && state.readiness.ready;
-    loggedOutNotice = loggedOutNoticeFor(accepting, state.mode);
+    loggedOutNotice = loggedOutNoticeFor(accepting);
     modeNotice.textContent = setupModeNoticeText(accepting, state.mode);
     modeNotice.dataset.tone = accepting ? "success" : "";
     updateSetupControls();
@@ -2713,7 +2716,7 @@ const startSetup = async () => {
     applyPublicConfig(config);
     // The public config already reports demo for a live installation that is not
     // ready, so its live is the accepting one.
-    loggedOutNotice = loggedOutNoticeFor(config.mode === "live", config.mode);
+    loggedOutNotice = loggedOutNoticeFor(config.mode === "live");
     modeNotice.textContent = loggedOutNotice;
   } catch {
     setStatus(authStatus, "公開設定を読み込めませんでした。接続を確認してください。", "error");

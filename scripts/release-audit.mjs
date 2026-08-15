@@ -192,11 +192,24 @@ const openConfinedDenylist = (path, { optional }) => {
   if (constants.O_NOFOLLOW === undefined || constants.O_NONBLOCK === undefined) {
     fail("this platform cannot open the denylist without following links");
   }
-  // eslint-disable-next-line security/detect-non-literal-fs-filename
-  const handle = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  if (!fstatSync(handle).isFile()) {
+  let handle;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    handle = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    // ELOOP here is the swap this refuses to follow, so it is reported as the
+    // refusal it is rather than as an errno escaping the audit's own messages.
+    fail(
+      error?.code === "ELOOP"
+        ? "denylist path became a link after it was checked"
+        : "denylist path is not readable",
+    );
+  }
+  try {
+    if (!fstatSync(handle).isFile()) fail("denylist path is not a regular file");
+  } catch (error) {
     closeSync(handle);
-    fail("denylist path is not a regular file");
+    throw error;
   }
   return handle;
 };

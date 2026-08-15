@@ -11,22 +11,6 @@ import {
 } from "./harness.ts";
 
 /**
- * The signed-out notice follows the publication mode, which the page learns
- * from the public config. When that read fails the page has nothing better to
- * say than the notice it was served with, and blanking the banner would leave
- * an operator with no statement of the publication state at all.
- */
-test("the setup screen keeps its served notice when the public config is unreachable", async ({
-  page,
-}) => {
-  await page.route("**/api/config", (route) => route.abort("failed"));
-  await page.goto("/setup");
-
-  await expect(page.locator("#setup-auth-status")).toContainText("公開設定を読み込めませんでした");
-  await expect(page.locator("[data-setup-mode-notice]")).toContainText("デモ");
-});
-
-/**
  * Runs before every other spec, because a fresh installation starts in demo
  * mode with placeholder identity text and refuses public reservations until an
  * owner completes it. Driving that through the rendered form rather than the
@@ -81,4 +65,20 @@ test("an owner completes the installation through the setup screen", async ({ pa
   await expect(page.locator("#setup-location-name")).toBeDisabled();
   await expect(page.locator("[data-setup-mode-notice]")).not.toContainText("デモ");
   await expect(page.locator("[data-setup-mode-notice]")).toContainText("公開予約を受け付けています");
+});
+
+/**
+ * The signed-out notice follows the publication mode, which the page learns
+ * from the public config. When that read fails the page has nothing better to
+ * say than the notice it was served with, and blanking the banner would leave
+ * an operator with no statement of the publication state at all.
+ */
+test("the setup screen keeps its served notice when the public config is unreachable", async ({
+  page,
+}) => {
+  await page.route("**/api/config", (route) => route.abort("failed"));
+  await page.goto("/setup");
+
+  await expect(page.locator("#setup-auth-status")).toContainText("公開設定を読み込めませんでした");
+  await expect(page.locator("[data-setup-mode-notice]")).toContainText("デモ");
 });
