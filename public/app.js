@@ -2509,6 +2509,17 @@ const startSetup = async () => {
     setupHelp.textContent = setupHelpText(authenticated, pending, accepting, setupState);
   };
 
+  // The notice a visitor would see is the one that stays true after signing out,
+  // so a session that ends mid-save restores it rather than leaving the
+  // authenticated banner addressed to someone who is now logged out. It follows
+  // the publication mode, because a mode changed during the session is the mode
+  // a visitor sees once that session ends.
+  const loggedOutNoticeFor = (mode) =>
+    mode === "live"
+      ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
+      : setupModeNoticeText(false, mode);
+  let loggedOutNotice = "";
+
   const renderSetupState = (state) => {
     setupState = state;
     editingSettings = structuredClone(state.settings);
@@ -2541,6 +2552,7 @@ const startSetup = async () => {
     renderServiceEditors();
     updateReadiness(state.readiness);
     const accepting = state.mode === "live" && state.readiness.ready;
+    loggedOutNotice = loggedOutNoticeFor(state.mode);
     modeNotice.textContent = setupModeNoticeText(accepting, state.mode);
     modeNotice.dataset.tone = accepting ? "success" : "";
     updateSetupControls();
@@ -2645,11 +2657,6 @@ const startSetup = async () => {
     return state;
   };
 
-  // The notice written before authenticating is the one that stays true after
-  // signing out, so a session that ends mid-save restores it rather than
-  // leaving the authenticated banner addressed to someone who is now logged out.
-  let loggedOutNotice = "";
-
   const showLoggedOut = (message = "") => {
     ownerToken = "";
     setupState = null;
@@ -2675,9 +2682,7 @@ const startSetup = async () => {
   try {
     const config = await api("/api/config");
     applyPublicConfig(config);
-    loggedOutNotice = config.mode === "live"
-      ? "現在は公開予約を受け付けています。運営者として認証すると設定を確認できます。"
-      : setupModeNoticeText(false, config.mode);
+    loggedOutNotice = loggedOutNoticeFor(config.mode);
     modeNotice.textContent = loggedOutNotice;
   } catch {
     setStatus(authStatus, "公開設定を読み込めませんでした。接続を確認してください。", "error");

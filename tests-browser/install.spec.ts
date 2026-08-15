@@ -57,4 +57,12 @@ test("an owner completes the installation through the setup screen", async ({ pa
     return (await response.json()).mode;
   });
   expect(mode).toBe("live");
+
+  // Signing out restores the notice a visitor would see, and the installation
+  // has been published since this page loaded, so the demo notice it opened
+  // with is no longer true.
+  await page.click("#setup-logout");
+  await expect(page.locator("#setup-location-name")).toBeDisabled();
+  await expect(page.locator("[data-setup-mode-notice]")).not.toContainText("デモ");
+  await expect(page.locator("[data-setup-mode-notice]")).toContainText("公開予約を受け付けています");
 });
