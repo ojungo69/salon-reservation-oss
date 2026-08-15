@@ -1,0 +1,33 @@
+src/worker.ts
+  s_3ac342c3240e69::t_7410902d27d541 355,359-361
+  s_3ac342c3240e69::t_dd9f03c09d0cdc 376-386
+  s_3ac342c3240e69::t_49a01f07599a6f 220-224
+test/worker.test.ts
+  s_3ac342c3240e69::t_629bf1d35368e6 4102-4136
+public/app.js
+  s_3ac342c3240e69::t_7817f457938fa8 2725-2728,2730,2898,2900
+specs/005-staff-role-boundary/research.md
+  s_3ac342c3240e69::t_500c37dcb81d96 378-418
+specs/005-staff-role-boundary/spec.md
+  s_3ac342c3240e69::t_6b435b1e50f9f1 160-170
+specs/005-staff-role-boundary/tasks.md
+  s_3ac342c3240e69::t_43808ac57f0316 102
+tests-browser/install.spec.ts
+  s_3ac342c3240e69::t_e3140b08dd879a 129-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "7018fec410304d63c82d42cd3725c20577590d83",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
