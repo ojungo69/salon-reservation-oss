@@ -1,0 +1,26 @@
+src/adapter-delivery.ts
+  s_183425df6914e3::t_727fc040696a98 1526,1546
+  s_183425df6914e3::t_c642475644435b 15,30-35,1459-1525,1527-1545,1547-1553,1579-1580
+src/calendar-adapter.ts
+  s_183425df6914e3::t_f2adfa923d8f33 948-950,956-980,985-1022,1043-1045,1293-1406,1451-1454,1456-1457
+  s_183425df6914e3::t_727fc040696a98 951-955,981-984,1707-1708
+  s_183425df6914e3::t_c7500f60bbdd5c 1703-1706,1709-1758,1763,1769-1771,1774-1789,1791-1792,1794-1796,1798-1802,1820-1823
+src/installation-config.ts
+  s_183425df6914e3::t_351757489e9ee6 1851-1911,1925,1929
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "13b59c4a993a291a895ea33ce382d429a1c5dc97",
+  "prompts": {},
+  "sessions": {
+    "s_183425df6914e3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00603-0b45-72d2-88aa-2c6ee979c00d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
