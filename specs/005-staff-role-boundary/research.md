@@ -488,3 +488,47 @@ step a later slice would take.
 changed the LINE secret" cannot be answered today, and answering them means building an audit
 substrate in `InstallationConfig`, not extending `__attribution`. `docs/PARITY.md` says what
 attribution covers so this boundary is visible from outside the specification too.
+
+---
+
+## R18. What a lost response or a repeated roster command costs
+
+**Decision**: roster commands are not idempotent, and this slice ships them that way. There is no
+client-supplied command identifier and no per-member revision, so the object cannot tell a retry
+apart from a second, deliberate command.
+
+**What that costs, in the two shapes it actually takes.**
+
+A `create` whose response is lost and then retried produces **two records** rather than one. Each
+holds a live credential, each counts against the R12 bound of 200, and the operator sees both the
+next time the list loads. The credential belonging to the lost response was never delivered to
+anyone — it existed only in a response body that did not arrive — so the duplicate is an orphan
+record, not an extra key in circulation. The remedy is the one already on the screen: stop the
+duplicate.
+
+Two `rotate` commands aimed at the **same active member** both succeed. The object serializes them,
+the second reads the first one's result, and `current.active` is still true, so nothing refuses it.
+Only the credential from the second response authenticates; the first is already dead when it is
+handed over. An operator can therefore give somebody a credential that does not work. Nothing is
+granted that should not be — a superseded digest fails closed — but the failure is confusing, and it
+is confusing at exactly the moment somebody is being onboarded.
+
+**Why this is not fixed here.** R7 records what the whole-document compare-and-swap does and does
+not do: it refuses a *cross-member* lost update, and it cannot see a same-member repeat, because the
+second command is computed from the document the first one wrote and is therefore perfectly valid.
+Closing the gap needs a different mechanism, not a stronger `WHERE` — a command identifier carried
+from the browser and a receipt to match it against, which is what `ReservationDay` has and
+`InstallationConfig` does not (R17 says why). Building that substrate is the same work R17 defers,
+and it should be built once, for the roster and the settings and the adapters together, rather than
+bolted onto one command family.
+
+**The narrower alternative considered**: an `expectedCredentialGeneration` or per-member revision
+compared inside `applyRosterCommand`. Rejected for this slice because it is a second concurrency
+mechanism alongside the document compare-and-swap — the same reason R7 rejected a `rosterVersion`
+column — and because it fixes `rotate` while leaving the retried `create` untouched, which is the
+shape that actually leaves a record behind.
+
+**Known consequence, stated rather than discovered later**: the roster is safe against unauthorized
+access under retries and repeats, and is not safe against *surprise*. A duplicate record and a
+stale-on-arrival credential are both possible, both visible in the list, and both fixable from the
+screen that produced them.
