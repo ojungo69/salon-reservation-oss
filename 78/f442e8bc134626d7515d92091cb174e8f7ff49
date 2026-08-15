@@ -1,0 +1,49 @@
+public/app.js
+  s_3ac342c3240e69::t_c4c3c7eecc5cc9 1737
+  s_3ac342c3240e69::t_e3220f27f69f4f 2576
+  s_3ac342c3240e69::t_a0ba62832119bb 2220
+  s_3ac342c3240e69::t_b239270fa95686 1983
+  s_3ac342c3240e69::t_c34c9f6f7b99ae 2670
+  s_3ac342c3240e69::t_4806bc7528fd31 2788
+  s_3ac342c3240e69::t_f837c66a1f4c4e 1611-1612,1618-1625
+  s_3ac342c3240e69::t_f97e6e7e753fe1 1613-1615,1626
+  s_3ac342c3240e69::t_7affa916019b4b 2532-2536
+  s_3ac342c3240e69::t_e4a64acaac2f11 2714-2716
+  s_3ac342c3240e69::t_635285a0a7eaf6 2539-2542
+  s_3ac342c3240e69::t_2dfe21554ec5f5 2702-2710
+  s_3ac342c3240e69::t_bd5d729b80ce32 2800
+  s_3ac342c3240e69::t_97a880c6773ecc 1733,1979,2216
+tests-browser/install.spec.ts
+  s_3ac342c3240e69::t_e6b6b15ac137d2 14-28
+  s_211aa7fe546c35::t_74e7fd425069e7 13
+scripts/release-audit.mjs
+  s_3ac342c3240e69::t_6af0aa2e33ec1d 190-194,197
+  s_3ac342c3240e69::t_aed869711fd8e2 250-251
+  s_3ac342c3240e69::t_07cddbfd1601fb 265-266
+src/adapter-delivery.ts
+  s_3ac342c3240e69::t_c709e4ea84686b 1464-1467
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "78f442e8bc134626d7515d92091cb174e8f7ff49",
+  "prompts": {},
+  "sessions": {
+    "s_211aa7fe546c35": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffdcb-e994-7732-bb4e-56faff6022eb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
