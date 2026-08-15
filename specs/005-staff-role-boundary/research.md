@@ -187,17 +187,36 @@ save and would ride the settings CAS loop, coupling two unrelated write paths. R
 
 ## R7. How are concurrent roster edits refused?
 
-**Decision**: reuse `executeCommand`'s compare-and-swap. The roster write is
-`UPDATE __staff_roster SET roster_json = ? WHERE singleton = 1 AND roster_json = ?`; zero rows
-written means someone else wrote first.
+**Decision**: `executeCommand`'s compare-and-swap, expressed as a single upsert so that the
+first-ever write and every later one are the same statement:
 
-**Rationale**: `executeCommand` already does exactly this for installation settings
-(`src/installation-config.ts:1956-1974`) — read, compute, conditional update on the previous JSON,
-retry. The edge case in the specification asks for "the same shape as the existing settings-version
-conflict", and this *is* that shape. Roster commands differ from settings in one way worth stating:
-they must **refuse** rather than retry, because a blind retry of "deactivate Alice" against a roster
-someone else just changed can silently do the wrong thing. So the loop becomes a single attempt that
-returns a conflict result.
+```sql
+CREATE TABLE IF NOT EXISTS __staff_roster (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  roster_json TEXT NOT NULL
+);
+
+INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
+  ON CONFLICT(singleton) DO UPDATE SET roster_json = excluded.roster_json
+  WHERE roster_json = ?;          -- the document this command was computed from
+```
+
+`rowsWritten === 0` means someone else wrote first, and the command answers `409 CONFLICT`.
+
+**Rationale**: the naive form — `UPDATE … WHERE singleton = 1 AND roster_json = ?` — cannot perform
+the *first* write, because there is no row to update; R6 says the table does not exist until then.
+Splitting it into "insert if absent, update if present" would reintroduce the race it exists to
+close: two commands both observing an absent roster would both insert. The upsert closes both cases
+in one statement — the insert path bootstraps, and on an existing row the `WHERE` is the
+compare-and-swap. `__line_lifecycle`'s write (`src/installation-config.ts:1612-1624`) is this same
+`CREATE TABLE IF NOT EXISTS` + `ON CONFLICT DO UPDATE` shape without the `WHERE`, because a lifecycle
+has one writer and does not need to detect a second.
+
+Roster commands differ from `executeCommand` (`src/installation-config.ts:1956-1974`) in one way
+worth stating: that loop **retries** on a lost CAS, and the roster must **refuse**. A blind retry of
+"deactivate Alice" against a roster someone else just changed can silently do the wrong thing. So it
+is a single attempt returning a conflict, which is also what the specification's edge case asks for —
+"the later write is refused rather than silently overwriting".
 
 **Alternative considered**: a monotonically increasing `rosterVersion` echoed by the client.
 Rejected as a second concurrency mechanism where one already exists.
@@ -264,6 +283,37 @@ copy.
 owner creates the account for someone else, so the credential has to come back in the response
 anyway — browser generation would only move the entropy source to the less trustworthy side while
 keeping the exposure.
+
+---
+
+## R11. What satisfies FR-024, when no deletion or export endpoint exists?
+
+FR-024 requires that a request scoped to someone's customer record not reach their staff record or
+their operator attribution, and the reverse. **There is no deletion or export endpoint in this
+Worker to constrain.** `docs/PRIVACY.md:36-45` places retention on the per-date purge and hands the
+request process to the deployer, whose actual steps depend on their Cloudflare account.
+
+**Decision**: satisfy FR-024 structurally, and say so in the document rather than promising a
+procedure the code does not implement.
+
+The separation is not a rule anyone has to follow — it is the absence of a join. A customer record
+lives in `booking_details` in a per-date `ReservationDay`, keyed by reservation id and reachable
+only with a management key. A staff record lives in `__staff_roster` in `InstallationConfig`, keyed
+by a system-generated identifier. Attribution names the staff identifier and never the reservation's
+customer. **No field in either store references the other**, and the specification's final edge case
+makes that a requirement rather than an accident: a person who is both staff and customer has two
+records with no link. So a customer-scoped operation cannot reach a staff record because there is
+nothing to follow, and a staff-scoped one cannot reach a booking for the same reason.
+
+What `docs/PRIVACY.md` must therefore gain is the statement of that separation, plus the two
+retention terms it implies — a staff record is kept for the life of the installation, attribution
+for the life of the day partition it sits in — and FR-012's plain warning that deactivation does not
+reach the calendar feed token, the LINE channel secret, or the Google calendar credentials.
+
+**Alternative considered**: design a deletion endpoint now, so the requirement has code to point at.
+Rejected — the specification puts customer accounts out of scope entirely, and building a deletion
+path for records nothing can currently delete would be the largest thing in this slice and the least
+required.
 
 ---
 

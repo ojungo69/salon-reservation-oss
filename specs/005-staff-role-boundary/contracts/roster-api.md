@@ -4,7 +4,8 @@ Five endpoints, all `owner`-only, all behind `operatorGate` and — for the muta
 `requireMutationOrigin`. Shapes follow the conventions already in `src/worker.ts`: exact-key body
 validation, `errorResponse(400, "BAD_REQUEST")` for anything unparsable, no query string permitted.
 
-Error envelope is the existing one throughout: `{ "error": "<CODE>" }`.
+Error envelope is the existing one throughout, produced by `errorResponse` and not hand-built:
+`{ "ok": false, "error": { "code": "<CODE>", "message": "…" } }` (`src/worker.ts:120-129`).
 
 ---
 
@@ -18,7 +19,7 @@ Reads the roster. Never returns a credential or a digest.
 {
   "members": [
     {
-      "id": "01J8Z2QK4M7R9V3XW6YB5NCTGD",
+      "id": "6f1c2e40-9a3b-4d17-8c5e-2b7d90a4f8e1",
       "displayName": "受付 A",
       "role": "owner",
       "active": true,

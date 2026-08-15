@@ -75,7 +75,7 @@ without it.
 
 | Path | Method | Rate bucket | Why owner-only |
 |---|---|---|---|
-| `/api/admin/setup` | GET, POST | `owner-setup` | Installation settings, legal notices, consent version |
+| `/api/admin/setup` | GET, PUT | `owner-setup` | Installation settings, legal notices, consent version |
 | `/api/admin/setup/live` | POST | `owner-live` | Publication toggle |
 | `/api/admin/installation-receipt` | GET | `owner-receipt` | Deployment and readiness disclosure |
 | `/api/admin/line/settings` | POST | `line-lifecycle` | Adapter lifecycle |
@@ -88,6 +88,11 @@ without it.
 Seven buckets over nine paths. Together with the six above this is all thirteen buckets that exist
 today — every one accounted for, none moved out of the gate. (FR-003, FR-001)
 
+**The methods in these tables are load-bearing for the tests.** Every handler checks its method first
+and answers `405` before the gate is reached — `handleSetup` at `src/worker.ts:1355` is the one that
+catches people out, because it accepts `GET` and `PUT` and never `POST`. A role assertion sent with
+the wrong method gets `405` and silently never exercises the boundary it was written to check.
+
 ## Roster routes — new, `owner` only
 
 | Path | Method | Rate bucket |
@@ -98,8 +103,9 @@ today — every one accounted for, none moved out of the gate. (FR-003, FR-001)
 | `/api/admin/staff/:id/deactivate` | POST | `owner-staff-credential` |
 | `/api/admin/staff/:id/reactivate` | POST | `owner-staff-credential` |
 
-Two new buckets. A `staff` credential is refused on all five, indistinguishably from a bad one.
-(FR-003)
+Two new buckets, not one: reading the roster and issuing a credential deserve different limits,
+because the second is the operation an attacker who has somehow reached an owner session would want
+to repeat. A `staff` credential is refused on all five, indistinguishably from a bad one. (FR-003)
 
 The shapes are in [roster-api.md](./roster-api.md).
 
