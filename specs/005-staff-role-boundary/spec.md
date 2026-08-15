@@ -281,7 +281,12 @@ this specification makes, not an open item.
 
 - **Two roles, not a permission matrix.** A salon-sized installation does not need custom roles, and
   a permission system with one shape of consumer is speculative. A third role is added when a real
-  need for it appears, not before.
+  need for it appears, not before. This assumption was accepted with reservation rather than
+  conviction, so the cost of being wrong is worth stating: because the role is a stored field on each
+  roster record and the route check is a total function over the role and the route, adding a third
+  role later is a new value in the union, a new column in the route table, and an option in the
+  operator screen. Existing records keep the role they already hold, and no stored data is migrated.
+  The decision is cheap to revisit, which is why it is safe to make now.
 - **Static per-person credentials, not sessions.** A session layer would add issuance, expiry,
   storage, and refresh for a property the roster already provides: deactivation is what ends access,
   and it takes effect on the next request. The existing management-key pattern — generate once,
