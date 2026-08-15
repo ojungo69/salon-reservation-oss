@@ -1,0 +1,29 @@
+specs/005-staff-role-boundary/research.md
+  s_3ac342c3240e69::t_47b6459a643b4b 1-275
+specs/005-staff-role-boundary/contracts/authorization.md
+  s_3ac342c3240e69::t_0c2fbb8e568568 1-114
+specs/005-staff-role-boundary/quickstart.md
+  s_3ac342c3240e69::t_b6b3d5026b8e8b 1-171
+specs/005-staff-role-boundary/plan.md
+  s_3ac342c3240e69::t_bd97fb6ba5898f 1-140
+specs/005-staff-role-boundary/data-model.md
+  s_3ac342c3240e69::t_cc22ee624fc98b 1-185
+specs/005-staff-role-boundary/contracts/roster-api.md
+  s_3ac342c3240e69::t_c9545fbd3438be 1-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "caf65ce4883bde91e5ae4f79062d5470dec166d1",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
