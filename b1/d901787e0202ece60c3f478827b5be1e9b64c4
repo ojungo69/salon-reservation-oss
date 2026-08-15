@@ -1,0 +1,21 @@
+specs/005-staff-role-boundary/checklists/requirements.md
+  s_95d3eaeb07d2f1::t_6d0cec64871deb 1-54
+specs/005-staff-role-boundary/spec.md
+  s_95d3eaeb07d2f1::t_3e15187ff0db02 1-332
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b1d901787e0202ece60c3f478827b5be1e9b64c4",
+  "prompts": {},
+  "sessions": {
+    "s_95d3eaeb07d2f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aa54209-9db9-4f5e-b7c8-0c15d4430519",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
