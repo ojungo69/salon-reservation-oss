@@ -1,0 +1,23 @@
+src/adapter-delivery.ts
+  s_95d3eaeb07d2f1::t_7280ec2e9f2a1e 15,30-35,1459-1553,1579-1580
+src/calendar-adapter.ts
+  s_95d3eaeb07d2f1::t_ad13bb55987847 948-1022,1043-1045,1293-1406,1451-1454,1456-1457,1703-1758,1763,1769-1771,1774-1789,1791-1792,1794-1796,1798-1802,1820-1823
+src/installation-config.ts
+  s_95d3eaeb07d2f1::t_323635e94101d6 1851-1911,1925,1929
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "dc816c611ade4542bf58195fb4cbf227078f0cf8",
+  "prompts": {},
+  "sessions": {
+    "s_95d3eaeb07d2f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aa54209-9db9-4f5e-b7c8-0c15d4430519",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
