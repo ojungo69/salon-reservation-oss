@@ -1,0 +1,26 @@
+src/installation-config.ts
+  s_3ac342c3240e69::t_42403310eb5923 1940
+  s_3ac342c3240e69::t_3fdddc8781120f 1607-1616
+public/app.js
+  s_3ac342c3240e69::t_22bbf93155e65c 2895-2900
+test/worker.test.ts
+  s_3ac342c3240e69::t_30a097d7c2afef 4104-4118
+tests-browser/install.spec.ts
+  s_3ac342c3240e69::t_64364f714f8763 157-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9539ce019ec9b1b143ae11f486d2c60e352501c3",
+  "prompts": {},
+  "sessions": {
+    "s_3ac342c3240e69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff64ca65-c732-4368-af94-a7cf393db32f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
