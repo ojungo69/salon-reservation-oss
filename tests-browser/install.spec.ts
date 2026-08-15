@@ -97,14 +97,14 @@ test("an owner adds a staff member, reads the credential once, and stops them", 
   const member = page.locator(".staff-item").filter({ hasText: "検証 受付" });
   await expect(member).toContainText("有効");
   await expect(member).toContainText("日々の予約対応");
-  await expect(page.locator("[data-staff-count]")).toHaveText("1人");
+  await expect(page.locator("[data-staff-count]")).toHaveText("有効 1人");
   await expectNoAxeViolations(page);
   await expectNoHorizontalOverflow(page);
 
   await member.getByRole("button", { name: "停止する" }).click();
   await expect(member).toContainText("停止中");
   await expect(page.locator("#staff-status")).toContainText("次の操作から認証できません");
-  await expect(page.locator("[data-staff-count]")).toHaveText("0人");
+  await expect(page.locator("[data-staff-count]")).toHaveText("有効 0人");
   // The credential was in one response and is not in the page any more; there
   // is no read that returns it and no second chance to copy it.
   await expect(page.locator("[data-staff-credential]")).toBeHidden();

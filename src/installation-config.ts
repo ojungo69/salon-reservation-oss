@@ -1482,7 +1482,18 @@ export type RosterFailureCode =
   | "BAD_REQUEST"
   | "NOT_FOUND_OR_UNAUTHORIZED"
   | "VERSION_CONFLICT"
-  | "LAST_OWNER";
+  | "LAST_OWNER"
+  | "ROSTER_FULL";
+
+/**
+ * The roster is one document read in full on every staff-credentialled request,
+ * and it is rewritten whole on every command, so its size is a running cost
+ * rather than a one-time one. Far above any salon's headcount and far below the
+ * point where the document stops being writable — the bound exists so the
+ * failure is a refusal an owner can read, not a roster that can no longer be
+ * repaired from the screen.
+ */
+const ROSTER_LIMIT = 200;
 
 export type RosterCommandResult =
   | { ok: true; member: PublicStaffMember }
@@ -1553,6 +1564,11 @@ const applyRosterCommand = (
   newId: string,
 ): { roster: StaffRoster; member: StaffMember } | { ok: false; code: RosterFailureCode } => {
   if (command.operation === "staff.create") {
+    // Counted over every record, active or not: a stopped member is still a row
+    // this document carries forever, because past attribution resolves through
+    // it. Making room means the roster needs a way to forget people, which is a
+    // deletion this slice deliberately does not have.
+    if (roster.members.length >= ROSTER_LIMIT) return rosterFailure("ROSTER_FULL");
     const member: StaffMember = {
       id: newId,
       displayName: command.displayName,
@@ -1966,9 +1982,9 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    *
    * Every member is compared, with no early exit on the first match, so the
    * work done is the same whether the digest belongs to nobody, to an active
-   * member, or to a deactivated one. A roster is bounded by the size of one
-   * salon, which is what makes the naive loop the cheap option as well as the
-   * one that does not leak which identifiers exist.
+   * member, or to a deactivated one. `ROSTER_LIMIT` is what keeps the naive
+   * loop the cheap option as well as the one that does not leak which
+   * identifiers exist.
    */
   resolveActor(digest: unknown): { staffId: string; role: StaffRole } | null {
     if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return null;
@@ -1977,7 +1993,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     let found: { staffId: string; role: StaffRole } | null = null;
     for (const member of stored.roster.members) {
       // An inactive member holds an empty digest, which no SHA-256 hex string
-      // equals, so deactivation needs no separate check here.
+      // equals, so deactivation needs no separate check here. `parseStaffMember`
+      // is what guarantees that — it refuses a stored record whose `active` and
+      // digest disagree in either direction, so revocation rests on the parser
+      // rather than on a test of `active` that could be forgotten here.
       if (timingSafeEqualHex(member.credentialDigest, digest)) {
         found = { staffId: member.id, role: member.role };
       }

@@ -91,6 +91,8 @@ const ERROR_MESSAGES = {
   TEMPORARILY_UNAVAILABLE: "現在処理できません。しばらく待ってからお試しください。",
   LAST_OWNER:
     "最後の運営者アカウントを無効化することはできません。先に別の運営者アカウントを追加してください。",
+  ROSTER_FULL:
+    "登録できるスタッフの上限に達しました。停止済みのスタッフも記録として残るため、上限には含まれます。",
   UNAUTHORIZED: "認証情報を確認できませんでした。",
   VERSION_CONFLICT: "設定が更新されています。最新の状態を読み込み直してください。",
   LINE_LINK_CONFLICT:

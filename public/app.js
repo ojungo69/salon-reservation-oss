@@ -2690,13 +2690,20 @@ const startSetup = async () => {
     return state;
   };
 
-  const clearRoster = (note) => {
-    staffList.replaceChildren(createElement("p", "empty-note", note));
-    staffCount.textContent = "0人";
-    staffFields.disabled = true;
-    staffSubmit.disabled = true;
+  // Hiding the box and forgetting the string are the same act. A credential the
+  // page still holds in a hidden node is a second copy of something the product
+  // promises to show exactly once.
+  const hideCredential = () => {
     staffCredential.hidden = true;
     staffCredentialValue.textContent = "";
+  };
+
+  const clearRoster = (note) => {
+    staffList.replaceChildren(createElement("p", "empty-note", note));
+    staffCount.textContent = "有効 0人";
+    staffFields.disabled = true;
+    staffSubmit.disabled = true;
+    hideCredential();
     staffForm.reset();
   };
 
@@ -2712,7 +2719,7 @@ const startSetup = async () => {
   const rosterCommand = async (path, confirmation, button) => {
     if (confirmation && !window.confirm(confirmation)) return;
     button.disabled = true;
-    staffCredential.hidden = true;
+    hideCredential();
     try {
       const result = await ownerApi(path, { method: "POST", body: "{}" });
       await loadRoster();
@@ -2732,7 +2739,9 @@ const startSetup = async () => {
 
   const renderRoster = (members) => {
     staffList.replaceChildren();
-    staffCount.textContent = `${members.filter(({ active }) => active).length}人`;
+    // "有効", not a bare number: a stopped member is still listed below, and a
+    // chip reading "0人" beside a visible card reads as "nobody is registered".
+    staffCount.textContent = `有効 ${members.filter(({ active }) => active).length}人`;
     if (members.length === 0) {
       staffList.append(
         createElement(
@@ -2874,7 +2883,7 @@ const startSetup = async () => {
       return;
     }
     staffSubmit.disabled = true;
-    staffCredential.hidden = true;
+    hideCredential();
     setStatus(staffStatus, "スタッフを登録しています。");
     try {
       const result = await ownerApi("/api/admin/staff", {

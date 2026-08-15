@@ -4039,6 +4039,66 @@ describe("S3 staff and role boundary", () => {
     expect(await roster()).toHaveLength(1);
   });
 
+  it("refuses a create past the roster limit, counting stopped members too", async () => {
+    const owner = await addStaff("owner", "店長");
+    // Seeded straight into storage rather than through 199 requests: the point
+    // under test is the boundary, not the path to it. The document is written
+    // in the shape the parser accepts, so nothing here bypasses validation —
+    // the very next command reads it back through `parseStaffRoster`.
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    await runInDurableObject(config, (_instance, state) => {
+      const stored = state.storage.sql
+        .exec<{ roster_json: string }>("SELECT roster_json FROM __staff_roster")
+        .toArray()[0];
+      const roster = JSON.parse(stored?.roster_json ?? "") as {
+        version: number;
+        members: unknown[];
+      };
+      const owned = roster.members[0];
+      // Stopped members fill the roster exactly as active ones do, because the
+      // record survives deactivation so past attribution stays resolvable.
+      while (roster.members.length < 200) {
+        roster.members.push({
+          ...(owned as Record<string, unknown>),
+          id: crypto.randomUUID(),
+          role: "staff",
+          active: false,
+          credentialDigest: "",
+          deactivatedAt: "2026-08-16T00:00:00.000Z",
+        });
+      }
+      state.storage.sql.exec(
+        "UPDATE __staff_roster SET roster_json = ?",
+        JSON.stringify(roster),
+      );
+    });
+
+    const full = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "受付 B", role: "staff" },
+      ownerHeaders,
+    );
+    expect(full.status).toBe(409);
+    expect(((await full.json()) as { error: { code: string } }).error.code).toBe("ROSTER_FULL");
+
+    // The limit refuses growth without taking anything away: the installation
+    // is still administrable, and stopping someone still works at the boundary.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${owner.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(409);
+    expect(((await stopped.json()) as { error: { code: string } }).error.code).toBe("LAST_OWNER");
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: ownerHeaders,
+    });
+    expect(listed.status).toBe(200);
+    expect(((await listed.json()) as { members: unknown[] }).members).toHaveLength(200);
+  });
+
   it("refuses everyone the same way when the roster is empty", async () => {
     for (const [method, path] of ownerOnly(crypto.randomUUID())) {
       const response = await call(method, path, garbage);

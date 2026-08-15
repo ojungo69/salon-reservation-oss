@@ -83,6 +83,7 @@ mean a credential existed that was never stored. (FR-020)
 | 400 | `BAD_REQUEST` | Unknown key, bad `displayName` length, `role` not one of the two |
 | 401 | `UNAUTHORIZED` | Not `owner` — including a valid `staff` credential (FR-005) |
 | 409 | `VERSION_CONFLICT` | The roster changed under this command (R7) |
+| 409 | `ROSTER_FULL` | The roster already holds 200 records, stopped ones included |
 | 503 | `TEMPORARILY_UNAVAILABLE` | `OWNER_TOKEN` absent or placeholder |
 
 ---

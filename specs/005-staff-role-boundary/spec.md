@@ -247,7 +247,8 @@ answer identically whether the staff roster is empty, populated, or entirely abs
 
 - **Staff member**: one person who operates this installation. Opaque identifier, display name,
   role, active flag, credential digest, created and deactivated timestamps. Bounded in count by the
-  size of a single salon. No contact details, no customer link.
+  size of a single salon, enforced at 200 records — stopped members included, because the record
+  survives deactivation so past attribution stays resolvable. No contact details, no customer link.
 - **Role**: `owner` or `staff`. Determines which operator routes the holder may reach. Not
   user-definable in this slice.
 - **Staff credential**: a high-entropy secret the system generates and shows once. Only its digest
