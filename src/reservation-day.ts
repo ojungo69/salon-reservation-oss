@@ -115,6 +115,13 @@ export type DayCreateInput = {
   consentVersion?: string;
 };
 
+/**
+ * Who performed an operator-initiated change. Passed beside the command input
+ * rather than inside it, so it cannot reach the command fingerprint: the same
+ * command from a second authorized operator must replay, not mismatch.
+ */
+export type DayActor = { kind: "break_glass" } | { kind: "staff"; staffId: string };
+
 export type DayPublicCancelInput = {
   commandId: string;
   date: string;
@@ -2000,6 +2007,11 @@ export class ReservationDay extends DurableObject<Env> {
     response: StoredSuccess,
     operation: string,
     subjectId: string,
+    // No default. A receipt written without saying who wrote it is exactly the
+    // state FR-014 forbids, and a default turns forgetting into that state
+    // silently. `null` is a deliberate statement that nobody operated — the
+    // customer paths — and it has to be written down. (FR-014)
+    actor: DayActor | null,
   ): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO adapter_receipts
@@ -2011,6 +2023,40 @@ export class ReservationDay extends DurableObject<Env> {
       subjectId,
       operation,
       new Date().toISOString(),
+    );
+    if (actor !== null) this.#writeAttribution(commandId, actor);
+  }
+
+  /**
+   * Who acted, beside the receipt for what they did and inside the same
+   * transaction, so a change with no actor row is not a reachable state. The
+   * operation and the timestamp are not repeated here: `adapter_receipts`
+   * already holds both under this same `command_id`, and a second copy would
+   * only be a second place for the answer to drift.
+   *
+   * Reached only after `#commandGate` has let the command through, so a replay
+   * returns its cached response and never arrives — the original actor stands.
+   * The plain `INSERT` is deliberate: a duplicate key here would mean the gate
+   * had failed, and that is worth an exception rather than a silent ignore.
+   */
+  #writeAttribution(commandId: string, actor: DayActor): void {
+    const sql = this.ctx.storage.sql;
+    // A `__`-prefixed table, so the exact-table-list checks pass over it and it
+    // reaches days that were provisioned before this column of history existed.
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS __attribution (
+        command_id TEXT PRIMARY KEY,
+        actor_kind TEXT NOT NULL CHECK (actor_kind IN ('break_glass', 'staff')),
+        actor_id   TEXT
+      )
+    `);
+    sql.exec(
+      "INSERT INTO __attribution (command_id, actor_kind, actor_id) VALUES (?, ?, ?)",
+      commandId,
+      actor.kind,
+      // The roster identifier, never the display name: a name can be edited,
+      // and past attribution must not change when it is. (FR-015)
+      actor.kind === "staff" ? actor.staffId : null,
     );
   }
 
@@ -2245,6 +2291,7 @@ export class ReservationDay extends DurableObject<Env> {
     operation: "public-create" | "owner-create",
     subject: "actor-public-customer" | "actor-owner",
     allowFresh: boolean,
+    actor: DayActor | null,
   ): Promise<DayMutationResult> {
     if (!isDayConfig(config) || !isCreateInput(config, input)) {
       return failure("UNAVAILABLE");
@@ -2346,6 +2393,7 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           operation,
           reservationId,
+          actor,
         );
         this.#writeMeta(
           effective,
@@ -2388,15 +2436,18 @@ export class ReservationDay extends DurableObject<Env> {
       "public-create",
       "actor-public-customer",
       allowFresh,
+      // A customer booking has no operator, so there is nobody to attribute.
+      null,
     );
   }
 
   createOwner(
     config: DayConfig,
     input: DayCreateInput,
+    actor: DayActor,
     allowFresh = true,
   ): Promise<DayMutationResult> {
-    return this.#create(config, input, "owner-create", "actor-owner", allowFresh);
+    return this.#create(config, input, "owner-create", "actor-owner", allowFresh, actor);
   }
 
   #applyOwnerCancelTransition(
@@ -2578,6 +2629,7 @@ export class ReservationDay extends DurableObject<Env> {
   async transitionOwner(
     config: DayConfig,
     input: DayOwnerTransitionInput,
+    actor: DayActor,
   ): Promise<DayMutationResult> {
     if (
       !isDayConfig(config) ||
@@ -2687,6 +2739,7 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           `owner-${input.action}`,
           input.reservationId,
+          actor,
         );
         this.#writeMeta(
           effective,
@@ -2895,6 +2948,8 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           "public-cancel",
           input.reservationId,
+          // A customer cancelling their own booking is not an operator action.
+          null,
         );
         this.#writeMeta(
           effective,
@@ -2944,6 +2999,7 @@ export class ReservationDay extends DurableObject<Env> {
   async createClosure(
     config: DayConfig,
     input: DayClosureCreateInput,
+    actor: DayActor,
     allowFresh = true,
   ): Promise<DayClosureResult> {
     if (
@@ -3055,6 +3111,7 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           "closure-create",
           closureId,
+          actor,
         );
         this.#writeMeta(
           effective,
@@ -3075,6 +3132,7 @@ export class ReservationDay extends DurableObject<Env> {
   async removeClosure(
     config: DayConfig,
     input: DayClosureRemoveInput,
+    actor: DayActor,
   ): Promise<DayClosureResult> {
     if (
       !isDayConfig(config) ||
@@ -3140,6 +3198,7 @@ export class ReservationDay extends DurableObject<Env> {
           response,
           "closure-remove",
           closure.closureId,
+          actor,
         );
         this.#writeMeta(
           effective,

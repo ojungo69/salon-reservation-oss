@@ -13,6 +13,7 @@ import type {
   ReservationDay,
 } from "../src/reservation-day.ts";
 import type { CalendarAdapter } from "../src/calendar-adapter.ts";
+import type { InstallationConfig } from "../src/installation-config.ts";
 import worker from "../src/worker.ts";
 
 const nextOpenJstDate = (minimumOffset = 0) => {
@@ -3606,5 +3607,614 @@ describe("T035 guided setup API", () => {
     );
     expect(await purged.text()).toBe(baseline);
     feedSecret = token;
+  });
+});
+
+/**
+ * The staff and role boundary (specs/005-staff-role-boundary).
+ *
+ * SC-004 asks for the boundary to be verified route by route with no route
+ * unaccounted for, so the two tables below are that verification: every
+ * operator path this Worker serves appears in exactly one of them, and the
+ * assertions are driven from the tables rather than written out one by one.
+ * A route added without a row here has no test, which is the failure this
+ * arrangement is meant to make obvious.
+ */
+describe("S3 staff and role boundary", () => {
+  const bearer = (credential: string) => ({ authorization: `Bearer ${credential}` });
+  const garbage = bearer("not-a-credential-0123456789abcdefghijklmnop");
+
+  const call = (method: string, path: string, headers: Record<string, string>) =>
+    method === "GET"
+      ? SELF.fetch(`https://example.test${path}`, { headers })
+      : jsonRequest(path, {}, headers, method);
+
+  const addStaff = async (role: "owner" | "staff", displayName: string) => {
+    const response = await jsonRequest(
+      "/api/admin/staff",
+      { displayName, role },
+      ownerHeaders,
+    );
+    expect(response.status).toBe(201);
+    return (await response.json()) as {
+      member: { id: string; role: string; active: boolean };
+      credential: string;
+    };
+  };
+
+  // Methods are load-bearing: every handler answers 405 before the gate runs,
+  // so a row with the wrong method would assert nothing about authorization.
+  // `/api/admin/setup` is GET and PUT — never POST.
+  const ownerOnly = (staffId: string): Array<[string, string]> => [
+    ["GET", "/api/admin/setup"],
+    ["PUT", "/api/admin/setup"],
+    ["POST", "/api/admin/setup/live"],
+    ["GET", "/api/admin/installation-receipt"],
+    ["POST", "/api/admin/line/settings"],
+    ["POST", "/api/admin/line/enable"],
+    ["POST", "/api/admin/line/disable"],
+    ["GET", "/api/admin/line/status"],
+    ["GET", "/api/admin/calendar/status"],
+    ["POST", "/api/admin/calendar/reconcile"],
+    ["GET", "/api/admin/staff"],
+    ["POST", "/api/admin/staff"],
+    ["POST", `/api/admin/staff/${staffId}/rotate`],
+    ["POST", `/api/admin/staff/${staffId}/deactivate`],
+    ["POST", `/api/admin/staff/${staffId}/reactivate`],
+  ];
+
+  const schedulePath = `/api/admin/schedule?startDate=${day.date}&days=1`;
+  const adminAvailabilityPath = (reservationId: string) =>
+    `/api/admin/availability?${new URLSearchParams({
+      date: day.date,
+      serviceId: "service-cut",
+      reservationId,
+    })}`;
+
+  const dayToDay = (reservationId: string): Array<[string, string]> => [
+    ["GET", adminAvailabilityPath(reservationId)],
+    ["GET", schedulePath],
+    ["POST", "/api/admin/reservations"],
+    ["POST", `/api/admin/reservations/${reservationId}/transition`],
+    ["POST", "/api/admin/closures"],
+    ["POST", `/api/admin/closures/${crypto.randomUUID()}/remove`],
+  ];
+
+  it("issues a credential once and never returns it or a digest again", async () => {
+    const created = await addStaff("staff", "受付 A");
+    expect(created.credential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(created.member.active).toBe(true);
+
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: ownerHeaders,
+    });
+    expect(listed.status).toBe(200);
+    const body = await listed.text();
+    expect(body).not.toContain(created.credential);
+    expect(body).not.toContain("credentialDigest");
+    expect(JSON.parse(body).members).toHaveLength(1);
+  });
+
+  it("refuses a staff credential on every owner-only route, exactly as it refuses a bad one", async () => {
+    const staff = await addStaff("staff", "受付 A");
+    for (const [method, path] of ownerOnly(staff.member.id)) {
+      const refusedStaff = await call(method, path, bearer(staff.credential));
+      const refusedGarbage = await call(method, path, garbage);
+      expect(refusedStaff.status, `${method} ${path}`).toBe(401);
+      expect(refusedGarbage.status, `${method} ${path}`).toBe(401);
+      // Indistinguishable, so a staff credential cannot use these routes to
+      // learn that it is valid somewhere else.
+      expect(await refusedStaff.text(), `${method} ${path}`).toBe(
+        await refusedGarbage.text(),
+      );
+      expect(refusedStaff.headers.get("www-authenticate")).toBe(
+        refusedGarbage.headers.get("www-authenticate"),
+      );
+    }
+  });
+
+  it("accepts a staff credential on every day-to-day route", async () => {
+    await enableLiveInstallation();
+    const staff = await addStaff("staff", "受付 A");
+    for (const [method, path] of dayToDay(crypto.randomUUID())) {
+      const response = await call(method, path, bearer(staff.credential));
+      // The gate is what is under test, so a 400 from the handler for an empty
+      // body still proves the credential got through. A 401 does not.
+      expect(response.status, `${method} ${path}`).not.toBe(401);
+      const refused = await call(method, path, garbage);
+      expect(refused.status, `${method} ${path} with a bad credential`).toBe(401);
+    }
+  });
+
+  it("lets a staff credential actually read the day, not merely pass the gate", async () => {
+    await enableLiveInstallation();
+    const staff = await addStaff("staff", "受付 A");
+    const schedule = await SELF.fetch(`https://example.test${schedulePath}`, {
+      headers: bearer(staff.credential),
+    });
+    expect(schedule.status).toBe(200);
+    // And take a booking, which is the day-to-day work the role exists for.
+    const fixture = await publicCreateBody();
+    const {
+      turnstileToken: _turnstileToken,
+      replayOnly: _replayOnly,
+      ...body
+    } = fixture.body;
+    const created = await jsonRequest(
+      "/api/admin/reservations",
+      body,
+      bearer(staff.credential),
+    );
+    expect(created.status).toBe(201);
+  });
+
+  it("gives an owner-role roster member the owner routes", async () => {
+    const owner = await addStaff("owner", "店長");
+    const receipt = await SELF.fetch(
+      "https://example.test/api/admin/installation-receipt",
+      { headers: bearer(owner.credential) },
+    );
+    expect(receipt.status).toBe(200);
+  });
+
+  it("refuses a deactivated credential on the very next request", async () => {
+    await enableLiveInstallation();
+    const leaving = await addStaff("staff", "受付 A");
+    const staying = await addStaff("staff", "受付 B");
+    const read = (credential: string) =>
+      SELF.fetch(`https://example.test${schedulePath}`, { headers: bearer(credential) });
+
+    expect((await read(leaving.credential)).status).toBe(200);
+    expect((await read(staying.credential)).status).toBe(200);
+
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${leaving.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(200);
+    const body = (await stopped.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("credential");
+    expect((body.member as { active: boolean }).active).toBe(false);
+
+    // The very next request. There is no sleep, no retry, and no polling in
+    // this test, and the absence is the assertion: an authorization decision
+    // cached anywhere would need one of them to pass.
+    expect((await read(leaving.credential)).status).toBe(401);
+    expect((await read(staying.credential)).status).toBe(200);
+
+    // And the refusal is in storage rather than in the object's memory, so it
+    // survives the object being torn down and rebuilt.
+    // A successful abort rejects with its own reason, so asserting the
+    // rejection is what proves the object was actually torn down — a swallowed
+    // failure here would leave the two assertions below passing without one.
+    await expect(
+      runInDurableObject(
+        env.INSTALLATION_CONFIG.getByName("installation") as DurableObjectStub<InstallationConfig>,
+        (_instance, state) => state.abort("evicted by the revocation test"),
+      ),
+    ).rejects.toThrow("evicted by the revocation test");
+    expect((await read(leaving.credential)).status).toBe(401);
+    expect((await read(staying.credential)).status).toBe(200);
+  });
+
+  it("keeps the deployment secret working when the roster is corrupt or has no owner", async () => {
+    const only = await addStaff("owner", "店長");
+    const refused = await jsonRequest(
+      `/api/admin/staff/${only.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("LAST_OWNER");
+
+    // Corruption the parser cannot repair, written past every command path.
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    await runInDurableObject(config, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE __staff_roster SET roster_json = ?",
+        '{"version":9,"members":"not an array"}',
+      );
+    });
+
+    // Every gated bucket, still reachable by the deployment secret: the roster
+    // is consulted only after that check has already failed, so no roster can
+    // take it down with it. The one exception is the roster's own routes, which
+    // have to read the document they are about.
+    const staffId = crypto.randomUUID();
+    const routes = [...ownerOnly(staffId), ...dayToDay(crypto.randomUUID())];
+    for (const [method, path] of routes.filter(([, path]) => !path.startsWith("/api/admin/staff"))) {
+      const response = await call(method, path, ownerHeaders);
+      // Answered, not merely un-refused: a gate that consulted the roster first
+      // would let the unreadable document turn every one of these into a 503.
+      expect(response.status, `${method} ${path}`).not.toBe(401);
+      expect(response.status, `${method} ${path}`).toBeLessThan(500);
+    }
+
+    // The roster's own routes are the exception, because they have to read the
+    // document they are about. An unreadable one is answered as unreadable —
+    // never guessed at, never silently replaced. Repairing it is a storage
+    // operation rather than a screen operation; see research.md R12.
+    const listed = await call("GET", "/api/admin/staff", ownerHeaders);
+    expect(listed.status).toBe(503);
+    const created = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "店長", role: "owner" },
+      ownerHeaders,
+    );
+    expect(created.status).toBe(503);
+    expect(((await created.json()) as { error: { code: string } }).error.code).toBe(
+      "TEMPORARILY_UNAVAILABLE",
+    );
+
+    // A staff credential and a garbage one are still answered the same way, so
+    // the corruption tells a caller nothing it did not already know.
+    const staffAttempt = await call("GET", schedulePath, bearer(only.credential));
+    const garbageAttempt = await call("GET", schedulePath, garbage);
+    expect(staffAttempt.status).toBe(garbageAttempt.status);
+    expect(await staffAttempt.text()).toBe(await garbageAttempt.text());
+  });
+
+  it("answers the public routes identically with an empty roster and a populated one", async () => {
+    await enableLiveInstallation();
+    const publicRoutes = [
+      "/api/config",
+      `/api/availability?${new URLSearchParams({ date: day.date, serviceId: "service-cut" })}`,
+      "/api/privacy",
+    ];
+    const snapshot = async () =>
+      Promise.all(
+        publicRoutes.map(async (path) => {
+          const response = await SELF.fetch(`https://example.test${path}`);
+          return {
+            path,
+            status: response.status,
+            body: await response.text(),
+            headers: [...response.headers].filter(([name]) => name !== "date").sort(),
+          };
+        }),
+      );
+
+    const before = await snapshot();
+    await addStaff("staff", "受付 A");
+    await addStaff("owner", "店長");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  const attribution = () =>
+    runInDurableObject(stubFor(day.date), (_instance, state) => {
+      const exists =
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = '__attribution'",
+          )
+          .one().count === 1;
+      if (!exists) return [] as Array<{ command_id: string; actor_kind: string; actor_id: string | null }>;
+      return state.storage.sql
+        .exec<{ command_id: string; actor_kind: string; actor_id: string | null }>(
+          "SELECT command_id, actor_kind, actor_id FROM __attribution ORDER BY command_id",
+        )
+        .toArray();
+    });
+
+  it("records who made each operator change, and keeps it when they leave", async () => {
+    await enableLiveInstallation();
+    const receptionist = await addStaff("staff", "受付 A");
+    const manager = await addStaff("owner", "店長");
+
+    const fixture = await publicCreateBody();
+    const {
+      turnstileToken: _turnstileToken,
+      replayOnly: _replayOnly,
+      ...createBody
+    } = fixture.body;
+    const created = await jsonRequest(
+      "/api/admin/reservations",
+      createBody,
+      bearer(receptionist.credential),
+    );
+    expect(created.status).toBe(201);
+    const reservationId = ((await created.json()) as { reservation: { reservationId: string } })
+      .reservation.reservationId;
+
+    const cancelCommand = crypto.randomUUID();
+    const cancelled = await jsonRequest(
+      `/api/admin/reservations/${reservationId}/transition`,
+      { commandId: cancelCommand, date: day.date, action: "cancel" },
+      bearer(manager.credential),
+    );
+    expect(cancelled.status).toBe(200);
+
+    // The third change is made with the deployment secret, which has no roster
+    // record by definition and must still be recorded as somebody.
+    const closureCommand = crypto.randomUUID();
+    const closed = await jsonRequest(
+      "/api/admin/closures",
+      {
+        commandId: closureCommand,
+        date: day.date,
+        resourceId: "resource-chair-b",
+        startTime: "11:00",
+        endTime: "12:00",
+        label: "架空の設備点検",
+      },
+      ownerHeaders,
+    );
+    expect(closed.status).toBe(201);
+
+    const rows = await attribution();
+    expect(rows).toHaveLength(3);
+    const byCommand = new Map(rows.map((row) => [row.command_id, row]));
+    expect(byCommand.get(createBody.commandId as string)).toEqual({
+      command_id: createBody.commandId,
+      actor_kind: "staff",
+      actor_id: receptionist.member.id,
+    });
+    expect(byCommand.get(cancelCommand)).toEqual({
+      command_id: cancelCommand,
+      actor_kind: "staff",
+      actor_id: manager.member.id,
+    });
+    expect(byCommand.get(closureCommand)).toEqual({
+      command_id: closureCommand,
+      actor_kind: "break_glass",
+      actor_id: null,
+    });
+    // The display name is never the identifier, so editing or removing a name
+    // cannot rewrite who did what.
+    expect(JSON.stringify(rows)).not.toContain("受付 A");
+
+    // Deactivation ends the credential, not the record of what was done with it.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${receptionist.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(200);
+    expect(await attribution()).toEqual(rows);
+
+    // A replay short-circuits at the command gate, before any write, so it can
+    // neither add a row nor re-attribute the original — even when the replay
+    // comes from a different actor than the one who issued it first.
+    const replay = await jsonRequest("/api/admin/reservations", createBody, ownerHeaders);
+    expect(replay.status).toBe(201);
+    expect(await attribution()).toEqual(rows);
+  });
+
+  it("reports zero rows written when a conditional upsert's WHERE does not match", async () => {
+    // Read the name literally: this exercises **workerd's** SQL, not
+    // `#writeRoster`. Delete the `WHERE roster_json = ?` clause from production
+    // and this still passes — nothing here calls `executeRosterCommand`.
+    //
+    // That is not an oversight to fix by reaching into the private method. No
+    // sequence of requests can make `#writeRoster` lose its compare-and-swap:
+    // `executeRosterCommand` has no suspension point between reading the roster
+    // and writing it, so the previous document is always the current one and
+    // `VERSION_CONFLICT` is unreachable by construction. The clause exists for
+    // the day someone introduces an `await` up there.
+    //
+    // What *is* testable, and what this covers, is the assumption that clause
+    // rests on: that `ON CONFLICT DO UPDATE … WHERE` reports `rowsWritten: 0`
+    // on a failed match rather than writing anyway or throwing. If a workerd
+    // upgrade changed that, the guard would be silently dead and nothing else
+    // in this file would notice.
+    await addStaff("owner", "店長");
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    const written = await runInDurableObject(config, (_instance, state) => {
+      const upsert = (previousJson: string) =>
+        state.storage.sql.exec(
+          `INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
+           ON CONFLICT(singleton) DO UPDATE SET roster_json = excluded.roster_json
+           WHERE roster_json = ?`,
+          '{"version":1,"members":[]}',
+          previousJson,
+        ).rowsWritten;
+      const current = state.storage.sql
+        .exec<{ roster_json: string }>("SELECT roster_json FROM __staff_roster")
+        .one().roster_json;
+      return { stale: upsert('{"version":1,"members":[]}'), fresh: upsert(current) };
+    });
+    expect(written.stale).toBe(0);
+    expect(written.fresh).toBe(1);
+  });
+
+  it("answers a dry run without writing a member or minting a credential", async () => {
+    const dryRun = (displayName: string) =>
+      jsonRequest("/api/admin/staff", { displayName, role: "staff", dryRun: true }, ownerHeaders);
+    const roster = async () => {
+      const response = await SELF.fetch("https://example.test/api/admin/staff", {
+        headers: ownerHeaders,
+      });
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { members: unknown[] }).members;
+    };
+
+    const first = await dryRun("検証 受付");
+    expect(first.status).toBe(200);
+    // No `credential` key at all: a dry run creates nothing, so there is nothing
+    // a caller could mistake for a working credential. (FR-020)
+    expect(await first.json()).toEqual({ dryRun: true, wouldBeFirstMember: true });
+    expect(await roster()).toEqual([]);
+
+    await addStaff("owner", "店長");
+    const second = await dryRun("検証 受付");
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ dryRun: true, wouldBeFirstMember: false });
+    // Still one member: the second dry run did not add the person it validated.
+    expect(await roster()).toHaveLength(1);
+  });
+
+  it("refuses a create past the roster limit, counting stopped members too", async () => {
+    const owner = await addStaff("owner", "店長");
+    // Seeded straight into storage rather than through 199 requests: the point
+    // under test is the boundary, not the path to it. The document is written
+    // in the shape the parser accepts, so nothing here bypasses validation —
+    // the very next command reads it back through `parseStaffRoster`.
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    await runInDurableObject(config, (_instance, state) => {
+      const stored = state.storage.sql
+        .exec<{ roster_json: string }>("SELECT roster_json FROM __staff_roster")
+        .toArray()[0];
+      const roster = JSON.parse(stored?.roster_json ?? "") as {
+        version: number;
+        members: unknown[];
+      };
+      const owned = roster.members[0];
+      // Stopped members fill the roster exactly as active ones do, because the
+      // record survives deactivation so past attribution stays resolvable.
+      while (roster.members.length < 200) {
+        roster.members.push({
+          ...(owned as Record<string, unknown>),
+          id: crypto.randomUUID(),
+          role: "staff",
+          active: false,
+          credentialDigest: "",
+          deactivatedAt: "2026-08-16T00:00:00.000Z",
+        });
+      }
+      state.storage.sql.exec(
+        "UPDATE __staff_roster SET roster_json = ?",
+        JSON.stringify(roster),
+      );
+    });
+
+    const full = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "受付 B", role: "staff" },
+      ownerHeaders,
+    );
+    expect(full.status).toBe(409);
+    expect(((await full.json()) as { error: { code: string } }).error.code).toBe("ROSTER_FULL");
+
+    // The limit refuses growth without taking anything away: the installation
+    // is still administrable, and stopping someone still works at the boundary.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${owner.member.id}/deactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(stopped.status).toBe(409);
+    expect(((await stopped.json()) as { error: { code: string } }).error.code).toBe("LAST_OWNER");
+
+    // A dry run is a rehearsal, and a rehearsal that reports success for a
+    // create the real command would refuse is worse than no rehearsal. The
+    // limit is checked before the dry run returns, not after it, and this is
+    // what says so: move the check and this asks for a 200 and gets one.
+    const rehearsed = await jsonRequest(
+      "/api/admin/staff",
+      { displayName: "受付 C", role: "staff", dryRun: true },
+      ownerHeaders,
+    );
+    expect(rehearsed.status).toBe(409);
+    expect(((await rehearsed.json()) as { error: { code: string } }).error.code).toBe(
+      "ROSTER_FULL",
+    );
+
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: ownerHeaders,
+    });
+    expect(listed.status).toBe(200);
+    expect(((await listed.json()) as { members: unknown[] }).members).toHaveLength(200);
+  });
+
+  it("spends one bucket, so a spent one tells a caller nothing about its credential", async () => {
+    const staff = await addStaff("staff", "受付 A");
+    const keys: string[] = [];
+    const spentEnv = Object.create(env) as Env;
+    Object.defineProperty(spentEnv, "OWNER_RATE_LIMITER", {
+      value: {
+        limit: async ({ key }: { key: string }) => {
+          keys.push(key);
+          return { success: false };
+        },
+      },
+    });
+    const through = (headers: Record<string, string>) =>
+      worker.fetch(
+        new Request(`https://example.test${schedulePath}`, { headers }),
+        spentEnv,
+      );
+
+    // The deployment secret is refused exactly as the wrong credentials are.
+    // That is the property, not an oversight: any budget the correct secret can
+    // reach and a wrong guess cannot is free confirmation of a guess, at
+    // whatever rate the attacker likes. A reserved lane was tried here and
+    // reverted for precisely that reason — see the comment in `operatorGate`.
+    for (const headers of [bearer(staff.credential), garbage, ownerHeaders]) {
+      expect((await through(headers)).status).toBe(429);
+    }
+    // One key kind, chosen before any credential is looked at, so the key
+    // cannot encode which credential was presented.
+    expect(new Set(keys)).toEqual(new Set(["unknown:owner-schedule"]));
+    expect(keys).toHaveLength(3);
+  });
+
+  it("refuses a roster command from an owner who was stopped after the gate ran", async () => {
+    const first = await addStaff("owner", "店長");
+    const second = await addStaff("owner", "副店長");
+
+    // The gate authorized `second` at the moment the request opened. What the
+    // object sees is the roster as it stands when the command lands, and by
+    // then `first` has stopped them. Reproduced by calling the object the way a
+    // request whose body arrived late would: the authorization already granted,
+    // the roster already moved.
+    const stopped = await jsonRequest(
+      `/api/admin/staff/${second.member.id}/deactivate`,
+      {},
+      bearer(first.credential),
+    );
+    expect(stopped.status).toBe(200);
+
+    const config = env.INSTALLATION_CONFIG.getByName(
+      "installation",
+    ) as DurableObjectStub<InstallationConfig>;
+    const late = await config.executeRosterCommand(
+      {
+        operation: "staff.reactivate",
+        staffId: second.member.id,
+        credentialDigest: "c".repeat(64),
+      },
+      second.member.id,
+    );
+    // Not merely un-granted: refused, so no credential is minted for a record
+    // whose owner was revoked while their request was still arriving.
+    expect(late).toEqual({ ok: false, code: "UNAUTHORIZED" });
+
+    const listed = await SELF.fetch("https://example.test/api/admin/staff", {
+      headers: bearer(first.credential),
+    });
+    const { members } = (await listed.json()) as {
+      members: Array<{ id: string; active: boolean }>;
+    };
+    expect(members.find(({ id }) => id === second.member.id)?.active).toBe(false);
+
+    // The deployment secret is not in the roster and cannot be revoked from it,
+    // so it still repairs what the roster did.
+    const repaired = await jsonRequest(
+      `/api/admin/staff/${second.member.id}/reactivate`,
+      {},
+      ownerHeaders,
+    );
+    expect(repaired.status).toBe(200);
+  });
+
+  it("refuses everyone the same way when the roster is empty", async () => {
+    for (const [method, path] of ownerOnly(crypto.randomUUID())) {
+      const response = await call(method, path, garbage);
+      expect(response.status, `${method} ${path}`).toBe(401);
+    }
+    // An installation with no roster behaves exactly as it does today: the
+    // deployment secret is the only credential, and it still works.
+    const receipt = await SELF.fetch(
+      "https://example.test/api/admin/installation-receipt",
+      { headers: ownerHeaders },
+    );
+    expect(receipt.status).toBe(200);
   });
 });

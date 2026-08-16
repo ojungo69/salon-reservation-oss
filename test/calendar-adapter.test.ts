@@ -24,6 +24,13 @@ import type { DayConfig, ReservationDay } from "../src/reservation-day.ts";
 import { ADAPTER } from "../src/adapter-constants.ts";
 import { lineDay, SUITE_NOW, SUITE_PURGE_AT, suiteDate } from "./line-helpers.ts";
 
+// The four owner-path day methods require an acting identity, because a receipt
+// with no actor is the state FR-014 forbids. These tests are not about who
+// acted, so they say "the deployment secret did" — the actor the Worker passes
+// when an installation is driven by its own token.
+const TEST_ACTOR = { kind: "break_glass" } as const;
+
+
 const credentials: GoogleCalendarCredentials = {
   clientId: "fixture.apps.googleusercontent.com",
   clientSecret: "fixture-client-secret",
@@ -365,7 +372,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "approve",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "approved" });
     await adapterStub().pokeDay({ date: config.date });
     const approved = await adapterStub().feed({ token: feedToken });
@@ -382,7 +390,8 @@ describe("calendar projection and feed authority", () => {
         action: "reschedule",
         resourceId: "resource-chair-a",
         startTime: "11:00",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, startTime: "11:00" });
     await adapterStub().pokeDay({ date: config.date });
     const moved = await adapterStub().feed({ token: feedToken });
@@ -401,7 +410,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "cancel",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "cancelled" });
     await adapterStub().pokeDay({ date: config.date });
     const removed = await adapterStub().feed({ token: feedToken });
@@ -606,6 +616,7 @@ describe("calendar projection and feed authority", () => {
           reservationId: created.reservationId,
           action: "approve",
         },
+        TEST_ACTOR
       ),
     ).toMatchObject({ ok: true, status: "approved" });
 
@@ -694,7 +705,8 @@ describe("calendar projection and feed authority", () => {
         reservationId: created.reservationId,
         action: "reject",
         reason: "架空の受付都合",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "rejected" });
     const rejected = await day.drainOutbox({ consumer: "calendar", limit: 1 });
     expect(rejected).toMatchObject({ events: [{ seq: 2, type: "reject" }], more: false });
@@ -762,7 +774,8 @@ describe("calendar projection and feed authority", () => {
         reservationId: created.reservationId,
         action: "reject",
         reason: "架空の受付都合",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "rejected" });
     await runInDurableObject(day, (instance) => {
       Object.defineProperty((instance as unknown as { env: Env }).env, "CALENDAR_ADAPTER", {
@@ -1079,7 +1092,7 @@ describe("calendar projection and feed authority", () => {
     const day = dayStub(config.date);
     await fillGoogleMutationQueue();
 
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await expect(adapter.pokeDay({ date: config.date })).resolves.toMatchObject({ ok: true });
@@ -1105,7 +1118,7 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(22));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
@@ -1197,8 +1210,8 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(23));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    const removed = await day.createOwner(config, createInput(config.date));
-    const retained = await day.createOwner(config, createInput(config.date, "11:00"));
+    const removed = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
+    const retained = await day.createOwner(config, createInput(config.date, "11:00"), TEST_ACTOR);
     expect(removed).toMatchObject({ ok: true, status: "approved" });
     expect(retained).toMatchObject({ ok: true, status: "approved" });
     if (!removed.ok || !retained.ok) throw new Error("fixture create failed");
@@ -1283,7 +1296,7 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(23));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
@@ -1359,7 +1372,7 @@ describe("calendar projection and feed authority", () => {
     const config = await configFor(suiteDate(24));
     const adapter = adapterStub();
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await adapter.pokeDay({ date: config.date });
@@ -1450,7 +1463,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "approve",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: config.date });
     await runDurableObjectAlarm(adapterStub());
@@ -1462,7 +1476,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "cancel",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: config.date });
     await runDurableObjectAlarm(adapterStub());
@@ -1542,7 +1557,7 @@ describe("calendar projection and feed authority", () => {
     );
     const config = await configFor(suiteDate(14));
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await adapterStub().pokeDay({ date: config.date });
@@ -1553,7 +1568,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "cancel",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: config.date });
     await runDurableObjectAlarm(adapterStub());
@@ -1574,7 +1590,7 @@ describe("calendar projection and feed authority", () => {
     );
     const config = await configFor(suiteDate(21));
     const day = dayStub(config.date);
-    const created = await day.createOwner(config, createInput(config.date));
+    const created = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
     expect(created).toMatchObject({ ok: true, status: "approved" });
     if (!created.ok) throw new Error("fixture create failed");
     await adapterStub().pokeDay({ date: config.date });
@@ -1584,7 +1600,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: created.reservationId,
         action: "cancel",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: config.date });
     const authoritative = await day.calendarProjection(config);
@@ -1979,7 +1996,8 @@ describe("calendar projection and feed authority", () => {
         date: raceConfig.date,
         reservationId: created.reservationId,
         action: "approve",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "approved" });
     await adapterStub().pokeDay({ date: raceConfig.date });
     allowCompletion(new Response(null, { status: 200 }));
@@ -2016,8 +2034,8 @@ describe("calendar projection and feed authority", () => {
     );
     const config = await configFor(suiteDate(20));
     const day = dayStub(config.date);
-    const first = await day.createOwner(config, createInput(config.date));
-    const second = await day.createOwner(config, createInput(config.date, "11:00"));
+    const first = await day.createOwner(config, createInput(config.date), TEST_ACTOR);
+    const second = await day.createOwner(config, createInput(config.date, "11:00"), TEST_ACTOR);
     expect(first).toMatchObject({ ok: true, status: "approved" });
     expect(second).toMatchObject({ ok: true, status: "approved" });
     if (!first.ok || !second.ok) throw new Error("fixture create failed");
@@ -2468,6 +2486,7 @@ describe("calendar projection and feed authority", () => {
           reservationId: created.reservationId,
           action: "approve",
         },
+        TEST_ACTOR
       ),
     ).toMatchObject({ ok: true, status: "approved" });
     expect(
@@ -2476,7 +2495,8 @@ describe("calendar projection and feed authority", () => {
         date: config.date,
         reservationId: leased.reservationId,
         action: "approve",
-      }),
+      },
+        TEST_ACTOR),
     ).toMatchObject({ ok: true, status: "approved" });
     expect(
       await runInDurableObject(day, (_instance, state) =>

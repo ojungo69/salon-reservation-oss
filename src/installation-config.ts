@@ -636,7 +636,12 @@ const canonicalJson = (value: unknown): string => {
     .join(",")}}`;
 };
 
-const sha256Hex = async (value: string): Promise<string> => {
+/**
+ * Exported because the Worker mints staff credentials and needs the same
+ * encoding this object stores digests in. One definition, so the two cannot
+ * disagree about case or padding and stop matching.
+ */
+export const sha256Hex = async (value: string): Promise<string> => {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
@@ -1334,6 +1339,296 @@ const lineCommandFingerprint = async (input: LineCommandInput): Promise<string> 
     ]),
   );
 
+// ---- Staff roster (specs/005-staff-role-boundary/data-model.md) ----
+// Its own `__`-prefixed table, for the same reason the LINE lifecycle has one:
+// the exact-set schema check above excludes those names, so the roster reaches
+// an installation provisioned before it existed. An installation with no table
+// has no roster, which is the state every installation is in today.
+
+/**
+ * Compares two hex digests without letting the position of the first differing
+ * character show in the time taken. Both operands are the output of SHA-256, so
+ * neither is secret on its own; what must not leak is *where* they diverge,
+ * because that is what turns a refusal into an oracle.
+ *
+ * An inactive member holds `""`, which fails the length check immediately. That
+ * is a structural fact about the record rather than a fact about the presented
+ * credential, and the caller visits every member regardless.
+ */
+const timingSafeEqualHex = (left: string, right: string): boolean => {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+};
+
+export type StaffRole = "owner" | "staff";
+
+type StaffMember = {
+  id: string;
+  displayName: string;
+  role: StaffRole;
+  active: boolean;
+  // Empty exactly when the member is inactive. Clearing it is what revokes the
+  // credential, so revocation is a property of the stored record rather than of
+  // a check someone has to remember to write.
+  credentialDigest: string;
+  createdAt: string;
+  deactivatedAt: string | null;
+};
+
+type StaffRoster = {
+  version: 1;
+  members: StaffMember[];
+};
+
+const STAFF_MEMBER_KEYS = [
+  "id",
+  "displayName",
+  "role",
+  "active",
+  "credentialDigest",
+  "createdAt",
+  "deactivatedAt",
+] as const;
+
+// A stored display name is already normalised, so this only has to recognise
+// one rather than produce one — `boundedString` trims and would let an
+// untrimmed stored value through as valid, which the round-trip check forbids.
+const isStoredDisplayName = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value === value.trim() &&
+  !CONTROL.test(value) &&
+  codePointLength(value) >= 1 &&
+  codePointLength(value) <= 80;
+
+const parseStaffMember = (value: unknown): StaffMember => {
+  if (!isRecord(value) || !hasExactKeys(value, STAFF_MEMBER_KEYS)) {
+    return corruptStorage();
+  }
+  if (
+    typeof value.id !== "string" ||
+    !UUID.test(value.id) ||
+    !isStoredDisplayName(value.displayName) ||
+    (value.role !== "owner" && value.role !== "staff") ||
+    typeof value.active !== "boolean" ||
+    typeof value.credentialDigest !== "string" ||
+    // A live digest on an inactive record, or none on an active one, would make
+    // the active flag and the credential disagree about who can sign in.
+    (value.active
+      ? !SHA256_HEX.test(value.credentialDigest)
+      : value.credentialDigest !== "") ||
+    typeof value.createdAt !== "string" ||
+    (value.deactivatedAt !== null && typeof value.deactivatedAt !== "string")
+  ) {
+    return corruptStorage();
+  }
+  return {
+    id: value.id,
+    displayName: value.displayName,
+    role: value.role,
+    active: value.active,
+    credentialDigest: value.credentialDigest,
+    createdAt: canonicalTimestamp(value.createdAt),
+    deactivatedAt:
+      value.deactivatedAt === null ? null : canonicalTimestamp(value.deactivatedAt),
+  };
+};
+
+export const parseStaffRoster = (value: unknown): StaffRoster => {
+  if (!isRecord(value) || !hasExactKeys(value, ["version", "members"])) {
+    return corruptStorage();
+  }
+  // A document from a future version is refused rather than migrated: this
+  // object cannot know what a later shape meant.
+  if (value.version !== 1 || !Array.isArray(value.members)) return corruptStorage();
+  const members = value.members.map(parseStaffMember);
+  if (new Set(members.map(({ id }) => id)).size !== members.length) {
+    return corruptStorage();
+  }
+  return { version: 1, members };
+};
+
+// The one invariant every roster write is checked against. Stated over the
+// resulting document rather than over the operation, so it also covers the role
+// changes and record removals a later slice may add.
+export const hasActiveOwner = (roster: StaffRoster): boolean =>
+  roster.members.some(({ role, active }) => role === "owner" && active);
+
+/** A staff record as anyone outside this object may see it: never the digest. */
+type PublicStaffMember = Omit<StaffMember, "credentialDigest">;
+
+const publicStaffMember = ({
+  credentialDigest: _digest,
+  ...rest
+}: StaffMember): PublicStaffMember => rest;
+
+/**
+ * The credential digest is minted by the Worker, which is the only place the
+ * plaintext ever exists, so every command that issues a credential carries the
+ * digest in rather than computing one here.
+ */
+type RosterCommand =
+  | {
+      operation: "staff.create";
+      displayName: string;
+      role: StaffRole;
+      credentialDigest: string;
+      dryRun: boolean;
+    }
+  | { operation: "staff.rotate"; staffId: string; credentialDigest: string }
+  | { operation: "staff.deactivate"; staffId: string }
+  | { operation: "staff.reactivate"; staffId: string; credentialDigest: string };
+
+export type RosterFailureCode =
+  | "BAD_REQUEST"
+  | "STAFF_UNAVAILABLE"
+  | "VERSION_CONFLICT"
+  | "LAST_OWNER"
+  | "ROSTER_FULL"
+  | "UNAUTHORIZED";
+
+/**
+ * The roster is one document read in full on every staff-credentialled request,
+ * and it is rewritten whole on every command, so its size is a running cost
+ * rather than a one-time one. Far above any salon's headcount and far below the
+ * point where the document stops being writable — the bound exists so the
+ * failure is a refusal an owner can read, not a roster that can no longer be
+ * repaired from the screen.
+ */
+const ROSTER_LIMIT = 200;
+
+export type RosterCommandResult =
+  | { ok: true; member: PublicStaffMember }
+  | { ok: true; dryRun: true; wouldBeFirstMember: boolean }
+  | { ok: false; code: RosterFailureCode };
+
+const EMPTY_ROSTER: StaffRoster = { version: 1, members: [] };
+
+/**
+ * Validates a command arriving over RPC. The Worker has already checked the
+ * request body, but this object is the one that owns the roster's shape, so it
+ * does not take the caller's word for it.
+ */
+const parseRosterCommand = (value: unknown): RosterCommand | null => {
+  if (!isRecord(value)) return null;
+  const digestValid = (digest: unknown): digest is string =>
+    typeof digest === "string" && SHA256_HEX.test(digest);
+  if (value.operation === "staff.create") {
+    if (
+      !hasExactKeys(value, ["operation", "displayName", "role", "credentialDigest", "dryRun"]) ||
+      !isStoredDisplayName(value.displayName) ||
+      (value.role !== "owner" && value.role !== "staff") ||
+      !digestValid(value.credentialDigest) ||
+      typeof value.dryRun !== "boolean"
+    ) {
+      return null;
+    }
+    return {
+      operation: "staff.create",
+      displayName: value.displayName,
+      role: value.role,
+      credentialDigest: value.credentialDigest,
+      dryRun: value.dryRun,
+    };
+  }
+  if (typeof value.staffId !== "string" || !UUID.test(value.staffId)) return null;
+  if (value.operation === "staff.deactivate") {
+    return hasExactKeys(value, ["operation", "staffId"])
+      ? { operation: "staff.deactivate", staffId: value.staffId }
+      : null;
+  }
+  if (value.operation !== "staff.rotate" && value.operation !== "staff.reactivate") {
+    return null;
+  }
+  return hasExactKeys(value, ["operation", "staffId", "credentialDigest"]) &&
+    digestValid(value.credentialDigest)
+    ? { operation: value.operation, staffId: value.staffId, credentialDigest: value.credentialDigest }
+    : null;
+};
+
+const rosterFailure = (code: RosterFailureCode): { ok: false; code: RosterFailureCode } => ({
+  ok: false,
+  code,
+});
+
+/**
+ * Computes the roster a command would produce, or the reason it may not.
+ * Pure: the caller decides whether to store the result.
+ *
+ * An unknown identifier and an ineligible one answer the same
+ * `STAFF_UNAVAILABLE`, so the endpoint never confirms which identifiers are
+ * real to a caller probing them.
+ */
+const applyRosterCommand = (
+  roster: StaffRoster,
+  command: RosterCommand,
+  now: string,
+  newId: string,
+): { roster: StaffRoster; member: StaffMember } | { ok: false; code: RosterFailureCode } => {
+  if (command.operation === "staff.create") {
+    // Counted over every record, active or not: a stopped member is still a row
+    // this document carries forever, because past attribution resolves through
+    // it. Making room means the roster needs a way to forget people, which is a
+    // deletion this slice deliberately does not have.
+    if (roster.members.length >= ROSTER_LIMIT) return rosterFailure("ROSTER_FULL");
+    const member: StaffMember = {
+      id: newId,
+      displayName: command.displayName,
+      role: command.role,
+      active: true,
+      credentialDigest: command.credentialDigest,
+      createdAt: now,
+      deactivatedAt: null,
+    };
+    return { roster: { version: 1, members: [...roster.members, member] }, member };
+  }
+
+  const index = roster.members.findIndex(({ id }) => id === command.staffId);
+  const current = roster.members[index];
+  if (current === undefined) return rosterFailure("STAFF_UNAVAILABLE");
+
+  let member: StaffMember;
+  if (command.operation === "staff.rotate") {
+    // Rotating a record that cannot authenticate would put a live digest on an
+    // inactive member, which the parser refuses and revocation depends on.
+    if (!current.active) return rosterFailure("STAFF_UNAVAILABLE");
+    member = { ...current, credentialDigest: command.credentialDigest };
+  } else if (command.operation === "staff.deactivate") {
+    if (!current.active) return rosterFailure("STAFF_UNAVAILABLE");
+    // Clearing the digest is the revocation. The record survives with its
+    // identifier and role so past attribution stays resolvable.
+    member = { ...current, active: false, credentialDigest: "", deactivatedAt: now };
+  } else {
+    if (current.active) return rosterFailure("STAFF_UNAVAILABLE");
+    // A new credential, always: the previous digest was destroyed at
+    // deactivation and there is nothing to restore. `deactivatedAt` goes with
+    // it — the record is in the list the roster hands out, and an active member
+    // still carrying the date they were stopped describes a state that is not
+    // true of them any more.
+    member = {
+      ...current,
+      active: true,
+      credentialDigest: command.credentialDigest,
+      deactivatedAt: null,
+    };
+  }
+
+  const members = [...roster.members];
+  members[index] = member;
+  const next = { version: 1, members } as StaffRoster;
+  // Stated as "may not take away the last one" rather than "must always have
+  // one", because a roster of staff alone is a legitimate state: the
+  // OWNER_TOKEN holder administers it and adds people who are not owners. What
+  // must never happen is an owner-role account being removed when it was the
+  // only one. Checked on the resulting document, so a later role change or
+  // record removal is covered by this same line.
+  if (hasActiveOwner(roster) && !hasActiveOwner(next)) return rosterFailure("LAST_OWNER");
+  return { roster: next, member };
+};
+
 const corruptStorage = (): never => {
   throw new Error("Invalid installation storage");
 };
@@ -1573,20 +1868,27 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return clone(this.#readStoredState().state);
   }
 
-  // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
-
-  #lineTableExists(): boolean {
+  /**
+   * Whether one of this object's `__`-prefixed side tables has been provisioned
+   * yet. Absent is a legitimate state — it is where every installation starts —
+   * so the readers below distinguish it from a table that exists and has lost
+   * its row, which is corruption.
+   */
+  #tableExists(name: string): boolean {
     return (
       this.ctx.storage.sql
         .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__line_lifecycle'",
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+          name,
         )
         .toArray().length > 0
     );
   }
 
+  // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
+
   #readLineLifecycle(): LineLifecycle | null {
-    if (!this.#lineTableExists()) return null;
+    if (!this.#tableExists("__line_lifecycle")) return null;
     const rows = this.ctx.storage.sql
       .exec<{ singleton: number; lifecycle_json: string }>(
         "SELECT singleton, lifecycle_json FROM __line_lifecycle",
@@ -1621,6 +1923,164 @@ export class InstallationConfig extends DurableObjectBase<Env> {
        ON CONFLICT(singleton) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
       JSON.stringify(parseLineLifecycle(lifecycle)),
     );
+  }
+
+  // ---- Staff roster storage (own `__` table; settings JSON untouched) ----
+
+  // Answers null for an installation that has never had a roster, which is the
+  // state every installation is in until an owner adds the first member.
+  #readRoster(): { roster: StaffRoster; rosterJson: string } | null {
+    if (!this.#tableExists("__staff_roster")) return null;
+    const rows = this.ctx.storage.sql
+      .exec<{ singleton: number; roster_json: string }>(
+        "SELECT singleton, roster_json FROM __staff_roster",
+      )
+      .toArray();
+    const row = rows[0];
+    if (rows.length !== 1 || row.singleton !== 1) return corruptStorage();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.roster_json);
+    } catch {
+      return corruptStorage();
+    }
+    const roster = parseStaffRoster(parsed);
+    if (JSON.stringify(roster) !== row.roster_json) return corruptStorage();
+    return { roster, rosterJson: row.roster_json };
+  }
+
+  /**
+   * One statement for the first write and every later one. The insert path
+   * bootstraps a roster that does not exist yet; on an existing row the `WHERE`
+   * is the compare-and-swap, so a second owner editing concurrently writes zero
+   * rows and is refused rather than silently overwriting.
+   *
+   * `previousJson` is null only when the caller read no roster at all. Two
+   * commands both seeing no roster still cannot both land: the second one's
+   * insert hits the singleton conflict, and its `WHERE` fails against the row
+   * the first one wrote.
+   *
+   * No request can currently lose this compare-and-swap: `executeRosterCommand`
+   * has no `await` between its read and this write, so an object turn cannot be
+   * suspended mid-command and the previous document is always the current one.
+   * The clause guards that invariant rather than an observed race — introduce a
+   * suspension point up there and the window opens, and this is what turns the
+   * lost update into a refusal instead of silent corruption.
+   */
+  #writeRoster(roster: StaffRoster, previousJson: string | null): boolean {
+    // Validated before the table is created, because the two statements are not
+    // in one transaction: a parser that threw after the `CREATE` would leave a
+    // table holding no rows, which `#readRoster` reads as corruption forever and
+    // which no screen can repair. Unreachable while everything
+    // `applyRosterCommand` builds parses — the ordering is what keeps it so.
+    const rosterJson = JSON.stringify(parseStaffRoster(roster));
+    const sql = this.ctx.storage.sql;
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS __staff_roster (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        roster_json TEXT NOT NULL
+      )
+    `);
+    const write = sql.exec(
+      `INSERT INTO __staff_roster (singleton, roster_json) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET roster_json = excluded.roster_json
+       WHERE roster_json = ?`,
+      rosterJson,
+      previousJson ?? "",
+    );
+    if (write.rowsWritten === 1) return true;
+    // Same anomaly check `executeCommand`'s compare-and-swap makes: a count
+    // that is neither 0 nor 1 is not a lost race, and reporting it as one would
+    // tell an owner their `staff.create` failed while the member is in the
+    // roster holding a credential the response threw away.
+    if (write.rowsWritten !== 0) throw new Error("Invalid roster CAS result");
+    return false;
+  }
+
+  /**
+   * Resolves a presented credential to an actor, or to null. The Worker calls
+   * this only after the deployment secret has failed to match, so a corrupt or
+   * absent roster can never take the break-glass path down with it.
+   *
+   * Every member is compared, with no early exit on the first match, so the
+   * work done is the same whether the digest belongs to nobody, to an active
+   * member, or to a deactivated one. `ROSTER_LIMIT` is what keeps the naive
+   * loop the cheap option as well as the one that does not leak which
+   * identifiers exist.
+   */
+  resolveActor(digest: unknown): { staffId: string; role: StaffRole } | null {
+    if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return null;
+    const stored = this.#readRoster();
+    if (stored === null) return null;
+    let found: { staffId: string; role: StaffRole } | null = null;
+    for (const member of stored.roster.members) {
+      // An inactive member holds an empty digest, which no SHA-256 hex string
+      // equals, so deactivation needs no separate check here. `parseStaffMember`
+      // is what guarantees that — it refuses a stored record whose `active` and
+      // digest disagree in either direction, so revocation rests on the parser
+      // rather than on a test of `active` that could be forgotten here.
+      if (timingSafeEqualHex(member.credentialDigest, digest)) {
+        found = { staffId: member.id, role: member.role };
+      }
+    }
+    return found;
+  }
+
+  /** The roster as the operator screen sees it. Never a credential digest. */
+  listRoster(): PublicStaffMember[] {
+    return (this.#readRoster()?.roster.members ?? []).map(publicStaffMember);
+  }
+
+  /**
+   * One attempt, never a retry loop. `executeCommand` retries a lost
+   * compare-and-swap because it recomputes settings from scratch; a roster
+   * command must not, because "deactivate this person" recomputed against a
+   * roster somebody else just edited can do something the caller never asked
+   * for. A lost race is reported as a conflict and the operator re-reads.
+   */
+  async executeRosterCommand(
+    input: unknown,
+    actorId: unknown,
+  ): Promise<RosterCommandResult> {
+    const command = parseRosterCommand(input);
+    if (command === null) return rosterFailure("BAD_REQUEST");
+    if (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId))) {
+      return rosterFailure("BAD_REQUEST");
+    }
+    const stored = this.#readRoster();
+    const roster = stored?.roster ?? EMPTY_ROSTER;
+    // Re-checked here, not just at the gate. The Worker authorized this caller
+    // before the request body arrived, and on this surface that gap is the
+    // difference between an operation finishing with the rights it opened with
+    // and an operation restoring rights that were taken away while it was open.
+    // Read in the same synchronous turn as the write below, so the roster this
+    // decision is made against is the roster the command lands on.
+    // `null` is the deployment secret, which no roster command can revoke.
+    if (
+      actorId !== null &&
+      !roster.members.some(
+        ({ id, role, active }) => id === actorId && role === "owner" && active,
+      )
+    ) {
+      return rosterFailure("UNAUTHORIZED");
+    }
+    const applied = applyRosterCommand(
+      roster,
+      command,
+      new Date().toISOString(),
+      crypto.randomUUID(),
+    );
+    if ("ok" in applied) return applied;
+    if (command.operation === "staff.create" && command.dryRun) {
+      // Run the same parser the write runs, so "this would have worked" is a
+      // result rather than a claim. Nothing is written, and no credential is
+      // handed out for a record that will not exist.
+      parseStaffRoster(applied.roster);
+      return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
+    }
+    return this.#writeRoster(applied.roster, stored?.rosterJson ?? null)
+      ? { ok: true, member: publicStaffMember(applied.member) }
+      : rosterFailure("VERSION_CONFLICT");
   }
 
   /**

@@ -51,7 +51,7 @@
         </div>
         <form id="setup-auth-form" class="inline-form" data-setup-auth-form>
           <div class="field-row grow">
-            <label for="setup-owner-token">運営者トークン</label>
+            <label for="setup-owner-token">運営者トークン、または運営者権限のスタッフ認証情報</label>
             <input
               id="setup-owner-token"
               type="password"
@@ -60,7 +60,7 @@
               aria-describedby="setup-owner-token-help"
               required
             >
-            <p id="setup-owner-token-help" class="helper">設定値や受領書にはトークンとシークレットを含めません。</p>
+            <p id="setup-owner-token-help" class="helper">設定値や受領書にはトークンとシークレットを含めません。この画面の変更には運営者権限が必要です。</p>
           </div>
           <button id="setup-auth-submit" class="primary-button compact-button" type="submit">認証して設定を開く</button>
           <button id="setup-logout" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
@@ -273,6 +273,48 @@
           <a data-receipt-guidance-link="deletion">データの削除</a>
         </nav>
         <output id="receipt-status" class="status" aria-live="polite" data-receipt-status></output>
+      </section>
+
+      <section class="panel staff-panel" aria-labelledby="staff-title" data-staff-panel>
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">スタッフ</p>
+            <h2 id="staff-title">この設置を操作できる人を登録する</h2>
+          </div>
+          <span id="staff-count" class="count-chip" data-staff-count>有効 0人</span>
+        </div>
+        <p class="helper">
+          運営者トークンは配備時に決めた秘密で、変えるには配備し直す必要があります。ここで登録した認証情報は、いつでも再発行と停止ができ、停止はその人の次の操作から有効になります。
+        </p>
+        <div id="staff-list" class="staff-list" data-staff-list aria-live="polite">
+          <p class="empty-note">認証すると、登録済みのスタッフを表示します。</p>
+        </div>
+        <form id="staff-form" data-staff-form novalidate>
+          <fieldset id="staff-fields" disabled>
+            <legend>スタッフを追加する</legend>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="staff-display-name">画面に表示する名前</label>
+                <input id="staff-display-name" maxlength="80" data-staff-display-name required>
+              </div>
+              <div class="field-row">
+                <label for="staff-role">できること</label>
+                <select id="staff-role" data-staff-role>
+                  <option value="staff">スタッフ / 日々の予約対応</option>
+                  <option value="owner">運営者 / 設定と外部連携の変更もできる</option>
+                </select>
+              </div>
+            </div>
+          </fieldset>
+          <button id="staff-submit" class="secondary-button" type="submit" data-staff-submit disabled>スタッフを追加する</button>
+        </form>
+        <div id="staff-credential" class="result-box" data-staff-credential hidden>
+          <p class="result-label">この認証情報を表示するのは、この一度だけです</p>
+          <code id="staff-credential-value" class="key-value" data-staff-credential-value></code>
+          <button id="staff-copy" class="secondary-button" type="button" data-staff-copy>認証情報をコピー</button>
+          <p class="key-warning">本人へ安全な方法で渡してください。控え忘れたときは、この画面から再発行できます。</p>
+        </div>
+        <output id="staff-status" class="status" aria-live="polite" data-staff-status></output>
       </section>
     </main>
 

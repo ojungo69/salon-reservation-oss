@@ -4,14 +4,19 @@ import {
   evaluateInstallationReadiness,
   InstallationConfig,
   projectPublicConfig,
+  sha256Hex,
   type InstallationSettings,
   type InstallationState,
   type LineContext,
   type ReadinessRuntime,
+  type RosterCommandResult,
+  type RosterFailureCode,
+  type StaffRole,
 } from "./installation-config.ts";
 import {
   ReservationDay,
   type BookingSnapshot,
+  type DayActor,
   type DayClosureCreateInput,
   type DayClosureRemoveInput,
   type DayCalendarProjectionResult,
@@ -85,6 +90,16 @@ const ERROR_MESSAGES = {
   PROTECTION_REFUSED: "確認に失敗しました。もう一度お試しください。",
   NOT_LIVE: "現在は予約を受け付けていません。",
   TEMPORARILY_UNAVAILABLE: "現在処理できません。しばらく待ってからお試しください。",
+  LAST_OWNER:
+    "最後の運営者アカウントを無効化することはできません。先に別の運営者アカウントを追加してください。",
+  ROSTER_FULL:
+    "登録できるスタッフの上限に達しました。停止済みのスタッフも記録として残るため、上限には含まれます。",
+  // Deliberately one message for "no such person" and "not in a state this
+  // action applies to": the screen must not become a way to find out which
+  // identifiers are real. It names the roster rather than reusing the
+  // reservation wording, which is what an owner would otherwise be shown.
+  STAFF_UNAVAILABLE:
+    "対象のスタッフが見つからないか、この操作を実行できる状態ではありません。一覧を読み込み直してください。",
   UNAUTHORIZED: "認証情報を確認できませんでした。",
   VERSION_CONFLICT: "設定が更新されています。最新の状態を読み込み直してください。",
   LINE_LINK_CONFLICT:
@@ -265,34 +280,184 @@ const lineSecretPresent = (env: AppEnv): boolean => {
   return isLineChannelSecret(env.LINE_MESSAGING_CHANNEL_SECRET);
 };
 
-const ownerAuthenticated = async (
+/**
+ * Every operator route, and the role it requires. `staff` here means "staff or
+ * owner"; `owner` means owner only.
+ *
+ * Deliberately a total record over a closed union rather than a lookup with a
+ * default: a *bucket* added later without a decision recorded here fails to
+ * compile instead of quietly inheriting whichever side the default happened to
+ * be. The keys are the rate-limiter bucket names the routes already used, so
+ * this table and the limiter cannot drift apart.
+ *
+ * It does not, and from here cannot, catch a new `/api/admin/…` entry in the
+ * route table that never calls the gate at all: nothing ties a route to a
+ * bucket. The route-by-route test in the worker suite is the guard for that,
+ * and it is a hand-maintained list.
+ */
+const ROUTE_ROLE = {
+  "owner-availability": "staff",
+  "owner-schedule": "staff",
+  "owner-create": "staff",
+  "owner-transition": "staff",
+  "owner-closure-create": "staff",
+  "owner-closure-remove": "staff",
+  "owner-setup": "owner",
+  "owner-live": "owner",
+  "owner-receipt": "owner",
+  "line-lifecycle": "owner",
+  "line-status": "owner",
+  "calendar-status": "owner",
+  "calendar-reconcile": "owner",
+  "owner-staff": "owner",
+  "owner-staff-credential": "owner",
+} as const satisfies Record<string, "owner" | "staff">;
+
+type OperatorRoute = keyof typeof ROUTE_ROLE;
+
+/**
+ * Who is making an operator request. `break_glass` is the deployment secret:
+ * always `owner`, never in the roster, and the only credential that survives a
+ * corrupt one — which is why it is resolved from the environment, before any
+ * Durable Object is consulted.
+ */
+type Actor =
+  | { kind: "break_glass"; role: "owner" }
+  | { kind: "staff"; role: StaffRole; staffId: string };
+
+const bearerToken = (request: Request): string | null =>
+  request.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/)?.[1] ?? null;
+
+/**
+ * A staff credential, in the shape of the customer's management key: 32 random
+ * bytes, base64url, 43 characters. The customer's is minted in the browser
+ * precisely so this Worker never sees it; a staff credential cannot be, because
+ * the owner creates the account for somebody else and the system has to hand
+ * the credential back exactly once. So it is minted here, where the plaintext
+ * lives for one request and only its digest crosses the RPC boundary — never at
+ * rest in the object, the settings, or a log.
+ */
+const newStaffCredential = (): string => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCodePoint(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+};
+
+const breakGlassAuthenticated = async (
   request: Request,
   env: AppEnv,
 ): Promise<"accepted" | "refused" | "unavailable"> => {
   const expected = secret(env, "OWNER_TOKEN");
   if (!ownerSecretPresent(env) || expected === null) return "unavailable";
-  const authorization = request.headers.get("authorization");
-  const match = authorization?.match(/^Bearer ([^\s]+)$/);
-  const provided = match?.[1];
-  if (provided === undefined) return "refused";
+  const provided = bearerToken(request);
+  if (provided === null) return "refused";
   return equalBytes(await sha256(provided), await sha256(expected))
     ? "accepted"
     : "refused";
 };
 
+/**
+ * The whole operator authorization boundary.
+ *
+ * Order matters and is load-bearing:
+ *
+ *  1. The rate limiter runs first and is not an authorization decision, so no
+ *     role bypasses it and no credential can buy its way past it.
+ *  2. The deployment secret is checked from the environment. A match answers
+ *     without touching storage, so an installation whose roster is corrupt,
+ *     empty, or absent still lets its operator in — and an installation that
+ *     has never added staff pays nothing at all.
+ *  3. Only a credential that is *not* the deployment secret reaches the roster.
+ *
+ * Both refusals below answer an identical 401. A `403` for insufficient role
+ * would tell the caller "this credential is real, just not enough here", which
+ * is exactly the disclosure the design forbids: a staff credential probing an
+ * owner-only route must not be able to tell itself apart from a bad one. The
+ * operator screen knows its own role and says so client-side; the server never
+ * confirms it to anyone who has not already earned the route.
+ */
+const operatorGate = async (
+  request: Request,
+  env: AppEnv,
+  route: OperatorRoute,
+): Promise<{ actor: Actor } | { response: Response }> => {
+  // One bucket, spent before any credential is examined, and deliberately so.
+  //
+  // A reserved lane for the deployment secret was tried and reverted: selecting
+  // the budget from whether the presented candidate matched turned the limiter
+  // into an oracle. Exhaust the address bucket, and a wrong guess answers 429
+  // while a right one does not — which is unlimited free confirmation of a
+  // guess, and strictly worse than what it was meant to fix. Anything that
+  // gives the correct secret a different outcome here has that shape.
+  //
+  // What it was meant to fix is real and remains: staff and owner share one
+  // salon's connection, so a staff member can spend this bucket and leave their
+  // own revocation answering 429 for a minute at a time. That is a delay, it
+  // clears itself, and the operator's remedy is another connection. Recorded as
+  // R15 rather than traded for an oracle. (FR-004, FR-009)
+  if (await limited(env.OWNER_RATE_LIMITER, request, route)) {
+    return { response: rateLimited() };
+  }
+  const breakGlass = await breakGlassAuthenticated(request, env);
+  if (breakGlass === "unavailable") {
+    return { response: errorResponse(503, "TEMPORARILY_UNAVAILABLE") };
+  }
+  // Built where it is returned, not above: every authorized request was paying
+  // for a serialized error body it then discarded.
+  const refused = () => ({
+    response: errorResponse(401, "UNAUTHORIZED", { "www-authenticate": "Bearer" }),
+  });
+  if (breakGlass === "accepted") return { actor: { kind: "break_glass", role: "owner" } };
+
+  // Only now, with the deployment secret already answered, is the roster
+  // consulted. The order is what makes break-glass unconditional: a roster that
+  // is absent, empty, or corrupt cannot be reached from above this line, so no
+  // state of it can lock the installation's holder out. (FR-009, FR-017)
+  const provided = bearerToken(request);
+  if (provided === null) return refused();
+  const resolved = await installationStub(env).resolveActor(await sha256Hex(provided));
+  if (resolved === null) return refused();
+  if (ROUTE_ROLE[route] === "owner" && resolved.role !== "owner") return refused();
+  return { actor: { kind: "staff", role: resolved.role, staffId: resolved.staffId } };
+};
+
+/**
+ * Who a roster command is being run by, as the object needs to see them.
+ *
+ * The gate authorized this caller before the request body existed; a slow body
+ * leaves a window in which the roster can change underneath an authorization
+ * that has already been given. On the day partition that window is the bound
+ * R13 accepts — an operation completes with the rights it opened with. On the
+ * roster it is not, because the operations here *are* the rights: a deactivated
+ * owner finishing a slow `reactivate` on themselves would undo their own
+ * revocation and walk away with a fresh credential. So the identifier travels
+ * to the object, which re-checks it in the same synchronous turn as the write.
+ *
+ * `null` is the deployment secret, which is not in the roster and cannot be
+ * revoked from it.
+ */
+const rosterActor = (actor: Actor): string | null =>
+  actor.kind === "staff" ? actor.staffId : null;
+
+/**
+ * The day partition records who acted, not what they may do, so the role the
+ * gate resolved is dropped here rather than carried into storage.
+ */
+const dayActor = (actor: Actor): DayActor =>
+  actor.kind === "break_glass" ? { kind: "break_glass" } : { kind: "staff", staffId: actor.staffId };
+
+/**
+ * Kept so the handlers that only need "may this caller proceed" read as they
+ * did. A route that records who acted uses `operatorGate` directly.
+ */
 const ownerGate = async (
   request: Request,
   env: AppEnv,
-  route: string,
+  route: OperatorRoute,
 ): Promise<Response | null> => {
-  if (await limited(env.OWNER_RATE_LIMITER, request, route)) return rateLimited();
-  const authentication = await ownerAuthenticated(request, env);
-  if (authentication === "unavailable") {
-    return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
-  }
-  return authentication === "accepted"
-    ? null
-    : errorResponse(401, "UNAUTHORIZED", { "www-authenticate": "Bearer" });
+  const gate = await operatorGate(request, env, route);
+  return "response" in gate ? gate.response : null;
 };
 
 const installationStub = (env: AppEnv): DurableObjectStub<InstallationConfig> =>
@@ -1488,6 +1653,151 @@ const handleLineStatus = async (
   });
 };
 
+/**
+ * Exhaustive, in the shape `failureResponse` uses, and for the same reason: a
+ * code added to `RosterFailureCode` without a status decided here is a compile
+ * error rather than a silent 409. This function used to fall through, and every
+ * code added to it since inherited 409 by accident until someone noticed.
+ */
+const rosterFailureStatus = (code: RosterFailureCode): number => {
+  switch (code) {
+    case "BAD_REQUEST":
+      return 400;
+    // The object refused the actor the gate had already accepted, which means
+    // the roster moved under an authorized request. Answered as the gate would.
+    case "UNAUTHORIZED":
+      return 401;
+    case "STAFF_UNAVAILABLE":
+      return 404;
+    case "VERSION_CONFLICT":
+    case "LAST_OWNER":
+    case "ROSTER_FULL":
+      return 409;
+  }
+};
+
+/**
+ * `credential` appears in exactly one place in this Worker: the body of the
+ * response to the command that minted it. It is never stored, never logged, and
+ * never returned by a read.
+ */
+const rosterResponse = (
+  result: RosterCommandResult,
+  credential: string,
+  successStatus: number,
+): Response => {
+  if (!result.ok) return errorResponse(rosterFailureStatus(result.code), result.code);
+  if ("dryRun" in result) {
+    // No `valid: true`: reaching this line is the validation, and a field that
+    // can only hold one value tells a reader nothing. A refused input is a 400.
+    return json({ dryRun: true, wouldBeFirstMember: result.wouldBeFirstMember });
+  }
+  // Deactivation issues nothing, so the field is absent rather than empty: a
+  // client must never find a `credential` key it could mistake for one.
+  return json(
+    { member: result.member, ...(credential === "" ? {} : { credential }) },
+    successStatus,
+  );
+};
+
+// A dry run validates the record that would be stored without creating one, so
+// it needs a digest-shaped value and must not mint a real credential. Zeroes
+// are not the digest of anything anyone holds.
+const DRY_RUN_DIGEST = "0".repeat(64);
+
+const handleStaffRoster = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET" && request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET, POST" });
+  }
+  if (request.method === "POST") {
+    const originFailure = requireMutationOrigin(request, url);
+    if (originFailure !== null) return originFailure;
+  }
+  const gate = await operatorGate(request, env, "owner-staff");
+  if ("response" in gate) return gate.response;
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  if (request.method === "GET") {
+    return json({ members: await installationStub(env).listRoster() });
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const body = parsed.value;
+  if (
+    !isObject(body) ||
+    !(
+      hasExactKeys(body, ["displayName", "role"]) ||
+      hasExactKeys(body, ["displayName", "role", "dryRun"])
+    ) ||
+    !boundedText(body.displayName, 1, 80) ||
+    (body.role !== "owner" && body.role !== "staff") ||
+    (body.dryRun !== undefined && typeof body.dryRun !== "boolean")
+  ) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  const dryRun = body.dryRun === true;
+  const credential = dryRun ? "" : newStaffCredential();
+  return rosterResponse(
+    await installationStub(env).executeRosterCommand(
+      {
+        operation: "staff.create",
+        displayName: body.displayName,
+        role: body.role,
+        credentialDigest: dryRun ? DRY_RUN_DIGEST : await sha256Hex(credential),
+        dryRun,
+      },
+      rosterActor(gate.actor),
+    ),
+    credential,
+    201,
+  );
+};
+
+const handleStaffCredential = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  staffId: string,
+  operation: "staff.rotate" | "staff.deactivate" | "staff.reactivate",
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  }
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await operatorGate(request, env, "owner-staff-credential");
+  if ("response" in gate) return gate.response;
+  // An identifier that is not a UUID cannot name a member, and answering it
+  // differently from one that simply does not exist would let the status code
+  // confirm the shape of a real identifier. Same treatment reservation ids get.
+  if (!UUID.test(staffId)) return errorResponse(404, "STAFF_UNAVAILABLE");
+  if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (!isObject(parsed.value) || !hasExactKeys(parsed.value, [])) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  // Deactivation destroys the digest, so reactivation has nothing to restore
+  // and issues a new credential rather than pretending the old one survived.
+  const issues = operation !== "staff.deactivate";
+  const credential = issues ? newStaffCredential() : "";
+  return rosterResponse(
+    await installationStub(env).executeRosterCommand(
+      {
+        operation,
+        staffId,
+        ...(issues ? { credentialDigest: await sha256Hex(credential) } : {}),
+      },
+      rosterActor(gate.actor),
+    ),
+    credential,
+    200,
+  );
+};
+
 const handleReceipt = async (
   request: Request,
   env: AppEnv,
@@ -1616,8 +1926,8 @@ const handleOwnerCreate = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-create");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-create");
+  if ("response" in gate) return gate.response;
   const context = await installationContext(env, url, true);
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
@@ -1636,7 +1946,7 @@ const handleOwnerCreate = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-    dayStub(env, input.date).createOwner(config, input, allowFresh),
+    dayStub(env, input.date).createOwner(config, input, dayActor(gate.actor), allowFresh),
   );
   if (!allowFresh && !result.ok && result.code === "UNAVAILABLE") {
     if (context.state.mode !== "live") return errorResponse(403, "NOT_LIVE");
@@ -1657,8 +1967,8 @@ const handleOwnerTransition = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-transition");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-transition");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseTransition(parsed.value, reservationId);
@@ -1669,7 +1979,7 @@ const handleOwnerTransition = async (
   }
   return mutationResponse(
     await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-      dayStub(env, input.date).transitionOwner(config, input),
+      dayStub(env, input.date).transitionOwner(config, input, dayActor(gate.actor)),
     ),
     input.action,
     200,
@@ -1686,8 +1996,8 @@ const handleClosureCreate = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-closure-create");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-closure-create");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseClosureCreate(parsed.value);
@@ -1698,7 +2008,7 @@ const handleClosureCreate = async (
     return errorResponse(400, "BAD_REQUEST");
   }
   const result = await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-    dayStub(env, input.date).createClosure(config, input, allowFresh),
+    dayStub(env, input.date).createClosure(config, input, dayActor(gate.actor), allowFresh),
   );
   return !allowFresh && !result.ok && result.code === "UNAVAILABLE"
     ? errorResponse(400, "BAD_REQUEST")
@@ -1716,8 +2026,8 @@ const handleClosureRemove = async (
   }
   const originFailure = requireMutationOrigin(request, url);
   if (originFailure !== null) return originFailure;
-  const gate = await ownerGate(request, env, "owner-closure-remove");
-  if (gate !== null) return gate;
+  const gate = await operatorGate(request, env, "owner-closure-remove");
+  if ("response" in gate) return gate.response;
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const input = parseClosureRemove(parsed.value, closureId);
@@ -1728,7 +2038,7 @@ const handleClosureRemove = async (
   }
   return closureResponse(
     await dayCallWithRetry(env, url, true, input.date, context, async (config) =>
-      dayStub(env, input.date).removeClosure(config, input),
+      dayStub(env, input.date).removeClosure(config, input, dayActor(gate.actor)),
     ),
     "closure_remove",
     200,
@@ -2361,6 +2671,7 @@ const EXACT_ROUTES: Record<string, ExactRoute> = {
   "/api/admin/calendar/reconcile": handleCalendarReconcile,
   "/api/admin/setup/live": handleLive,
   "/api/admin/installation-receipt": handleReceipt,
+  "/api/admin/staff": handleStaffRoster,
   "/api/admin/availability": handleOwnerAvailability,
   "/api/admin/schedule": handleSchedule,
   "/api/admin/reservations": handleOwnerCreate,
@@ -2383,6 +2694,21 @@ const CAPTURE_ROUTES: CaptureRoute[] = [
     handle: handleOwnerTransition,
   },
   { pattern: /^\/api\/admin\/closures\/([^/]+)\/remove$/, handle: handleClosureRemove },
+  {
+    pattern: /^\/api\/admin\/staff\/([^/]+)\/rotate$/,
+    handle: (request, env, url, id) =>
+      handleStaffCredential(request, env, url, id, "staff.rotate"),
+  },
+  {
+    pattern: /^\/api\/admin\/staff\/([^/]+)\/deactivate$/,
+    handle: (request, env, url, id) =>
+      handleStaffCredential(request, env, url, id, "staff.deactivate"),
+  },
+  {
+    pattern: /^\/api\/admin\/staff\/([^/]+)\/reactivate$/,
+    handle: (request, env, url, id) =>
+      handleStaffCredential(request, env, url, id, "staff.reactivate"),
+  },
 ];
 
 const handle = async (request: Request, env: AppEnv): Promise<Response> => {
