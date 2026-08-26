@@ -1,0 +1,79 @@
+docs/PORTING.md
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 5
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 54-55
+scripts/release-audit.mjs
+  s_ade11e03cc5fe6::t_2e596c8a1df32b 431,556-564
+  s_ade11e03cc5fe6::t_69ef01b22c3db5 18,133,302-304,552,555,566,570,573,598,600-612,616,651
+  s_ade11e03cc5fe6::t_a934bda6792f65 572,599
+  s_ade11e03cc5fe6::t_c5dbe17c5b8dec 282,568-569,585-591,593-597,614-615
+  s_ade11e03cc5fe6::t_053e42f2a8badd 547,551,553-554
+  s_ade11e03cc5fe6::t_6d2ce6067d3ab7 565,571,574-577
+  s_ade11e03cc5fe6::t_2a31cdb1a7c2ef 579
+  s_ade11e03cc5fe6::t_823cff0744c63b 592
+  s_ade11e03cc5fe6::t_ba09568835bc43 567,578,580-584,613
+specs/006-reuse-first-porting/verify-tasks-report.md
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 65
+  s_ade11e03cc5fe6::t_26c1c388ca51f3 38
+  s_ade11e03cc5fe6::t_fffa3c52f84357 62-64,66-67
+.github/pull_request_template.md
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 12,14,16
+specs/006-reuse-first-porting/research.md
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 62,64
+specs/006-reuse-first-porting/quickstart.md
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 60
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 39
+specs/006-reuse-first-porting/data-model.md
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 78
+specs/006-reuse-first-porting/spec.md
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 80,89,110
+specs/006-reuse-first-porting/contracts/provenance-record.md
+  s_ade11e03cc5fe6::t_c5dbe17c5b8dec 7
+  s_ade11e03cc5fe6::t_8cebb2f471fed0 76,91
+  s_ade11e03cc5fe6::t_69ef01b22c3db5 6,8
+.github/workflows/ci.yml
+  s_ade11e03cc5fe6::t_2e596c8a1df32b 24
+test/release-audit-denylist.test.ts
+  s_ade11e03cc5fe6::t_e8719164f74de5 105,114
+  s_ade11e03cc5fe6::t_f8557a525542c4 204-205,217,222-223
+  s_ade11e03cc5fe6::t_be6f009ff589f0 161,163,206-216,218-221
+  s_ade11e03cc5fe6::t_b37a0355fec2cb 97-100
+  s_ade11e03cc5fe6::t_60063c3b9c558c 62-89,94,145,151,154-155,190,193-194,196,226-228
+  s_ade11e03cc5fe6::t_febf4b44523e93 164,224-225,229-236
+  s_ade11e03cc5fe6::t_c5dbe17c5b8dec 91
+  s_ade11e03cc5fe6::t_54bf4b0bf9fadb 182-187
+  s_ade11e03cc5fe6::t_3e2b592ca37f4a 135-140
+  s_ade11e03cc5fe6::t_f70432dac40779 146
+  s_ade11e03cc5fe6::t_e995d38238e826 166-181,188-189,191-192,195
+  s_ade11e03cc5fe6::t_7dfd75814ce6d4 102,107-108,115-121,130-134,148-150,152-153,157-159
+  s_ade11e03cc5fe6::t_5dbd896911e97b 93,95-96,123-129
+  s_9d346c66194a0d::t_be756d9654c21c 101,156,162,165
+specs/006-reuse-first-porting/plan.md
+  s_ade11e03cc5fe6::t_fffa3c52f84357 154
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 143
+docs/ADR-0001-REUSE-FIRST-PORTING.md
+  s_ade11e03cc5fe6::t_21edafeee7fa3a 42-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6049480e358cab2f20e79388c290a2dc50f8933f",
+  "prompts": {},
+  "sessions": {
+    "s_9d346c66194a0d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0361c-2473-77c2-8dff-96928e78d32b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    },
+    "s_ade11e03cc5fe6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a039fd-27cb-77b3-ac53-085816ff56e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
