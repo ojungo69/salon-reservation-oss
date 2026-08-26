@@ -39,6 +39,8 @@ Exact source/test coordinates, bound revisions, rights evidence, sanitization wo
 
 The public summary may contain only generic capability descriptions, current disposition, evidence class, preferred future method, migration-readiness status, and next gate. It never contains private repository/workspace coordinates, private revisions/history, exact private source/test paths, rights-evidence coordinates, customer/account/deployment identifiers, credentials, raw denylist terms, or proprietary assets.
 
+Release audit enforces the ledger boundary across the Git-visible working tree, staged index, and reachable history. It fails closed when Git cannot be inspected or the checkout is shallow; CI therefore fetches complete history.
+
 ## Contribution gate
 
 Every pull request that implements or alters a production-parity capability must:

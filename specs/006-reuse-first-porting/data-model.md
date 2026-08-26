@@ -75,7 +75,7 @@ Every assessed capability has exactly one current disposition. Mixed provenance 
 - A revision change moves `Verified` to `Stale` until paths, tests, and evidence are rechecked.
 - Secret values, customer data, raw provider payloads, private denylist terms, and proprietary assets are forbidden even in the private ledger; it records coordinates and evidence, not sensitive contents.
 
-## Public PublicProvenanceEntry
+## PublicProvenanceEntry
 
 | Field | Required | Source |
 |---|---:|---|

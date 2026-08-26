@@ -9,11 +9,11 @@ Describe the user-visible or security-relevant change and why it is needed.
 
 ## Production-parity provenance
 
-Complete this section when the pull request implements or alters a production-parity capability.
+Complete this section for every pull request.
 
-- [ ] Not applicable: this pull request does not implement or alter a production-parity capability
+- Applies to a production-parity capability: yes / no
 
-When applicable, leave "Not applicable" unchecked and copy this declaration once per capability.
+When `yes`, copy this declaration once per capability. When `no`, omit capability declarations.
 Split mixed-provenance capabilities into smaller declarations.
 
 ### Capability declaration

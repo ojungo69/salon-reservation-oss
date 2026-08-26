@@ -2,7 +2,7 @@
 
 [Capability parity](PARITY.md) says what the project does. This document says how each assessed implementation was produced and whether migration evidence exists. These are separate claims:
 
-- **Capability status**: implemented, planned, or deliberately excluded.
+- **Capability status**: implemented, partial, planned, or deliberately excluded.
 - **Implementation provenance**: Copied, Generalized, Reimplemented, or Excluded-private.
 - **Migration readiness**: not assessed, blocked, evidence mapped, or ready.
 
@@ -50,6 +50,8 @@ An implemented capability can still be migration-blocked. A copied helper can ha
 ## Evidence boundary
 
 Exact source/test coordinates, bound revisions, publication-rights evidence, sanitization work, and evidence owners live in a tracked private ledger outside this repository. This page exposes only a field-allowlisted conclusion.
+
+Release audit rejects the canonical private-ledger path or mandatory marker in Git-visible current files, the staged index, and reachable history. A shallow checkout cannot prove that history and fails closed.
 
 Public provenance evidence never includes private repository/workspace coordinates, private revisions/history, exact private source/test paths, rights-evidence coordinates, customer or account identifiers, deployment details, credentials, raw denylist terms, private runbooks, or proprietary assets.
 

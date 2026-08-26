@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = "release/public-files.txt";
+const PRIVATE_LEDGER_PATH = "docs/private_porting_ledger.md";
 const AGPL = "AGPL-3.0-only";
 const RELEASE_VERSION = "0.2.0";
 const ALLOWED_NAMED_SECRETS = new Map([
@@ -129,7 +130,7 @@ const readManifest = () => {
     fail("public manifest must be sorted");
   }
   for (const path of paths) {
-    if (path === "docs/PRIVATE_PORTING_LEDGER.md") {
+    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
       fail("private porting ledger must not be public");
     }
     if (
@@ -278,7 +279,7 @@ const CREDENTIAL_RULES = [
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
 ];
 const FORBIDDEN_ROOTS = [/\/home\/[^/\s]+\//, /\/Users\/[^/\s]+\//];
-const PRIVATE_LEDGER_MARKER = ["PRIVATE", "PORTING", "LEDGER: DO NOT PUBLISH"].join("-");
+const PRIVATE_LEDGER_MARKER = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
@@ -298,7 +299,9 @@ const OBJECT_SECRET = new RegExp(
 );
 
 const scanText = (label, text, denylist) => {
-  if (text.includes(PRIVATE_LEDGER_MARKER)) fail(`private porting ledger marker found in ${label}`);
+  if (text.toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+    fail(`private porting ledger marker found in ${label}`);
+  }
   for (const [name, pattern] of CREDENTIAL_RULES) {
     if (pattern.test(text)) fail(`${name} pattern found in ${label}`);
   }
@@ -425,7 +428,7 @@ const WORKFLOW_LINES = [
   "- name: Check out source",
   "uses: actions/checkout",
   "with:",
-  "fetch-depth: 1",
+  "fetch-depth: 0",
   "persist-credentials: false",
   "- name: Set up Node.js",
   "uses: actions/setup-node",
@@ -541,11 +544,76 @@ const resolveGit = () => {
   return path;
 };
 
-const git = (args) =>
+const gitRaw = (args) =>
   execFileSync(resolveGit(), ["-C", ROOT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+  });
+
+const git = (args) => gitRaw(args).trim();
+
+const auditPrivatePortingLedger = () => {
+  let shallow;
+  try {
+    shallow = git(["rev-parse", "--is-shallow-repository"]);
+  } catch {
+    fail("cannot determine repository history depth for private ledger audit");
+  }
+  if (shallow !== "false") {
+    fail("private ledger history audit requires a complete Git history");
+  }
+  let trackedPaths;
+  let paths;
+  let markerInIndex;
+  let pathInHistory;
+  let markerInHistory;
+  try {
+    trackedPaths = gitRaw(["ls-files", "--cached", "-z"])
+      .split("\0")
+      .filter(Boolean);
+    const untrackedPaths = gitRaw(["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\0")
+      .filter(Boolean);
+    paths = [...new Set([...trackedPaths, ...untrackedPaths])];
+    try {
+      gitRaw(["grep", "--cached", "-a", "-i", "-F", PRIVATE_LEDGER_MARKER, "--"]);
+      markerInIndex = true;
+    } catch (error) {
+      if (error?.status !== 1) throw error;
+      markerInIndex = false;
+    }
+    pathInHistory =
+      git(["log", "--all", "--format=%H", "--", `:(icase)${PRIVATE_LEDGER_PATH}`]) !== "";
+    markerInHistory =
+      git([
+        "log",
+        "--all",
+        "--format=%H",
+        "--text",
+        "--regexp-ignore-case",
+        "-G",
+        PRIVATE_LEDGER_MARKER,
+        "--",
+      ]) !== "";
+  } catch {
+    fail("cannot enumerate repository paths for private ledger audit");
+  }
+  for (const path of paths) {
+    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
+      fail("private porting ledger must not be public");
+    }
+    const absolute = join(ROOT, path);
+    if (!existsSync(absolute)) continue;
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) continue;
+    if (readText(path).toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+      fail(`private porting ledger marker found in ${path}`);
+    }
+  }
+  if (markerInIndex) fail("private porting ledger marker found in Git index");
+  if (pathInHistory) fail("private porting ledger path found in public history");
+  if (markerInHistory) fail("private porting ledger marker found in public history");
+};
 
 const auditPublicTree = (paths, denylist) => {
   if (git(["rev-parse", "--is-inside-work-tree"]) !== "true") fail("public tree is not a Git repository");
@@ -580,6 +648,7 @@ const auditPublicTree = (paths, denylist) => {
 try {
   const options = parseArguments();
   const paths = readManifest();
+  auditPrivatePortingLedger();
   const denylist = loadDenylist(options.denylist);
   scanPublicText(paths, denylist);
   auditPackage();

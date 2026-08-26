@@ -3,12 +3,9 @@
 ## Private ledger contract
 
 The private ledger is the only record containing exact source coordinates. Its first non-heading
-line MUST be the exact sentinel below; the release audit rejects this marker even after the file is
-renamed:
-
-```markdown
-<!-- PRIVATE-PORTING-LEDGER: DO NOT PUBLISH -->
-```
+line MUST be an HTML comment whose content is `PRIVATE-PORTING-` immediately followed by
+`EVIDENCE: DO NOT PUBLISH`, with no space or formatting delimiter between those fragments in the
+private file. The release audit rejects the assembled marker even after the file is renamed.
 
 Each capability section MUST contain these labels once:
 
@@ -76,7 +73,7 @@ The existing pull-request template gains one conditional section:
 ```markdown
 ## Production-parity provenance
 
-- [ ] Not applicable: this pull request does not implement or alter a production-parity capability
+- Applies to a production-parity capability: yes / no
 
 ### Capability declaration
 
@@ -91,7 +88,7 @@ The existing pull-request template gains one conditional section:
 - [ ] Public diff contains no private coordinates, data, credentials, identifiers, assets, or history
 ```
 
-Review rule: copy the capability declaration once per capability. Selecting more than one disposition requires splitting that declaration. A non-parity pull request checks `Not applicable` and omits capability declarations.
+Review rule: copy the capability declaration once per capability when `Applies` is `yes`. Selecting more than one disposition requires splitting that declaration. A non-parity pull request records `no` and omits capability declarations.
 
 ## Consistency contract
 

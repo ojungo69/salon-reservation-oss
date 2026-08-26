@@ -59,41 +59,179 @@ const runAudit = (...args: string[]) => runAuditScript(SCRIPT, ...args);
 
 const runWithDenylist = (denylist: string) => runAudit("--denylist", denylist);
 
-test("refuses the private porting ledger by canonical path or marker", { skip: !POSIX }, () => {
-  const manifestPath = join(ROOT, "release/public-files.txt");
-  const paths = readFileSync(manifestPath, "utf8").trimEnd().split("\n");
-  const marker = ["PRIVATE", "PORTING", "LEDGER: DO NOT PUBLISH"].join("-");
+const PUBLIC_PATHS = readFileSync(join(ROOT, "release/public-files.txt"), "utf8")
+  .trimEnd()
+  .split("\n");
 
-  for (const [name, privateLedger, contents, message] of [
+const copyPublicTree = (tree: string) => {
+  for (const path of PUBLIC_PATHS) {
+    const destination = join(tree, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(ROOT, path), destination);
+  }
+};
+
+const initializeGit = (tree: string) => {
+  execFileSync("git", ["init", "-b", "main"], { cwd: tree, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Public Test"], { cwd: tree });
+  execFileSync("git", ["config", "user.email", "public-test@users.noreply.github.com"], {
+    cwd: tree,
+  });
+};
+
+const commitAll = (tree: string, message: string) => {
+  execFileSync("git", ["add", "."], { cwd: tree });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", message], {
+    cwd: tree,
+    stdio: "ignore",
+  });
+};
+
+test("refuses the private porting ledger by canonical path or marker", { skip: !POSIX }, () => {
+  const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+
+  const nonGitTree = join(workspace, "public-tree-without-git");
+  copyPublicTree(nonGitTree);
+  const withoutGit = runAuditScript(join(nonGitTree, "scripts/release-audit.mjs"));
+  assert.equal(withoutGit.status, 1, withoutGit.output);
+  assert.match(
+    withoutGit.output,
+    /cannot determine repository history depth for private ledger audit/,
+  );
+
+  for (const [name, privateLedger, contents, includeInManifest, auditArgs, message] of [
     [
       "canonical",
-      "docs/PRIVATE_PORTING_LEDGER.md",
+      "docs/Private_Porting_Ledger.md",
       "# Private Porting Ledger\n",
+      true,
+      ["--public-tree"],
       /private porting ledger must not be public/,
     ],
     [
       "renamed",
       "docs/PORTING-EVIDENCE.md",
+      `<!-- ${marker.toLowerCase()} -->\n`,
+      true,
+      ["--public-tree"],
+      /private porting ledger marker found/,
+    ],
+    [
+      "renamed-outside-manifest",
+      "docs/PORTING-EVIDENCE-PRIVATE.md",
       `<!-- ${marker} -->\n`,
+      false,
+      [],
+      /private porting ledger marker found/,
+    ],
+    [
+      "renamed-newline-outside-manifest",
+      "docs/PORTING-\nEVIDENCE-PRIVATE.md",
+      `<!-- ${marker} -->\n`,
+      false,
+      [],
+      /private porting ledger marker found/,
+    ],
+    [
+      "renamed-leading-space-outside-manifest",
+      " docs/PORTING-EVIDENCE-PRIVATE.md",
+      `<!-- ${marker} -->\n`,
+      false,
+      [],
       /private porting ledger marker found/,
     ],
   ] as const) {
     const tree = join(workspace, `public-tree-${name}`);
-    for (const path of paths) {
-      const destination = join(tree, path);
-      mkdirSync(dirname(destination), { recursive: true });
-      copyFileSync(join(ROOT, path), destination);
-    }
+    copyPublicTree(tree);
+    mkdirSync(dirname(join(tree, privateLedger)), { recursive: true });
     writeFileSync(join(tree, privateLedger), contents);
-    writeFileSync(
-      join(tree, "release/public-files.txt"),
-      `${[...paths, privateLedger].sort().join("\n")}\n`,
+    if (includeInManifest) {
+      writeFileSync(
+        join(tree, "release/public-files.txt"),
+        `${[...PUBLIC_PATHS, privateLedger].sort().join("\n")}\n`,
+      );
+    }
+    initializeGit(tree);
+    commitAll(tree, "test");
+
+    const { status, output } = runAuditScript(
+      join(tree, "scripts/release-audit.mjs"),
+      ...auditArgs,
     );
+    assert.equal(status, 1, output);
+    assert.match(output, message);
+  }
+});
+
+test("refuses a private porting ledger deleted from current files but retained in history", { skip: !POSIX }, () => {
+  const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+
+  for (const [name, privateLedger, contents, message] of [
+    [
+      "canonical-history",
+      "docs/Private_Porting_Ledger.md",
+      "# Private Porting Ledger\n",
+      /private porting ledger path found in public history/,
+    ],
+    [
+      "renamed-history",
+      "docs/PORTING-HISTORY.md",
+      `<!-- ${marker} -->\n`,
+      /private porting ledger marker found in public history/,
+    ],
+    [
+      "renamed-binary-history",
+      "docs/PORTING-HISTORY.bin",
+      Buffer.concat([Buffer.from(`<!-- ${marker} -->\n`), Buffer.from([0])]),
+      /private porting ledger marker found in public history/,
+    ],
+  ] as const) {
+    const tree = join(workspace, `public-tree-${name}`);
+    copyPublicTree(tree);
+    mkdirSync(dirname(join(tree, privateLedger)), { recursive: true });
+    writeFileSync(join(tree, privateLedger), contents);
+    initializeGit(tree);
+    commitAll(tree, "add private ledger");
+    rmSync(join(tree, privateLedger));
+    commitAll(tree, "remove private ledger");
 
     const { status, output } = runAuditScript(join(tree, "scripts/release-audit.mjs"));
     assert.equal(status, 1, output);
     assert.match(output, message);
   }
+});
+
+test("refuses a private porting ledger staged only in the Git index", { skip: !POSIX }, () => {
+  const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+  for (const [name, contents] of [
+    ["text", `<!-- ${marker} -->\n`],
+    ["binary", Buffer.concat([Buffer.from(`<!-- ${marker} -->\n`), Buffer.from([0])])],
+  ] as const) {
+    const tree = join(workspace, `public-tree-staged-private-ledger-${name}`);
+    copyPublicTree(tree);
+    const privateLedger = join(tree, "docs/PORTING-STAGED.md");
+    writeFileSync(privateLedger, contents);
+    initializeGit(tree);
+    execFileSync("git", ["add", "."], { cwd: tree });
+    writeFileSync(privateLedger, "# Sanitized working copy\n");
+
+    const { status, output } = runAuditScript(join(tree, "scripts/release-audit.mjs"));
+    assert.equal(status, 1, output);
+    assert.match(output, /private porting ledger marker found in Git index/);
+  }
+});
+
+test("refuses a shallow repository that cannot prove private-ledger history", { skip: !POSIX }, () => {
+  const tree = join(workspace, "public-tree-shallow-history");
+  copyPublicTree(tree);
+  initializeGit(tree);
+  commitAll(tree, "test");
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" }).trim();
+  writeFileSync(join(tree, ".git/shallow"), `${head}\n`);
+
+  const { status, output } = runAuditScript(join(tree, "scripts/release-audit.mjs"));
+  assert.equal(status, 1, output);
+  assert.match(output, /private ledger history audit requires a complete Git history/);
 });
 
 test("takes the absent default denylist as no private terms", { skip: !POSIX }, (t) => {

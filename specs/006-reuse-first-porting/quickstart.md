@@ -36,7 +36,7 @@ Expected:
 
 - Every initial public row maps to one private ledger row.
 - The private ledger keeps the mandatory do-not-publish sentinel defined by the projection contract; release audit rejects it even after a rename.
-- Public files contain no private repository/workspace names or paths, private revision identifiers, exact private test coordinates, rights-evidence coordinates, customer or account identifiers, deployment details, credentials, private history, raw denylist terms, or proprietary assets.
+- Public files contain no private repository/workspace names or paths, private revision identifiers, exact private test coordinates, rights-evidence coordinates, customer or account identifiers, deployment details, credentials, private runbooks, private history, raw denylist terms, or proprietary assets.
 - The private ledger contains coordinates and rights evidence references, but no secret values or customer data.
 
 When a maintainer-controlled private denylist is available at an allowed local path, also run:
@@ -57,6 +57,7 @@ Expected:
 
 - Manifest remains sorted and newline-terminated.
 - Both new public governance documents are regular files and required public paths.
+- A canonical or marker-bearing private ledger fails the normal audit when current, staged, renamed, omitted from the manifest, or deleted but retained in reachable history. Non-Git and shallow checkouts fail closed.
 - Existing release scans pass.
 
 ## 5. Run the complete project gate

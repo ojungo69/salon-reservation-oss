@@ -59,9 +59,9 @@
 
 ## R5. Which public artifacts must never disappear?
 
-**Decision**: Register `docs/ADR-0001-REUSE-FIRST-PORTING.md` and `docs/PORTING.md` in both the public manifest and the release audit's required-path set.
+**Decision**: Register `docs/ADR-0001-REUSE-FIRST-PORTING.md` and `docs/PORTING.md` in both the public manifest and the release audit's required-path set. The normal audit checks the Git-visible working tree, staged index, and all reachable history for the canonical private-ledger path and mandatory marker, even when that file is omitted from the manifest. Git inspection fails closed, NUL-delimited paths preserve valid unusual filenames, shallow history is rejected, and CI fetches complete history.
 
-**Rationale**: The ADR controls future implementation choices, and the summary prevents capability parity from being mistaken for implementation reuse. Losing either silently would reopen the divergence problem.
+**Rationale**: The ADR controls future implementation choices, and the summary prevents capability parity from being mistaken for implementation reuse. Losing either silently would reopen the divergence problem. Manifest-only or current-file-only scanning is insufficient because staged evidence and deleted evidence retained by Git are publication surfaces too.
 
 **Alternatives considered**:
 

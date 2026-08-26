@@ -35,7 +35,7 @@
 | T021 | VERIFIED | Cubic correctness review ran four rounds. Six valid findings were fixed: canonical private-ledger rejection, renamed-ledger marker rejection, Windows test pollution, stable public capability IDs, repeatable per-capability PR declarations, and mandatory marker contract. One generator/authority redesign suggestion was declined as the documented eight-row YAGNI tradeoff. |
 | T022 | VERIFIED | Two initial hardened read-only Grok attempts timed out without a verdict. After the user resumed the task, one fresh narrowed public-only audit completed with `ok: true` and zero findings. No private evidence was sent. |
 | T023 | VERIFIED | Ponytail review: no dependency, generator, custom CI, configuration layer, or speculative abstraction to remove. Exact path and sentinel cover distinct accidental-publication paths. |
-| T024 | VERIFIED | Fresh post-review `npm run check` passes: 72 core tests, 244 Worker tests across 5 files, typecheck, generated-type check, Wrangler dry-run, dependency audit, and 79-file release audit. Focused regression passes 8/8; both diff checks, hash identity, eight-ID projection, and public forbidden-term scan pass. |
+| T024 | VERIFIED | Fresh post-review `npm run check` passes: 75 core tests, 244 Worker tests across 5 files, typecheck, generated-type check, Wrangler dry-run, dependency audit, and 79-file release audit. Focused private-ledger regression passes 11/11; both diff checks, hash identity, eight-ID projection, and public forbidden-term scan pass. |
 | T025 | VERIFIED | This is the one task-verification pass and report. |
 
 ## Requirement coverage
@@ -59,3 +59,9 @@
 ## Residual
 
 No implementation task remains. Pull-request CI and remote review gates still apply before merge.
+
+## Pull-request review follow-up
+
+PR #61 review identified one release-boundary gap shared by Sourcery and Codex: normal audit did not inspect a private ledger omitted from the manifest. Follow-up correctness review found staged-index, unusual-filename, deleted-history, and shallow-checkout bypasses. Red-green regressions now cover canonical/mixed-case paths, renamed/lowercase markers, `--public-tree`, manifest omission, newline/leading-space paths, staged-only content, deleted history, non-Git trees, and shallow history. CI fetches complete history.
+
+CodeRabbit consistency findings were also applied: explicit `Applies: yes / no`, `Partial` capability status, corrected `PublicProvenanceEntry` heading, private-runbook scope, and a sanitized `Excluded-private` projection contract. Codacy case-insensitive path/marker findings are regression-covered. The suggestion to test only `--public-tree` was narrowed: manifest-included cases use that production mode, while the omitted-manifest case deliberately uses the normal CI audit that previously missed the leak.

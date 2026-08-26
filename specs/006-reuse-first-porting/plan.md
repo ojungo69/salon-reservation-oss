@@ -140,7 +140,7 @@ Extend `.github/pull_request_template.md`, `docs/PARITY.md`, and `docs/ROADMAP.m
 
 ### 4. Register durable public artifacts
 
-Add both new public documents to `release/public-files.txt` and the `REQUIRED` set in `scripts/release-audit.mjs`; record the change in `CHANGELOG.md`. Run GitNexus impact on `REQUIRED` before editing and `detect_changes` after the public diff.
+Add both new public documents to `release/public-files.txt` and the `REQUIRED` set in `scripts/release-audit.mjs`; make the normal audit reject a canonical or marker-bearing private ledger in the Git-visible working tree, staged index, or reachable history, including outside the manifest; reject incomplete shallow history and fetch full CI history; record the change in `CHANGELOG.md`. Run GitNexus impact before editing affected symbols and `detect_changes` after the public diff.
 
 **Independent check:** Removing either document makes the release audit fail with `required public path is missing`.
 
@@ -151,7 +151,7 @@ Run the quickstart commands, inspect both repository scopes, reconcile every che
 ## Security and Operational Risk Review
 
 - **Abuse**: A template is a visible review gate, not a branch-protection enforcement mechanism. Phase 0 deliberately adds no custom CI parser; reviewers enforce it until evidence shows automation is needed.
-- **Data loss**: The private ledger is tracked only in the non-public workspace. Public release registration includes only the ADR and sanitized summary.
+- **Data loss**: The private ledger is tracked only in the non-public workspace. Public release registration includes only the ADR and sanitized summary; normal audit scans Git-visible paths so omitting a leaked ledger from the manifest does not bypass the boundary.
 - **Race/drift**: The private ledger records both verified revisions and date. Any later source change marks mappings stale until rechecked.
 - **Rollback**: Public changes are documentation plus two required-path entries and can be reverted together. The private ledger remains evidence and records supersession instead of deleting history.
 - **Secrets**: Verification checks paths and schemas only. It never opens environment files or records credential values.

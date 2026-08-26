@@ -77,7 +77,7 @@ As a public user or maintainer, I can tell whether a capability exists, whether 
 - **FR-004**: The project MUST maintain a private porting ledger outside the public release surface.
 - **FR-005**: Each assessed ledger row MUST include capability, exact source mapping, ownership or publication-rights status, one disposition, source-test mapping, public evidence mapping, sanitization work, evidence owner, assessment status, and last verification date.
 - **FR-006**: A broad capability with mixed provenance MUST be split until every assessed row has exactly one disposition.
-- **FR-007**: The initial ledger MUST cover the exact copied date parser; reservation command kernel; storage and transaction authority; customer booking journey; LINE identity and notification adapter; calendar adapter; staff-role boundary; and excluded-private data, credentials, branding, deployment identifiers, and private history.
+- **FR-007**: The initial ledger MUST cover the exact copied date parser; reservation command kernel; storage and transaction authority; customer booking journey; LINE identity and notification adapter; calendar adapter; staff-role boundary; and excluded-private data, credentials, branding, deployment identifiers, private runbooks, and private history.
 - **FR-008**: The project MUST publish a sanitized provenance summary that reports disposition, evidence class, and migration-readiness status without private coordinates or sensitive data.
 - **FR-009**: The public summary MUST distinguish current implementation provenance from the preferred disposition for a future port.
 - **FR-010**: Capability parity documentation MUST link to the provenance summary and state that capability status does not prove implementation reuse or migration readiness.
@@ -86,7 +86,7 @@ As a public user or maintainer, I can tell whether a capability exists, whether 
 - **FR-013**: Copied claims MUST be backed by reproducible content-identity evidence and an approved publication boundary.
 - **FR-014**: Generalized claims MUST identify which production invariants remain unchanged and which installation-specific details moved behind configuration or adapters.
 - **FR-015**: Reimplemented claims MUST identify why reuse was rejected, which invariants are preserved or changed, migration and rollback consequences, and equivalent-or-better evidence that still remains to be supplied.
-- **FR-016**: Excluded-private rows MUST remain outside public files, fixtures, issue evidence, release artifacts, and public history.
+- **FR-016**: Private fields, coordinates, evidence, and sensitive material for Excluded-private rows MUST remain outside public files, fixtures, issue evidence, release artifacts, and public history. A sanitized Excluded-private projection MAY identify the boundary publicly.
 - **FR-017**: This slice MUST NOT alter runtime behavior, storage schemas, public APIs, authentication, deployment configuration, or external resources.
 - **FR-018**: The next storage/transaction comparison and any code-porting slice MUST use this ledger and decision as inputs rather than creating a second provenance system.
 - **FR-019**: Public release checks MUST fail if new public governance artifacts are absent from the release manifest or if a private ledger enters the public surface.
@@ -107,7 +107,7 @@ As a public user or maintainer, I can tell whether a capability exists, whether 
 - **SC-002**: A reviewer can distinguish capability status, implementation provenance, and migration readiness for every public summary row without access to the private ledger.
 - **SC-003**: The exact copied date parser remains byte-identical to its approved source, while every independently implemented foundation is labeled without overstating reuse.
 - **SC-004**: Every future production-parity pull request is prompted for disposition, ledger evidence, test relationship, and sanitization before review completion.
-- **SC-005**: Public scans find zero private repository names or paths, credentials, customer information, account or deployment identifiers, raw denylist terms, proprietary assets, or private history in the new public artifacts.
+- **SC-005**: Public scans find zero private repository names or paths, credentials, customer information, account or deployment identifiers, private runbooks, raw denylist terms, proprietary assets, or private history in the new public artifacts.
 - **SC-006**: The complete existing verification command and public release audit pass with all new public artifacts represented in the release boundary.
 - **SC-007**: The final change contains zero runtime, schema, API, authentication, or deployment behavior changes.
 - **SC-008**: Architecture-expanding parity work without a recorded disposition and required decision is visibly blocked, while security fixes remain allowed.
