@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
@@ -36,17 +45,56 @@ const write = (name: string, contents: string): string => {
   return path;
 };
 
-const runAudit = (...args: string[]): { status: number | null; output: string } => {
+const runAuditScript = (script: string, ...args: string[]): { status: number | null; output: string } => {
   // Killed rather than awaited forever: a denylist the open blocks on would
   // otherwise hang this test the way it hung the audit.
-  const result = spawnSync(process.execPath, [SCRIPT, ...args], {
+  const result = spawnSync(process.execPath, [script, ...args], {
     encoding: "utf8",
     timeout: 30_000,
   });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 };
 
+const runAudit = (...args: string[]) => runAuditScript(SCRIPT, ...args);
+
 const runWithDenylist = (denylist: string) => runAudit("--denylist", denylist);
+
+test("refuses the private porting ledger by canonical path or marker", { skip: !POSIX }, () => {
+  const manifestPath = join(ROOT, "release/public-files.txt");
+  const paths = readFileSync(manifestPath, "utf8").trimEnd().split("\n");
+  const marker = ["PRIVATE", "PORTING", "LEDGER: DO NOT PUBLISH"].join("-");
+
+  for (const [name, privateLedger, contents, message] of [
+    [
+      "canonical",
+      "docs/PRIVATE_PORTING_LEDGER.md",
+      "# Private Porting Ledger\n",
+      /private porting ledger must not be public/,
+    ],
+    [
+      "renamed",
+      "docs/PORTING-EVIDENCE.md",
+      `<!-- ${marker} -->\n`,
+      /private porting ledger marker found/,
+    ],
+  ] as const) {
+    const tree = join(workspace, `public-tree-${name}`);
+    for (const path of paths) {
+      const destination = join(tree, path);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(ROOT, path), destination);
+    }
+    writeFileSync(join(tree, privateLedger), contents);
+    writeFileSync(
+      join(tree, "release/public-files.txt"),
+      `${[...paths, privateLedger].sort().join("\n")}\n`,
+    );
+
+    const { status, output } = runAuditScript(join(tree, "scripts/release-audit.mjs"));
+    assert.equal(status, 1, output);
+    assert.match(output, message);
+  }
+});
 
 test("takes the absent default denylist as no private terms", { skip: !POSIX }, (t) => {
   if (existsSync(join(ROOT, ".release-private-denylist"))) {

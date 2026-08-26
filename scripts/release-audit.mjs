@@ -48,9 +48,11 @@ const REQUIRED = new Set([
   "README.md",
   "SECURITY.md",
   "docs/ADAPTER-CONTRACTS.md",
+  "docs/ADR-0001-REUSE-FIRST-PORTING.md",
   "docs/CALENDAR-SETUP.md",
   "docs/CLOUDFLARE.md",
   "docs/PARITY.md",
+  "docs/PORTING.md",
   "docs/ROADMAP.md",
   "docs/RELEASING.md",
   "docs/PRIVACY.md",
@@ -127,6 +129,9 @@ const readManifest = () => {
     fail("public manifest must be sorted");
   }
   for (const path of paths) {
+    if (path === "docs/PRIVATE_PORTING_LEDGER.md") {
+      fail("private porting ledger must not be public");
+    }
     if (
       isAbsolute(path) ||
       path.includes("\\") ||
@@ -273,6 +278,7 @@ const CREDENTIAL_RULES = [
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
 ];
 const FORBIDDEN_ROOTS = [/\/home\/[^/\s]+\//, /\/Users\/[^/\s]+\//];
+const PRIVATE_LEDGER_MARKER = ["PRIVATE", "PORTING", "LEDGER: DO NOT PUBLISH"].join("-");
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
@@ -292,6 +298,7 @@ const OBJECT_SECRET = new RegExp(
 );
 
 const scanText = (label, text, denylist) => {
+  if (text.includes(PRIVATE_LEDGER_MARKER)) fail(`private porting ledger marker found in ${label}`);
   for (const [name, pattern] of CREDENTIAL_RULES) {
     if (pattern.test(text)) fail(`${name} pattern found in ${label}`);
   }

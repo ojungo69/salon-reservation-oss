@@ -11,6 +11,11 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Added
 
+- Reuse-first production-porting governance: an ADR, a public-safe implementation-provenance and
+  migration-readiness matrix backed by a private evidence ledger, and a pull-request declaration
+  that prevents production-parity work from silently adding another independent implementation.
+  Architecture-expanding parity work now waits for source/test mapping, rights and sanitization
+  evidence, and any required semantic ADR; scoped security fixes remain allowed.
 - Staff accounts with their own credentials, so operating the installation no longer means holding
   the deployment secret. An owner adds people on the setup screen, gives each one either the `owner`
   or the `staff` role, and hands them a credential shown exactly once. `staff` covers the day-to-day
