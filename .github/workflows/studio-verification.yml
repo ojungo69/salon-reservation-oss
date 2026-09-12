@@ -23,25 +23,42 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm install-scripts ls --json | jq -e '.allowScripts == []'
       - run: ./node_modules/.bin/playwright install chromium
-      - name: Integrate the bounded visual slice
+      - name: Install Japanese browser fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - name: Reproduce the missing owner resource identifier
+        run: |
+          python3 .session/repair-studio.py tests
+          set +e
+          ./node_modules/.bin/vitest run test/worker.test.ts -t 'owner-creates an approved booking and reschedules it without changing ownership' > /tmp/resource-red.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/resource-red.log
+          test "$result" -eq 1
+          grep -q 'resource-chair-b' /tmp/resource-red.log
+      - name: Integrate and repair the bounded visual slice
         run: |
           python3 .session/apply-studio.py
+          python3 .session/repair-studio.py fix
           rm .github/workflows/studio-verification.yml
       - name: Verify application and release gates
         run: npm run check
       - name: Verify rendered flows and capture visual evidence
         run: npm run test:browser
+      - name: Preserve the verified application workflow separately
+        run: |
+          mkdir -p /tmp/studio-verified
+          cp .github/workflows/ci.yml /tmp/studio-verified/ci.yml
       - name: Commit only verified public changes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git restore --source=HEAD -- .github/workflows/studio-verification.yml
-          expected=$(printf '%s\n' package.json public/404.html public/admin.html public/app.js public/bookings.html public/cancellation.html public/index.html public/line.html public/privacy.html public/setup.html public/terms.html release/public-files.txt)
+          git restore --source=HEAD -- .github/workflows/studio-verification.yml .github/workflows/ci.yml
+          expected=$(printf '%s\n' CHANGELOG.md docs/DESIGN-STUDIO.md package.json public/404.html public/admin.html public/app.js public/bookings.html public/cancellation.html public/index.html public/line.html public/privacy.html public/setup.html public/studio.css public/studio.mjs public/terms.html release/public-files.txt scripts/release-audit.mjs src/worker.ts test/studio.test.ts test/worker.test.ts tests-browser/studio.spec.ts)
           actual=$(git diff --name-only | LC_ALL=C sort)
           test "$actual" = "$expected"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- package.json public release/public-files.txt
+          git add -- CHANGELOG.md docs/DESIGN-STUDIO.md package.json public release/public-files.txt scripts/release-audit.mjs src/worker.ts test/studio.test.ts test/worker.test.ts tests-browser/studio.spec.ts
           git -c commit.gpgsign=false commit -m 'feat: integrate verified studio booking and operator surfaces'
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/chore/studio-ui-verification
@@ -49,6 +66,9 @@ jobs:
         if: always()
         with:
           name: studio-browser-evidence
-          path: .playwright
+          path: |
+            .playwright
+            /tmp/studio-verified
+            /tmp/resource-red.log
           include-hidden-files: true
           retention-days: 1
