@@ -1,0 +1,58 @@
+name: Verify final porting gates
+on:
+  push:
+    branches: [fix/final-porting-gates]
+    paths: [.github/workflows/final-gates.yml, .session/final-gates.py]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Demonstrate missing-instruction regressions before the fix
+        run: |
+          python3 .session/final-gates.py tests
+          rm .github/workflows/final-gates.yml
+          set +e
+          node --test --test-name-pattern='public candidates retain maintainer instructions' test/release-metadata.test.ts > /tmp/gates-red.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/gates-red.log
+          test "$result" -eq 1
+          grep -q 'fail 2' /tmp/gates-red.log
+      - name: Verify fixed gates and documentation
+        run: |
+          python3 .session/final-gates.py fix
+          node --test test/release-metadata.test.ts test/release-audit-denylist.test.ts
+          node scripts/release-audit.mjs
+          git diff --check
+      - name: Export only the verified four files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git restore --source=HEAD -- .github/workflows/final-gates.yml
+          expected=$(printf '%s\n' CHANGELOG.md docs/PORTING.md scripts/release-audit.mjs test/release-metadata.test.ts)
+          actual=$(git diff --name-only | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- CHANGELOG.md docs/PORTING.md scripts/release-audit.mjs test/release-metadata.test.ts
+          git -c commit.gpgsign=false commit -m 'fix: retain maintainer release gates and align public guidance'
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/fix/final-porting-gates
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: final-gates-regression
+          path: /tmp/gates-red.log
+          retention-days: 1
