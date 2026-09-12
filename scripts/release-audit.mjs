@@ -552,6 +552,21 @@ const gitRaw = (args) =>
 
 const git = (args) => gitRaw(args).trim();
 
+const auditCurrentLedgerFiles = (paths) => {
+  for (const path of paths) {
+    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
+      fail("private porting ledger must not be public");
+    }
+    const absolute = join(ROOT, path);
+    if (!existsSync(absolute)) continue;
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) continue;
+    if (readText(path).toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+      fail(`private porting ledger marker found in ${path}`);
+    }
+  }
+};
+
 const auditPrivatePortingLedger = () => {
   let shallow;
   try {
@@ -612,18 +627,7 @@ const auditPrivatePortingLedger = () => {
   } catch {
     fail("cannot enumerate repository paths for private ledger audit");
   }
-  for (const path of paths) {
-    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
-      fail("private porting ledger must not be public");
-    }
-    const absolute = join(ROOT, path);
-    if (!existsSync(absolute)) continue;
-    const stat = lstatSync(absolute);
-    if (!stat.isFile() || stat.isSymbolicLink()) continue;
-    if (readText(path).toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
-      fail(`private porting ledger marker found in ${path}`);
-    }
-  }
+  auditCurrentLedgerFiles(paths);
   if (markerInIndex) fail("private porting ledger marker found in Git index");
   if (pathInHistory) fail("private porting ledger path found in public history");
   if (markerInHistory) fail("private porting ledger marker found in public history");
