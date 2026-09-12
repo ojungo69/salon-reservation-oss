@@ -42,6 +42,8 @@ const ALLOWED_DEPENDENCY_LICENSES = new Set([
   "MPL-2.0",
 ]);
 const REQUIRED = new Set([
+  "AGENTS.md",
+  ".github/pull_request_template.md",
   ".github/workflows/ci.yml",
   ".npmrc",
   "CHANGELOG.md",
