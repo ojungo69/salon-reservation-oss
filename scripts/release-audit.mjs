@@ -567,6 +567,7 @@ const auditPrivatePortingLedger = () => {
   let markerInIndex;
   let pathInHistory;
   let markerInHistory;
+  let markerInMessages;
   try {
     trackedPaths = gitRaw(["ls-files", "--cached", "-z"])
       .split("\0")
@@ -595,6 +596,19 @@ const auditPrivatePortingLedger = () => {
         PRIVATE_LEDGER_MARKER,
         "--",
       ]) !== "";
+    // -G examines file diffs, not commit messages. Search all reachable refs,
+    // including empty commits, without returning any potentially private text.
+    markerInMessages =
+      git([
+        "log",
+        "--all",
+        "--format=%H",
+        "--max-count=1",
+        "--fixed-strings",
+        "--regexp-ignore-case",
+        `--grep=${PRIVATE_LEDGER_MARKER}`,
+        "--",
+      ]) !== "";
   } catch {
     fail("cannot enumerate repository paths for private ledger audit");
   }
@@ -613,6 +627,7 @@ const auditPrivatePortingLedger = () => {
   if (markerInIndex) fail("private porting ledger marker found in Git index");
   if (pathInHistory) fail("private porting ledger path found in public history");
   if (markerInHistory) fail("private porting ledger marker found in public history");
+  if (markerInMessages) fail("private porting ledger marker found in commit messages");
 };
 
 const auditPublicTree = (paths, denylist) => {
