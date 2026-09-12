@@ -34,6 +34,9 @@ const POSIX = process.platform !== "win32";
 const SCRIPT = fileURLToPath(new URL("../scripts/release-audit.mjs", import.meta.url));
 const ROOT = dirname(dirname(SCRIPT));
 const workspace = POSIX ? mkdtempSync("/tmp/release-audit-denylist-") : "";
+// Assemble the fictional term so distributing this test does not make its own
+// allowed-file scan find the term it is testing.
+const FICTIONAL_DENYLIST_TERM = ["unreleased", "codename"].join("-");
 
 after(() => {
   if (workspace) rmSync(workspace, { recursive: true, force: true });
@@ -245,7 +248,7 @@ test("takes the absent default denylist as no private terms", { skip: !POSIX }, 
 });
 
 test("accepts a denylist file inside a system temp directory", { skip: !POSIX }, () => {
-  const { status, output } = runWithDenylist(write("terms.txt", "# a comment\nunreleased-codename\n"));
+  const { status, output } = runWithDenylist(write("terms.txt", `# a comment\n${FICTIONAL_DENYLIST_TERM}\n`));
   assert.equal(status, 0, output);
   assert.match(output, /release audit passed/);
 });
@@ -279,7 +282,7 @@ test("refuses a denylist outside the permitted roots, named or linked", { skip: 
   // mkdtemp rather than a fixed name, because the cleanup deletes what it names.
   const outsideRoot = mkdtempSync(join(home, ".release-audit-denylist-test-"));
   const outside = join(outsideRoot, "terms.txt");
-  writeFileSync(outside, "unreleased-codename\n");
+  writeFileSync(outside, `${FICTIONAL_DENYLIST_TERM}\n`);
   try {
     const named = runWithDenylist(outside);
     assert.equal(named.status, 1, named.output);
