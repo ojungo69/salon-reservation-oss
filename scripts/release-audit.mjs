@@ -482,8 +482,7 @@ const stripComment = (line) => {
 };
 
 // Indentation is dropped, so the list is what says where a line belongs: a
-// job-level `permissions:` block is two lines the reviewed workflow does not
-// have, wherever it sits.
+// job-level `permissions:` block the reviewed workflow does not have is rejected.
 const auditWorkflow = () => {
   // GitHub runs every file in this directory, so pinning one of them says
   // nothing on its own: a second workflow is a second place to install, with
@@ -634,6 +633,37 @@ const auditPrivatePortingLedger = () => {
   if (markerInMessages) fail("private porting ledger marker found in commit messages");
 };
 
+// A tag can point to another tag whose original ref has been deleted. Enumerate
+// reachable objects, not only current tag names, so that inner metadata is kept
+// inside the same publication boundary. Matching contents never reach the log.
+const auditAnnotatedTagMetadata = () => {
+  let objectTypes;
+  try {
+    const objects = gitRaw(["rev-list", "--objects", "--all", "--no-object-names"]);
+    objectTypes = execFileSync(
+      resolveGit(),
+      ["-C", ROOT, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+      { input: objects, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+  } catch {
+    fail("cannot enumerate reachable objects for tag metadata audit");
+  }
+  for (const line of objectTypes.split("\n").filter(Boolean)) {
+    const object = /^([0-9a-f]{40,64}) (blob|tree|commit|tag)$/.exec(line);
+    if (object === null) fail("cannot identify a reachable object for tag metadata audit");
+    if (object[2] !== "tag") continue;
+    let metadata;
+    try {
+      metadata = gitRaw(["cat-file", "tag", object[1]]);
+    } catch {
+      fail("cannot read reachable tag metadata");
+    }
+    if (metadata.toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+      fail("private porting ledger marker found in annotated tag metadata");
+    }
+  }
+};
+
 const auditPublicTree = (paths, denylist) => {
   if (git(["rev-parse", "--is-inside-work-tree"]) !== "true") fail("public tree is not a Git repository");
   if (git(["rev-parse", "--is-shallow-repository"]) !== "false") {
@@ -668,6 +698,7 @@ try {
   const options = parseArguments();
   const paths = readManifest();
   auditPrivatePortingLedger();
+  auditAnnotatedTagMetadata();
   const denylist = loadDenylist(options.denylist);
   scanPublicText(paths, denylist);
   auditPackage();
