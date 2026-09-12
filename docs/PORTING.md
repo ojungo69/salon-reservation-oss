@@ -6,7 +6,7 @@
 - **Implementation provenance**: Copied, Generalized, Reimplemented, or Excluded-private.
 - **Migration readiness**: not assessed, blocked, evidence mapped, or ready.
 
-The governing rule is [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md): reuse and generalize production-tested implementation, schema, tests, and operational invariants first. Reimplement only with a recorded reason and equivalent-or-better evidence.
+The governing rule is [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md): inspect production-tested implementation, schema, tests, and operational invariants as evidence first, then select reuse, generalization, or replacement by the best supported outcome. Record the comparison and equivalent-or-better behavioral evidence for replacements. Neither existing architecture nor work already invested is a reason to retain an inferior component.
 
 ## Current assessed provenance
 

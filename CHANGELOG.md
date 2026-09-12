@@ -11,7 +11,7 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Added
 
-- Reuse-first production-porting governance: an ADR, a public-safe implementation-provenance and
+- Quality-led, inspection-first production-porting governance: an ADR, a public-safe implementation-provenance and
   migration-readiness matrix backed by a private evidence ledger, and a pull-request declaration
   that prevents production-parity work from silently adding another independent implementation.
   Architecture-expanding parity work now waits for source/test mapping, rights and sanitization
@@ -78,6 +78,14 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
   enabled, so the form is available to any GitHub user.
 - `CONTRIBUTING.md` documents the branch and merge policy and the two-file procedure for updating
   the install-script allowlist.
+
+### Fixed
+
+- Operator and setup authentication controls now remain disabled until initialization has
+  installed their handlers, preventing lost sign-in attempts during slow configuration loading.
+  Both pages explain the JavaScript requirement when scripting is unavailable.
+- Failing rendered-page runs retain hidden Playwright trace and screenshot files.
+- Public release candidates must include the maintainer instructions and PR declaration template.
 
 ## [0.2.0] - 2026-08-10
 

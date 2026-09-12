@@ -25,8 +25,8 @@ const createFixture = () => {
     git("config", "user.email", "public-test@users.noreply.github.com");
     git("add", ".");
     git("-c", "commit.gpgsign=false", "commit", "-m", "public fixture");
-    const audit = () => {
-      const result = spawnSync(process.execPath, [join(tree, "scripts/release-audit.mjs")], {
+    const audit = (...args: string[]) => {
+      const result = spawnSync(process.execPath, [join(tree, "scripts/release-audit.mjs"), ...args], {
         encoding: "utf8", timeout: 30_000,
       });
       return { status: result.status, output: `${result.stdout}${result.stderr}` };
@@ -131,6 +131,26 @@ for (const kind of ["commit", "tag"] as const) {
       const result = audit();
       assert.equal(result.status, 0, result.output);
       assert.match(result.output, /release audit passed/);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const required of ["AGENTS.md", ".github/pull_request_template.md"]) {
+  test(`public candidates retain maintainer instructions: ${required}`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      const baseline = audit("--public-tree");
+      assert.equal(baseline.status, 0, baseline.output);
+      writeFileSync(join(tree, "release/public-files.txt"),
+        `${PUBLIC_PATHS.filter((path) => path !== required).join("\n")}\n`);
+      rmSync(join(tree, required));
+      git("add", "-A");
+      git("-c", "commit.gpgsign=false", "commit", "--amend", "--no-edit");
+      const result = audit("--public-tree");
+      assert.equal(result.status, 1, result.output);
+      assert.ok(result.output.includes(`required public path is missing: ${required}`), result.output);
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
