@@ -463,6 +463,7 @@ const WORKFLOW_LINES = [
   "with:",
   "name: rendered-page-failures",
   "path: .playwright",
+  "include-hidden-files: true",
   "retention-days: 3",
 ];
 const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;

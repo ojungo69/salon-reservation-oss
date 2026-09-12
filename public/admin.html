@@ -45,12 +45,14 @@
           </div>
           <p class="helper">認証後にのみ、お客様の連絡先と操作項目を表示します。</p>
         </div>
+        <noscript><p class="helper">認証にはJavaScriptが必要です。ブラウザで有効にして再読み込みしてください。</p></noscript>
         <form id="auth-form" class="inline-form" data-owner-auth-form>
           <div class="field-row grow">
             <label for="owner-token">運営者トークン、またはスタッフ認証情報</label>
             <input
               id="owner-token"
               type="password"
+              disabled
               autocomplete="current-password"
               minlength="32"
               aria-describedby="owner-token-help"
@@ -58,7 +60,7 @@
             >
             <p id="owner-token-help" class="helper">このページ内だけで使用します。保存・表示・ログ出力はしません。スタッフの認証情報は設定画面で発行します。</p>
           </div>
-          <button class="primary-button compact-button" type="submit">認証して予定表を開く</button>
+          <button class="primary-button compact-button" type="submit" disabled>認証して予定表を開く</button>
           <button id="logout-button" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
         </form>
         <output id="auth-status" class="status" aria-live="polite" data-owner-auth-status></output>
