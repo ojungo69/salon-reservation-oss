@@ -1,0 +1,86 @@
+name: Generate security lockfile
+
+on:
+  push:
+    branches: [chore/security-lock-refresh]
+    paths: [.github/workflows/security-lock-refresh.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: isolated-security-lock-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    if: github.repository == 'ojungo69/salon-reservation-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the triggering revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up the existing Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Pin the existing npm toolchain
+        run: npm install -g --ignore-scripts npm@12.0.2
+      - name: Apply only the reviewed patch-version choices
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('package.json')
+          package = json.loads(path.read_text())
+          assert package['devDependencies']['vitest'] == '4.1.10'
+          assert not package.get('overrides')
+          package['devDependencies']['vitest'] = '4.1.11'
+          package['overrides'] = {'sharp': '0.35.4'}
+          path.write_text(json.dumps(package, indent=2) + '\n')
+          path = Path('docs/THIRD_PARTY_LICENSES.md')
+          text = path.read_text()
+          old = '| `vitest` | 4.1.10 | MIT |'
+          assert text.count(old) == 1
+          text = text.replace(old, '| `vitest` | 4.1.11 | MIT |')
+          text += '\n## Security patch pins — 2026-09-12\n\n'
+          text += 'Vitest 4.1.11 addresses GHSA-82fw-gwwq-j7x9. The root npm override pins the\n'
+          text += 'development-toolchain transitive dependency `sharp` to 0.35.4 (Apache-2.0)\n'
+          text += 'for GHSA-rgj7-g3m4-5g8c; the current Miniflare version otherwise pins 0.35.2.\n'
+          text += 'This is a patch update, not a downgrade of the Workers test harness. It does\n'
+          text += 'not add an application runtime dependency or weaken the audit threshold.\n\n'
+          text += 'Remove the override only after the chosen upstream toolchain resolves patched\n'
+          text += 'Sharp versions without it, and rerun the full check and browser suites.\n'
+          path.write_text(text)
+          PY
+          npm install --package-lock-only --ignore-scripts --no-fund
+      - name: Verify the generated dependency tree
+        run: |
+          npm ci --ignore-scripts
+          npm install-scripts ls --json | jq -e '.allowScripts == []'
+          npm audit --audit-level=high
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          assert.equal(lock.packages['node_modules/vitest'].version, '4.1.11');
+          assert.equal(lock.packages['node_modules/sharp'].version, '0.35.4');
+          console.log('Verified exact Vitest and Sharp patch pins');
+          JS
+      - name: Commit only the three generated public files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          expected=$(printf '%s\n' docs/THIRD_PARTY_LICENSES.md package-lock.json package.json)
+          actual=$(git diff --name-only | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- package.json package-lock.json docs/THIRD_PARTY_LICENSES.md
+          git -c commit.gpgsign=false commit -m 'fix: patch Sharp and Vitest development dependencies'
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/chore/security-lock-refresh
