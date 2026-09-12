@@ -9,6 +9,7 @@
 .gitignore
 .npmrc
 .nvmrc
+AGENTS.md
 CHANGELOG.md
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
@@ -65,8 +66,10 @@ test/installation-config.test.ts
 test/journey.test.ts
 test/line-adapter.test.ts
 test/line-helpers.ts
+test/release-audit-denylist.test.ts
 test/reservation-core.test.ts
 test/reservation-day.test.ts
+test/staff-roster.test.ts
 test/worker.test.ts
 tests-browser/customer.spec.ts
 tests-browser/harness.ts
