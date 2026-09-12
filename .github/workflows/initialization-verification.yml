@@ -1,0 +1,65 @@
+name: Verify initialization fix
+on:
+  push:
+    branches: [fix/initialization-verification]
+    paths: [.github/workflows/initialization-verification.yml, .session/**]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm install -g --ignore-scripts npm@12.0.2
+      - run: npm ci --ignore-scripts
+      - run: npm install-scripts ls --json | jq -e '.allowScripts == []'
+      - run: ./node_modules/.bin/playwright install chromium
+      - name: Reproduce lost-interaction boundary on original implementation
+        run: |
+          cat .session/hydration-tests.txt >> tests-browser/install.spec.ts
+          set +e
+          npm run test:browser -- --project=install --grep 'authentication waits for initialization' > /tmp/hydration-red.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/hydration-red.log
+          test "$result" -eq 1
+          grep -q 'toBeDisabled' /tmp/hydration-red.log
+          grep -q '3 failed' /tmp/hydration-red.log
+      - name: Apply minimal initialization and trace-capture fixes
+        run: python3 .session/apply-fix.py
+      - name: Verify all rendered flows and repeat initialization races
+        run: |
+          npm run test:browser
+          npm run test:browser -- --project=install --grep 'authentication waits for initialization' --repeat-each=5
+          npm run typecheck
+          node --check public/app.js
+      - name: Commit only the six verified application and test files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          expected=$(printf '%s\n' .github/workflows/ci.yml public/admin.html public/app.js public/setup.html scripts/release-audit.mjs tests-browser/install.spec.ts)
+          actual=$(git diff --name-only | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- .github/workflows/ci.yml public/admin.html public/app.js public/setup.html scripts/release-audit.mjs tests-browser/install.spec.ts
+          git -c commit.gpgsign=false commit -m 'fix: gate authentication until initialization and retain failure traces'
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/fix/initialization-verification
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: initialization-verification
+          path: |
+            /tmp/hydration-red.log
+            .playwright
+          include-hidden-files: true
+          retention-days: 1

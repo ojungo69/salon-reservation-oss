@@ -1,0 +1,54 @@
+
+/** Authentication is disabled in delivered HTML until its handlers are ready. */
+for (const outcome of ["success", "failure"] as const) {
+  test(`setup authentication waits for initialization: ${outcome}`, async ({ page }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let requested!: () => void;
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    await page.route("**/api/config", async (route) => {
+      requested();
+      await gate;
+      if (outcome === "failure") await route.abort("failed");
+      else await route.continue();
+    });
+    try {
+      await page.goto("/setup", { waitUntil: "domcontentloaded" });
+      await started;
+      await expect(page.locator("#setup-auth-submit")).toBeDisabled();
+      await expect(page.locator("#setup-owner-token")).toBeDisabled();
+    } finally {
+      release();
+    }
+    await expect(page.locator("#setup-auth-submit")).toBeEnabled();
+    await page.fill("#setup-owner-token", OWNER_TOKEN);
+    await page.click("#setup-auth-submit");
+    await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+    await expect(page.locator("#staff-submit")).toBeEnabled();
+  });
+}
+
+test("operator authentication waits for initialization", async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let requested!: () => void;
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route("**/api/config", async (route) => {
+    requested();
+    await gate;
+    await route.continue();
+  });
+  const submit = page.locator("#auth-form button[type=submit]");
+  try {
+    await page.goto("/admin", { waitUntil: "domcontentloaded" });
+    await started;
+    await expect(submit).toBeDisabled();
+    await expect(page.locator("#owner-token")).toBeDisabled();
+  } finally {
+    release();
+  }
+  await expect(submit).toBeEnabled();
+  await page.fill("#owner-token", OWNER_TOKEN);
+  await submit.click();
+  await expect(page.locator("#auth-status")).toContainText("認証しました");
+});
