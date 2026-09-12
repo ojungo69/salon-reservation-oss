@@ -633,34 +633,38 @@ const auditPrivatePortingLedger = () => {
   if (markerInMessages) fail("private porting ledger marker found in commit messages");
 };
 
-// A tag can point to another tag whose original ref has been deleted. Enumerate
-// reachable objects, not only current tag names, so that inner metadata is kept
-// inside the same publication boundary. Matching contents never reach the log.
+// Only tag objects can contain tag metadata. Start at refs that point directly
+// to a tag, then follow tag-to-tag links so deleting an inner ref cannot hide
+// its metadata. Do not inventory every blob/tree in the repository: their count
+// is unrelated to this check and can exceed the subprocess output limit.
 const auditAnnotatedTagMetadata = () => {
-  let objectTypes;
+  let pending;
   try {
-    const objects = gitRaw(["rev-list", "--objects", "--all", "--no-object-names"]);
-    objectTypes = execFileSync(
-      resolveGit(),
-      ["-C", ROOT, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
-      { input: objects, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
-    );
+    pending = gitRaw(["for-each-ref", "--format=%(objecttype) %(objectname)"])
+      .split("\n")
+      .filter((line) => line.startsWith("tag "))
+      .map((line) => line.slice(4));
   } catch {
-    fail("cannot enumerate reachable objects for tag metadata audit");
+    fail("cannot enumerate tag refs for metadata audit");
   }
-  for (const line of objectTypes.split("\n").filter(Boolean)) {
-    const object = /^([0-9a-f]{40,64}) (blob|tree|commit|tag)$/.exec(line);
-    if (object === null) fail("cannot identify a reachable object for tag metadata audit");
-    if (object[2] !== "tag") continue;
+  const visited = new Set();
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (visited.has(id)) continue;
+    if (!/^[0-9a-f]{40,64}$/.test(id)) fail("invalid tag object identifier");
+    visited.add(id);
     let metadata;
     try {
-      metadata = gitRaw(["cat-file", "tag", object[1]]);
+      metadata = gitRaw(["cat-file", "tag", id]);
     } catch {
       fail("cannot read reachable tag metadata");
     }
     if (metadata.toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
       fail("private porting ledger marker found in annotated tag metadata");
     }
+    const target = /^object ([0-9a-f]{40,64})\ntype (blob|tree|commit|tag)\n/.exec(metadata);
+    if (target === null) fail("invalid tag target metadata");
+    if (target[2] === "tag") pending.push(target[1]);
   }
 };
 

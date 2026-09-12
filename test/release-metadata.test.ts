@@ -81,3 +81,31 @@ for (const required of ["docs/ADR-0001-REUSE-FIRST-PORTING.md", "docs/PORTING.md
     }
   });
 }
+
+test("accepts a clean history beyond the old one-MiB object inventory", { skip: !POSIX }, () => {
+  const { tree, git, audit } = createFixture();
+  try {
+    const base = git("rev-parse", "HEAD").trim();
+    // One packed fictional commit keeps the checkout small while reproducing
+    // the output size that made the old all-objects metadata scan fail.
+    let input = `commit refs/heads/large-fixture\ncommitter Public Test <public-test@users.noreply.github.com> 1789171200 +0000\ndata 8\nfixtures\nfrom ${base}\n`;
+    for (let index = 0; index < 26_000; index += 1) {
+      const value = `fixture-${index}\n`;
+      input += `M 100644 inline synthetic/${index}.txt\ndata ${Buffer.byteLength(value)}\n${value}\n`;
+    }
+    input += "\ndone\n";
+    execFileSync("git", ["fast-import", "--quiet"], {
+      cwd: tree, input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+    });
+    const inventory = execFileSync("git", ["rev-list", "--objects", "--all", "--no-object-names"], {
+      cwd: tree, maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.ok(inventory.length > 1024 * 1024, "fixture must exceed the old output limit");
+    git("-c", "tag.gpgsign=false", "tag", "-a", "large-clean", "large-fixture", "-m", "public release");
+    const result = audit();
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /release audit passed/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
