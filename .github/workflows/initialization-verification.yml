@@ -41,17 +41,20 @@ jobs:
           npm run test:browser -- --project=install --grep 'authentication waits for initialization' --repeat-each=5
           npm run typecheck
           node --check public/app.js
-      - name: Commit only the six verified application and test files
+      - name: Commit only verified source within existing token permissions
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           expected=$(printf '%s\n' .github/workflows/ci.yml public/admin.html public/app.js public/setup.html scripts/release-audit.mjs tests-browser/install.spec.ts)
           actual=$(git diff --name-only | LC_ALL=C sort)
           test "$actual" = "$expected"
+          # The application workflow edit is applied separately through the
+          # authorized maintainer connector. Do not expand this token's scope.
+          git restore --source=HEAD -- .github/workflows/ci.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- .github/workflows/ci.yml public/admin.html public/app.js public/setup.html scripts/release-audit.mjs tests-browser/install.spec.ts
-          git -c commit.gpgsign=false commit -m 'fix: gate authentication until initialization and retain failure traces'
+          git add -- public/admin.html public/app.js public/setup.html scripts/release-audit.mjs tests-browser/install.spec.ts
+          git -c commit.gpgsign=false commit -m 'fix: gate authentication until initialization and verify trace policy'
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/fix/initialization-verification
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
