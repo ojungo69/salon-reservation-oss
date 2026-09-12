@@ -9,6 +9,7 @@
 .gitignore
 .npmrc
 .nvmrc
+AGENTS.md
 CHANGELOG.md
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
@@ -16,10 +17,12 @@ LICENSE
 README.md
 SECURITY.md
 docs/ADAPTER-CONTRACTS.md
+docs/ADR-0001-REUSE-FIRST-PORTING.md
 docs/CALENDAR-SETUP.md
 docs/CLOUDFLARE.md
 docs/LINE-SETUP.md
 docs/PARITY.md
+docs/PORTING.md
 docs/PRIVACY.md
 docs/RELEASING.md
 docs/ROADMAP.md
@@ -63,8 +66,11 @@ test/installation-config.test.ts
 test/journey.test.ts
 test/line-adapter.test.ts
 test/line-helpers.ts
+test/release-audit-denylist.test.ts
+test/release-metadata.test.ts
 test/reservation-core.test.ts
 test/reservation-day.test.ts
+test/staff-roster.test.ts
 test/worker.test.ts
 tests-browser/customer.spec.ts
 tests-browser/harness.ts

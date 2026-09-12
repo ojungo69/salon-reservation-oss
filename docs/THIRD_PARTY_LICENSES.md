@@ -14,7 +14,7 @@ platform APIs supplied by the deployer's environment.
 | `@playwright/test` | 1.62.1 | Apache-2.0 |
 | `@types/node` | 24.13.3 | MIT |
 | `typescript` | 7.0.2 | Apache-2.0 |
-| `vitest` | 4.1.10 | MIT |
+| `vitest` | 4.1.11 | MIT |
 | `wrangler` | 4.120.0 | MIT OR Apache-2.0 |
 
 `package-lock.json` is authoritative for transitive versions. The release audit permits only the
@@ -42,3 +42,14 @@ npm 12 runs dependency install scripts only when `package.json` permits them. Th
 only the locked `esbuild@0.28.1` and `workerd@1.20260801.1` binary setup scripts; dependency updates
 must review and update those exact entries. Public CI additionally installs with `--ignore-scripts`
 and builds against the platform-specific packages already present in the lockfile.
+
+## Security patch pins — 2026-09-12
+
+Vitest 4.1.11 addresses GHSA-82fw-gwwq-j7x9. The root npm override pins the
+development-toolchain transitive dependency `sharp` to 0.35.4 (Apache-2.0)
+for GHSA-rgj7-g3m4-5g8c; the current Miniflare version otherwise pins 0.35.2.
+This is a patch update, not a downgrade of the Workers test harness. It does
+not add an application runtime dependency or weaken the audit threshold.
+
+Remove the override only after the chosen upstream toolchain resolves patched
+Sharp versions without it, and rerun the full check and browser suites.

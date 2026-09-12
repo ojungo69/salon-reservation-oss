@@ -33,7 +33,7 @@
     "release:audit:public": "node scripts/release-audit.mjs --public-tree",
     "test": "npm run test:core && npm run test:worker",
     "test:browser": "playwright test",
-    "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts test/release-audit-denylist.test.ts test/staff-roster.test.ts",
+    "test:core": "node --test test/date-parse.test.ts test/reservation-core.test.ts test/installation-config.test.ts test/journey.test.ts test/release-audit-denylist.test.ts test/release-metadata.test.ts test/staff-roster.test.ts",
     "test:worker": "vitest run",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
@@ -45,7 +45,10 @@
     "@playwright/test": "1.62.1",
     "@types/node": "24.13.3",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "wrangler": "4.120.0"
+  },
+  "overrides": {
+    "sharp": "0.35.4"
   }
 }

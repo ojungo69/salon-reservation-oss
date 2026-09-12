@@ -2274,6 +2274,8 @@ const startAdmin = async () => {
       closureSubmit.textContent = closurePending ? "未確認の登録結果を再確認する" : "休業時間を登録する";
     }
   });
+  tokenInput.disabled = false;
+  authForm.querySelector('button[type="submit"]').disabled = false;
 };
 
 const startSetup = async () => {
@@ -3092,6 +3094,8 @@ const startSetup = async () => {
     setTimeout(() => URL.revokeObjectURL(url), 0);
     setStatus(receiptStatus, "設置受領書をダウンロードしました。", "success");
   });
+  tokenInput.disabled = false;
+  authForm.querySelector('button[type="submit"]').disabled = false;
 };
 
 const startLegal = async () => {

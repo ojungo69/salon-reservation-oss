@@ -1,4 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import {
   closeSync,
   constants,
@@ -15,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = "release/public-files.txt";
+const PRIVATE_LEDGER_PATH = "docs/private_porting_ledger.md";
 const AGPL = "AGPL-3.0-only";
 const RELEASE_VERSION = "0.2.0";
 const ALLOWED_NAMED_SECRETS = new Map([
@@ -39,6 +42,8 @@ const ALLOWED_DEPENDENCY_LICENSES = new Set([
   "MPL-2.0",
 ]);
 const REQUIRED = new Set([
+  "AGENTS.md",
+  ".github/pull_request_template.md",
   ".github/workflows/ci.yml",
   ".npmrc",
   "CHANGELOG.md",
@@ -48,9 +53,11 @@ const REQUIRED = new Set([
   "README.md",
   "SECURITY.md",
   "docs/ADAPTER-CONTRACTS.md",
+  "docs/ADR-0001-REUSE-FIRST-PORTING.md",
   "docs/CALENDAR-SETUP.md",
   "docs/CLOUDFLARE.md",
   "docs/PARITY.md",
+  "docs/PORTING.md",
   "docs/ROADMAP.md",
   "docs/RELEASING.md",
   "docs/PRIVACY.md",
@@ -127,6 +134,9 @@ const readManifest = () => {
     fail("public manifest must be sorted");
   }
   for (const path of paths) {
+    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
+      fail("private porting ledger must not be public");
+    }
     if (
       isAbsolute(path) ||
       path.includes("\\") ||
@@ -273,6 +283,7 @@ const CREDENTIAL_RULES = [
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/],
 ];
 const FORBIDDEN_ROOTS = [/\/home\/[^/\s]+\//, /\/Users\/[^/\s]+\//];
+const PRIVATE_LEDGER_MARKER = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const SECRET_NAME =
   "(OWNER_TOKEN|TURNSTILE_SECRET|CALENDAR_FEED_TOKEN|GOOGLE_CALENDAR_CREDENTIALS|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN|CF_API_KEY|PASSWORD|CLIENT_SECRET)";
@@ -292,6 +303,9 @@ const OBJECT_SECRET = new RegExp(
 );
 
 const scanText = (label, text, denylist) => {
+  if (text.toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+    fail(`private porting ledger marker found in ${label}`);
+  }
   for (const [name, pattern] of CREDENTIAL_RULES) {
     if (pattern.test(text)) fail(`${name} pattern found in ${label}`);
   }
@@ -418,7 +432,7 @@ const WORKFLOW_LINES = [
   "- name: Check out source",
   "uses: actions/checkout",
   "with:",
-  "fetch-depth: 1",
+  "fetch-depth: 0",
   "persist-credentials: false",
   "- name: Set up Node.js",
   "uses: actions/setup-node",
@@ -451,6 +465,7 @@ const WORKFLOW_LINES = [
   "with:",
   "name: rendered-page-failures",
   "path: .playwright",
+  "include-hidden-files: true",
   "retention-days: 3",
 ];
 const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
@@ -472,8 +487,7 @@ const stripComment = (line) => {
 };
 
 // Indentation is dropped, so the list is what says where a line belongs: a
-// job-level `permissions:` block is two lines the reviewed workflow does not
-// have, wherever it sits.
+// job-level `permissions:` block the reviewed workflow does not have is rejected.
 const auditWorkflow = () => {
   // GitHub runs every file in this directory, so pinning one of them says
   // nothing on its own: a second workflow is a second place to install, with
@@ -534,11 +548,155 @@ const resolveGit = () => {
   return path;
 };
 
-const git = (args) =>
+const gitRaw = (args) =>
   execFileSync(resolveGit(), ["-C", ROOT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+  });
+
+const git = (args) => gitRaw(args).trim();
+
+const auditCurrentLedgerFiles = (paths) => {
+  for (const path of paths) {
+    if (path.toLowerCase() === PRIVATE_LEDGER_PATH) {
+      fail("private porting ledger must not be public");
+    }
+    const absolute = join(ROOT, path);
+    if (!existsSync(absolute)) continue;
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) continue;
+    if (readText(path).toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+      fail(`private porting ledger marker found in ${path}`);
+    }
+  }
+};
+
+const auditPrivatePortingLedger = () => {
+  let shallow;
+  try {
+    shallow = git(["rev-parse", "--is-shallow-repository"]);
+  } catch {
+    fail("cannot determine repository history depth for private ledger audit");
+  }
+  if (shallow !== "false") {
+    fail("private ledger history audit requires a complete Git history");
+  }
+  let trackedPaths;
+  let paths;
+  let markerInIndex;
+  let pathInHistory;
+  let markerInMessages;
+  let markerInHistory;
+  try {
+    trackedPaths = gitRaw(["ls-files", "--cached", "-z"])
+      .split("\0")
+      .filter(Boolean);
+    const untrackedPaths = gitRaw(["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\0")
+      .filter(Boolean);
+    paths = [...new Set([...trackedPaths, ...untrackedPaths])];
+    try {
+      gitRaw(["grep", "--cached", "-a", "-i", "-F", PRIVATE_LEDGER_MARKER, "--"]);
+      markerInIndex = true;
+    } catch (error) {
+      if (error?.status !== 1) throw error;
+      markerInIndex = false;
+    }
+    pathInHistory =
+      git(["log", "--all", "--format=%H", "--", `:(icase)${PRIVATE_LEDGER_PATH}`]) !== "";
+    markerInHistory =
+      git([
+        "log",
+        "--all",
+        "--format=%H",
+        "--text",
+        "--regexp-ignore-case",
+        "-G",
+        PRIVATE_LEDGER_MARKER,
+        "--",
+      ]) !== "";
+    // -G examines file diffs, not commit messages. Search all reachable refs,
+    // including empty commits, without returning any potentially private text.
+    markerInMessages =
+      git([
+        "log",
+        "--all",
+        "--format=%H",
+        "--max-count=1",
+        "--fixed-strings",
+        "--regexp-ignore-case",
+        `--grep=${PRIVATE_LEDGER_MARKER}`,
+        "--",
+      ]) !== "";
+  } catch {
+    fail("cannot enumerate repository paths for private ledger audit");
+  }
+  auditCurrentLedgerFiles(paths);
+  if (markerInIndex) fail("private porting ledger marker found in Git index");
+  if (pathInHistory) fail("private porting ledger path found in public history");
+  if (markerInHistory) fail("private porting ledger marker found in public history");
+  if (markerInMessages) fail("private porting ledger marker found in commit messages");
+};
+
+// Only tag objects can contain tag metadata. Stream refs and retain unique tag
+// roots only; neither unrelated refs nor blobs should hit a subprocess buffer.
+// Follow nested tag targets so deleting an inner ref cannot hide its metadata.
+const readAnnotatedTagRoots = async () => {
+  const child = spawn(
+    resolveGit(),
+    ["-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const roots = new Set();
+  let invalid = false;
+  lines.on("line", (line) => {
+    const ref = /^(blob|tree|commit|tag) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line);
+    if (ref === null) invalid = true;
+    else if (ref[1] === "tag") roots.add(ref[2]);
+  });
+  lines.on("error", () => {
+    invalid = true;
+    child.kill();
+  });
+  try {
+    // close follows stdout closure; all line events have been consumed. once
+    // rejects a spawn error, and neither refs nor Git diagnostics are printed.
+    const [code] = await once(child, "close");
+    if (code !== 0 || invalid) fail("cannot enumerate tag refs for metadata audit");
+    return [...roots];
+  } finally {
+    lines.close();
+  }
+};
+
+const auditAnnotatedTagMetadata = async () => {
+  let pending;
+  try {
+    pending = await readAnnotatedTagRoots();
+  } catch {
+    fail("cannot enumerate tag refs for metadata audit");
+  }
+  const visited = new Set();
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (visited.has(id)) continue;
+    if (!/^[0-9a-f]{40,64}$/.test(id)) fail("invalid tag object identifier");
+    visited.add(id);
+    let metadata;
+    try {
+      metadata = gitRaw(["cat-file", "tag", id]);
+    } catch {
+      fail("cannot read reachable tag metadata");
+    }
+    if (metadata.toUpperCase().includes(PRIVATE_LEDGER_MARKER)) {
+      fail("private porting ledger marker found in annotated tag metadata");
+    }
+    const target = /^object ([0-9a-f]{40,64})\ntype (blob|tree|commit|tag)\n/.exec(metadata);
+    if (target === null) fail("invalid tag target metadata");
+    if (target[2] === "tag") pending.push(target[1]);
+  }
+};
 
 const auditPublicTree = (paths, denylist) => {
   if (git(["rev-parse", "--is-inside-work-tree"]) !== "true") fail("public tree is not a Git repository");
@@ -573,6 +731,8 @@ const auditPublicTree = (paths, denylist) => {
 try {
   const options = parseArguments();
   const paths = readManifest();
+  auditPrivatePortingLedger();
+  await auditAnnotatedTagMetadata();
   const denylist = loadDenylist(options.denylist);
   scanPublicText(paths, denylist);
   auditPackage();
