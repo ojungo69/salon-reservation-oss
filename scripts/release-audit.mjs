@@ -549,7 +549,7 @@ const resolveGit = () => {
 };
 
 const gitRaw = (args) =>
-  execFileSync(resolveGit(), ["-C", ROOT, ...args], {
+  execFileSync(resolveGit(), ["--no-replace-objects", "-C", ROOT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -644,7 +644,7 @@ const auditPrivatePortingLedger = () => {
 const readAnnotatedTagRoots = async () => {
   const child = spawn(
     resolveGit(),
-    ["-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
+    ["--no-replace-objects", "-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
     { stdio: ["ignore", "pipe", "ignore"] },
   );
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -652,7 +652,7 @@ const readAnnotatedTagRoots = async () => {
   let invalid = false;
   lines.on("line", (line) => {
     const ref = /^(blob|tree|commit|tag) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line);
-    if (ref === null) invalid = true;
+    if (ref === null || ref[1] === "blob" || ref[1] === "tree") invalid = true;
     else if (ref[1] === "tag") roots.add(ref[2]);
   });
   lines.on("error", () => {
@@ -694,6 +694,7 @@ const auditAnnotatedTagMetadata = async () => {
     }
     const target = /^object ([0-9a-f]{40,64})\ntype (blob|tree|commit|tag)\n/.exec(metadata);
     if (target === null) fail("invalid tag target metadata");
+    if (target[2] === "blob" || target[2] === "tree") fail("non-commit tag targets are not supported");
     if (target[2] === "tag") pending.push(target[1]);
   }
 };
@@ -723,7 +724,7 @@ const auditPublicTree = (paths, denylist) => {
   }
   const metadata = git(["show", "-s", "--format=%an%n%ae%n%cn%n%ce%n%B", "HEAD"]);
   scanText("commit metadata", metadata, denylist);
-  execFileSync(resolveGit(), ["-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
+  execFileSync(resolveGit(), ["--no-replace-objects", "-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
     stdio: ["ignore", "ignore", "pipe"],
   });
 };

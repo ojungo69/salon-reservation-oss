@@ -44,6 +44,8 @@ The public summary may contain only generic capability descriptions, current dis
 
 Release audit enforces the ledger boundary across the Git-visible working tree, staged index, reachable file history, and reachable commit messages. It fails closed when Git cannot be inspected or the checkout is shallow; CI therefore fetches complete history. Message scanning detects the mandatory ledger marker without printing the matching message; it is not a claim to detect every possible unmarked secret.
 
+The audit disables Git replacement-object resolution so a local replacement ref cannot hide original metadata. Ref targets and tag chains ending in a blob or tree are unsupported and fail closed; normal commit tags remain supported. This deliberately avoids claiming that commit-history scanning covers standalone non-commit objects.
+
 ## Contribution gate
 
 Every pull request that implements or alters a production-parity capability must:

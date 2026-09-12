@@ -81,6 +81,9 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Fixed
 
+- Git replacement objects no longer conceal original metadata during release auditing.
+  References and tag chains with non-commit targets are rejected rather than omitted.
+
 - Operator and setup authentication controls now remain disabled until initialization has
   installed their handlers, preventing lost sign-in attempts during slow configuration loading.
   Both pages explain the JavaScript requirement when scripting is unavailable.

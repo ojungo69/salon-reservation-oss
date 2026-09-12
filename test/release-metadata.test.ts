@@ -156,3 +156,49 @@ for (const required of ["AGENTS.md", ".github/pull_request_template.md"]) {
     }
   });
 }
+
+for (const kind of ["commit", "tag"] as const) {
+  test(`replacement objects cannot conceal private ${kind} metadata`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+      const base = git("rev-parse", "HEAD").trim();
+      if (kind === "commit") {
+        git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", marker);
+        git("replace", git("rev-parse", "HEAD").trim(), base);
+      } else {
+        git("-c", "tag.gpgsign=false", "tag", "-a", "concealed", "-m", marker);
+        git("-c", "tag.gpgsign=false", "tag", "-a", "substitute", "-m", "public release");
+        git("replace", git("rev-parse", "concealed").trim(), git("rev-parse", "substitute").trim());
+      }
+      const result = audit();
+      assert.equal(result.status, 1, result.output);
+      assert.match(result.output, /private porting ledger marker found/);
+      assert.equal(result.output.toUpperCase().includes(marker), false);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const kind of ["blob", "tree"] as const) {
+  test(`rejects annotated tags targeting ${kind} objects outside commit history`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+      let target = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+        cwd: tree, input: marker, encoding: "utf8",
+      }).trim();
+      if (kind === "tree") target = execFileSync("git", ["mktree"], {
+        cwd: tree, input: `100644 blob ${target}\tevidence.txt\n`, encoding: "utf8",
+      }).trim();
+      git("-c", "tag.gpgsign=false", "tag", "-a", "non-commit", target, "-m", "public release");
+      const result = audit();
+      assert.equal(result.status, 1, result.output);
+      assert.match(result.output, /non-commit tag targets are not supported/);
+      assert.equal(result.output.toUpperCase().includes(marker), false);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
