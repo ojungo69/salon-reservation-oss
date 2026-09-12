@@ -326,3 +326,33 @@ test("refuses terms that are too short, unprintable, or repeated", { skip: !POSI
     assert.match(output, message);
   }
 });
+
+for (const variant of ["subject", "body-lowercase", "older-commit", "other-ref"] as const) {
+  test(`refuses a message-only private ledger marker: ${variant}`, { skip: !POSIX }, () => {
+    const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+    const tree = join(workspace, `public-tree-message-${variant}`);
+    copyPublicTree(tree);
+    initializeGit(tree);
+    commitAll(tree, "public baseline");
+    const script = join(tree, "scripts/release-audit.mjs");
+    const baseline = runAuditScript(script);
+    assert.equal(baseline.status, 0, baseline.output);
+
+    const gitInTree = (...args: string[]) =>
+      execFileSync("git", args, { cwd: tree, stdio: "ignore" });
+    if (variant === "other-ref") gitInTree("checkout", "-b", "retained-evidence");
+    const message = variant === "body-lowercase"
+      ? `ordinary change\n\n${marker.toLowerCase()}`
+      : marker;
+    gitInTree("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message);
+    if (variant === "older-commit") {
+      gitInTree("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "clean latest commit");
+    }
+    if (variant === "other-ref") gitInTree("checkout", "main");
+
+    const { status, output } = runAuditScript(script);
+    assert.equal(status, 1, output);
+    assert.match(output, /private porting ledger marker found in commit messages/);
+    assert.equal(output.toUpperCase().includes(marker), false, "must not echo private message text");
+  });
+}
