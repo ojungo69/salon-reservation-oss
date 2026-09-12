@@ -1,4 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import {
   closeSync,
   constants,
@@ -580,8 +582,8 @@ const auditPrivatePortingLedger = () => {
   let paths;
   let markerInIndex;
   let pathInHistory;
-  let markerInHistory;
   let markerInMessages;
+  let markerInHistory;
   try {
     trackedPaths = gitRaw(["ls-files", "--cached", "-z"])
       .split("\0")
@@ -633,17 +635,42 @@ const auditPrivatePortingLedger = () => {
   if (markerInMessages) fail("private porting ledger marker found in commit messages");
 };
 
-// Only tag objects can contain tag metadata. Start at refs that point directly
-// to a tag, then follow tag-to-tag links so deleting an inner ref cannot hide
-// its metadata. Do not inventory every blob/tree in the repository: their count
-// is unrelated to this check and can exceed the subprocess output limit.
-const auditAnnotatedTagMetadata = () => {
+// Only tag objects can contain tag metadata. Stream refs and retain unique tag
+// roots only; neither unrelated refs nor blobs should hit a subprocess buffer.
+// Follow nested tag targets so deleting an inner ref cannot hide its metadata.
+const readAnnotatedTagRoots = async () => {
+  const child = spawn(
+    resolveGit(),
+    ["-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const roots = new Set();
+  let invalid = false;
+  lines.on("line", (line) => {
+    const ref = /^(blob|tree|commit|tag) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line);
+    if (ref === null) invalid = true;
+    else if (ref[1] === "tag") roots.add(ref[2]);
+  });
+  lines.on("error", () => {
+    invalid = true;
+    child.kill();
+  });
+  try {
+    // close follows stdout closure; all line events have been consumed. once
+    // rejects a spawn error, and neither refs nor Git diagnostics are printed.
+    const [code] = await once(child, "close");
+    if (code !== 0 || invalid) fail("cannot enumerate tag refs for metadata audit");
+    return [...roots];
+  } finally {
+    lines.close();
+  }
+};
+
+const auditAnnotatedTagMetadata = async () => {
   let pending;
   try {
-    pending = gitRaw(["for-each-ref", "--format=%(objecttype) %(objectname)"])
-      .split("\n")
-      .filter((line) => line.startsWith("tag "))
-      .map((line) => line.slice(4));
+    pending = await readAnnotatedTagRoots();
   } catch {
     fail("cannot enumerate tag refs for metadata audit");
   }
@@ -702,7 +729,7 @@ try {
   const options = parseArguments();
   const paths = readManifest();
   auditPrivatePortingLedger();
-  auditAnnotatedTagMetadata();
+  await auditAnnotatedTagMetadata();
   const denylist = loadDenylist(options.denylist);
   scanPublicText(paths, denylist);
   auditPackage();

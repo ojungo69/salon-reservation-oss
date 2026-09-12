@@ -109,3 +109,30 @@ test("accepts a clean history beyond the old one-MiB object inventory", { skip: 
     rmSync(tree, { recursive: true, force: true });
   }
 });
+
+for (const kind of ["commit", "tag"] as const) {
+  test(`accepts clean ${kind} refs beyond the old one-MiB buffer`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      if (kind === "tag") {
+        git("-c", "tag.gpgsign=false", "tag", "-a", "root", "-m", "public release");
+      }
+      const oid = git("rev-parse", kind === "tag" ? "refs/tags/root" : "HEAD").trim();
+      // A packed fixture avoids creating and syncing 26,000 loose files. Git
+      // itself must read the refs and prove the output exceeds the old limit.
+      const refs = Array.from({ length: 26_000 }, (_, index) =>
+        `${oid} refs/archive/synthetic-${String(index).padStart(5, "0")}`);
+      writeFileSync(join(tree, ".git/packed-refs"),
+        `# pack-refs with: sorted\n${refs.join("\n")}\n`);
+      const inventory = execFileSync("git", ["for-each-ref", "--format=%(objecttype) %(objectname)"], {
+        cwd: tree, maxBuffer: 4 * 1024 * 1024,
+      });
+      assert.ok(inventory.length > 1024 * 1024, "fixture must exceed the old output limit");
+      const result = audit();
+      assert.equal(result.status, 0, result.output);
+      assert.match(result.output, /release audit passed/);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
