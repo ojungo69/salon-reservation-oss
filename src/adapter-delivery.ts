@@ -401,6 +401,40 @@ export class AdapterDelivery extends DurableObject<Env> {
     return this.#secretPresent() ? "queued" : "awaiting-configuration";
   }
 
+  #enqueueDelivery(
+    event: AdapterOutboxEvent,
+    fragment: MessageFragment,
+    link: { link_version: number } | undefined,
+    now: number,
+    disposition: string,
+    locationLabel?: string,
+  ): void {
+    const storedFragment: StoredMessageFragment = locationLabel === undefined
+      ? fragment
+      : { ...fragment, v: 2, locationLabel };
+    const linkVersion = link?.link_version ?? 0;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO deliveries
+             (delivery_id, event_id, reservation_id, type, payload_json, link_version,
+              retry_key, attempt, next_attempt_at, first_attempt_at, claimed_at, status,
+              park_reason, date, created_at, purge_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, NULL, ?, ?, ?)
+           ON CONFLICT(delivery_id) DO NOTHING`,
+      `${event.generation}:${event.eventId}`,
+      event.eventId,
+      event.reservationId,
+      event.type,
+      JSON.stringify(storedFragment),
+      linkVersion,
+      crypto.randomUUID(),
+      now,
+      disposition,
+      event.date,
+      new Date().toISOString(),
+      event.purgeAt,
+    );
+  }
+
   #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number, locationLabel?: string): string {
     if (event.type === "create") throw new Error("calendar event reached LINE delivery");
     const sql = this.ctx.storage.sql;
@@ -435,30 +469,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           startTime: event.startTime,
           serviceLabel: event.serviceLabel,
         };
-        const storedFragment: StoredMessageFragment = locationLabel === undefined
-          ? fragment
-          : { ...fragment, v: 2, locationLabel };
-        const linkVersion = link?.link_version ?? 0;
-        sql.exec(
-          `INSERT INTO deliveries
-             (delivery_id, event_id, reservation_id, type, payload_json, link_version,
-              retry_key, attempt, next_attempt_at, first_attempt_at, claimed_at, status,
-              park_reason, date, created_at, purge_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, NULL, ?, ?, ?)
-           ON CONFLICT(delivery_id) DO NOTHING`,
-          `${event.generation}:${event.eventId}`,
-          event.eventId,
-          event.reservationId,
-          event.type,
-          JSON.stringify(storedFragment),
-          linkVersion,
-          crypto.randomUUID(),
-          now,
-          disposition === "held" ? "held" : disposition,
-          event.date,
-          new Date().toISOString(),
-          event.purgeAt,
-        );
+        this.#enqueueDelivery(event, fragment, link, now, disposition, locationLabel);
       }
     }
     if (disposition === "late-terminal") this.#recordTerminal("late-handoff", event.type);

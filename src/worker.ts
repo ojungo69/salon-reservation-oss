@@ -1842,10 +1842,8 @@ const handleStaffRoster = async (
   if (request.method !== "GET" && request.method !== "POST") {
     return errorResponse(405, "BAD_REQUEST", { allow: "GET, POST" });
   }
-  if (request.method === "POST") {
-    const originFailure = requireMutationOrigin(request, url);
-    if (originFailure !== null) return originFailure;
-  }
+  const originFailure = request.method === "POST" ? requireMutationOrigin(request, url) : null;
+  if (originFailure !== null) return originFailure;
   const gate = await operatorGate(request, env, "owner-staff");
   if ("response" in gate) return gate.response;
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
@@ -1857,11 +1855,9 @@ const handleStaffRoster = async (
   const body = parsed.value;
   if (!isObject(body)) return errorResponse(400, "BAD_REQUEST");
   const locationIds = body.locationIds;
+  const optionalKeys = ["dryRun", "locationIds"].filter((key) => Object.hasOwn(body, key));
   if (
-    !hasExactKeys(body, ["displayName", "role",
-      ...(Object.hasOwn(body, "dryRun") ? ["dryRun"] : []),
-      ...(Object.hasOwn(body, "locationIds") ? ["locationIds"] : []),
-    ]) ||
+    !hasExactKeys(body, ["displayName", "role", ...optionalKeys]) ||
     !boundedText(body.displayName, 1, 80) ||
     (body.role !== "owner" && body.role !== "staff") ||
     (body.dryRun !== undefined && typeof body.dryRun !== "boolean") ||
@@ -2484,7 +2480,8 @@ const handleLineWebhook = async (
   if (parsedBody === null) return errorResponse(400, "BAD_REQUEST");
   const delivered = await Promise.allSettled(authorities.map((authority) =>
     withDeadline(authority.processWebhook({ events: parsedBody.events }), ADAPTER.SWEEP_RPC_DEADLINE_MS)));
-  if (delivered.some((result) => result.status === "rejected" || result.value.ok !== true)) {
+  if (delivered.some((result: PromiseSettledResult<unknown>) =>
+    result.status === "rejected" || !isObject(result.value) || result.value.ok !== true)) {
     return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
   }
   return json({});
@@ -2965,11 +2962,8 @@ const QUERY_ROUTES = new Set([
 const handle = async (request: Request, bindings: Env): Promise<Response> => {
   const url = new URL(request.url);
   const selected = url.searchParams.getAll("location");
-  const locationId = selected.length === 0
-    ? DEFAULT_LOCATION_ID
-    : selected.length === 1
-      ? parseLocationId(selected[0])
-      : null;
+  const selectedLocationId = selected.length === 1 ? parseLocationId(selected[0]) : null;
+  const locationId = selected.length === 0 ? DEFAULT_LOCATION_ID : selectedLocationId;
   if (locationId === null || (globalLocationRoute(url.pathname) && selected.length > 0)) {
     return url.pathname === "/api/adapters/calendar/feed.ics"
       ? calendarFeedNotFound()

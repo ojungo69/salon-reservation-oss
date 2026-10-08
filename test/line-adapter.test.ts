@@ -850,15 +850,19 @@ describe("link flow over HTTP", () => {
       source: { type: "user", userId: SUBJECT }, deliveryContext: { isRedelivery: false },
     }] });
     const signature = await signWebhookBody(LINE_TEST_SECRET, payload);
-    let west: "failed" | "stalled" | "ready" = "failed";
+    let west: "failed" | "stalled" | "malformed" | "ready" = "failed";
+    const malformedAcknowledgements = [null, {}, { ok: false }, { ok: "true" }];
+    let acknowledgement: unknown;
     const addressed: string[] = [];
     const bindings = Object.create(env) as Env;
     Object.defineProperty(bindings, "ADAPTER_DELIVERY", { value: { getByName: (name: string) => {
       addressed.push(name);
       if (name === "location:studio-west" && west !== "ready") return {
-        processWebhook: () => west === "stalled"
-          ? new Promise(() => undefined)
-          : Promise.reject(new Error("fictional target outage")),
+        processWebhook: () => {
+          if (west === "stalled") return new Promise(() => undefined);
+          if (west === "malformed") return Promise.resolve(acknowledgement);
+          return Promise.reject(new Error("fictional target outage"));
+        },
       };
       return env.ADAPTER_DELIVERY.getByName(name);
     } } });
@@ -868,6 +872,11 @@ describe("link flow over HTTP", () => {
     expect((await send()).status).toBe(503);
     west = "stalled";
     expect((await send()).status).toBe(503);
+    west = "malformed";
+    for (const value of malformedAcknowledgements) {
+      acknowledgement = value;
+      expect((await send()).status).toBe(503);
+    }
     west = "ready";
     expect((await send()).status).toBe(200);
     for (const locationId of ["studio-east", "studio-west"]) {
@@ -875,7 +884,8 @@ describe("link flow over HTTP", () => {
         state.storage.sql.exec("SELECT webhook_event_id FROM webhook_dedup").toArray(),
       )).toEqual([{ webhook_event_id: "S4PARTIAL0001" }]);
     }
-    expect(addressed).toEqual(Array.from({ length: 3 }, () => ["location:studio-east", "location:studio-west"]).flat());
+    expect(addressed).toEqual(Array.from({ length: 3 + malformedAcknowledgements.length },
+      () => ["location:studio-east", "location:studio-west"]).flat());
     expect(await deliveryStub("studio-closed").readMeta()).toBeNull();
     expect(await deliveryStub().readMeta()).toBeNull();
   });
