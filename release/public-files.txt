@@ -58,6 +58,7 @@ src/calendar-adapter.ts
 src/date-parse.ts
 src/installation-config.ts
 src/line-adapter.ts
+src/location.ts
 src/reservation-core.ts
 src/reservation-day.ts
 src/worker.ts
@@ -68,6 +69,7 @@ test/installation-config.test.ts
 test/journey.test.ts
 test/line-adapter.test.ts
 test/line-helpers.ts
+test/location.test.ts
 test/release-audit-denylist.test.ts
 test/release-metadata.test.ts
 test/reservation-core.test.ts
