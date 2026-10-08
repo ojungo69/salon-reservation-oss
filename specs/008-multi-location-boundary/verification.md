@@ -16,8 +16,8 @@ Results were obtained at the corresponding writer or integration stage. They are
 | --- | --- |
 | Backend canonical names and exact nameless-default fallback | Four pure tests passed; strict typecheck passed |
 | Location creation/settings/replay/unknown/CAS/current-owner authority | Four real Durable Object cases passed |
-| Staff grants/default-only/empty scope/revocation/restart/atomic scoped creation | Eight new runtime cases, 15 existing Worker staff cases and 10 pure roster cases passed |
-| Named calendar version/digest/unique immutable target/readiness/current-owner boundary | 12 real-runtime cases and existing pure settings/type checks passed |
+| Staff grants/default-only/empty scope/revocation/restart/atomic scoped creation | Four new runtime cases, making eight root cases at that stage, plus 15 existing Worker staff cases and 10 pure roster cases passed |
+| Named calendar version/digest/unique immutable target/readiness/current-owner boundary | Four named-calendar cases, making 12 root runtime cases in total, plus existing pure settings/type checks passed |
 | Location/day routing and create recovery | Two fifty-way races, eight exact-value rollback/retry cases and handoff checks passed in the HTTP writer; combined regression remains pending |
 | Initial customer selector and named-only URL | Two stubbed browser cases failed before the UI change and then passed; these are controller evidence, not real-backend acceptance |
 | Public location/storage/proof helpers | 18 pure journey cases passed in the UI writer; combined acceptance remains pending |
