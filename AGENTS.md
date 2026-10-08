@@ -44,3 +44,11 @@ fictional data; it must not silently become a production migration. Do not deplo
 services, mutate live accounts, or delete production data without specific authorization.
 Run `npm run check` and the browser suite required by the changed behavior and standing gates.
 Report the exact verification performed and blockers; never claim work continues after the session.
+
+## Existing-system data migration
+
+Before any migration-purpose read, export, import, restore, or cutover involving an existing
+system or its real data, describe the source, data scope, destination, operation, and rollback,
+then obtain the maintainer's explicit confirmation for those specific steps. Code and test
+comparison, plus planning and tests using only isolated fictional fixtures, may proceed without
+that confirmation. See [S5](docs/ROADMAP.md#stages).
