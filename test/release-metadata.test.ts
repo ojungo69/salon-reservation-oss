@@ -65,7 +65,7 @@ for (const variant of ["subject", "body-lowercase", "nested"] as const) {
   });
 }
 
-for (const required of ["docs/ADR-0001-REUSE-FIRST-PORTING.md", "docs/PORTING.md"]) {
+for (const required of ["docs/ADR-0001-REUSE-FIRST-PORTING.md", "docs/ADR-0002-CREATE-STORAGE-AUTHORITY.md", "docs/PORTING.md"]) {
   test(`refuses an omitted governance document: ${required}`, { skip: !POSIX }, () => {
     const { tree, audit } = createFixture();
     try {

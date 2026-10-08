@@ -13,8 +13,8 @@ The governing rule is [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md): inspect produ
 | Capability ID | Capability | Current disposition | Evidence class | Preferred future method | Migration readiness | Next gate |
 |---|---|---|---|---|---|---|
 | `date-parsing` | Strict JST calendar-date parsing | Copied | Audited byte identity; focused public contract tests | Retain the exact copy | Evidence mapped | Revalidate identity when either implementation changes |
-| `reservation-command-kernel` | Reservation command kernel | Reimplemented | Independently designed public command/race suites; production regressions not yet carried over | Generalize production-tested invariants where rights and compatibility permit | Blocked | Accept storage ADR; map every critical invariant and representative regression test |
-| `storage-transaction-authority` | Storage and transaction authority | Reimplemented | Current day-partitioned transactions differ from the production relational model | Decision pending | Blocked | Compare correctness, multi-location/cross-day behavior, migration, recovery, queries, observability, cost, and concurrency in a separate ADR |
+| `reservation-command-kernel` | Reservation command kernel | Reimplemented | Independent command/race suites plus exact-value failed-create recovery and public-reference behavioral mapping | Retain the bounded create contract under [ADR0002](ADR-0002-CREATE-STORAGE-AUTHORITY.md); compare extensions by evidence | Blocked | Map remaining critical invariants and prove application migration/backout before cutover |
+| `storage-transaction-authority` | Storage and transaction authority | Reimplemented | Day-partitioned transaction and exact-value recovery evidence; public relational comparison in [ADR0002](ADR-0002-CREATE-STORAGE-AUTHORITY.md) | One day Durable Object for the current single-location/accountless scope | Blocked | Reopen the comparison before multi-location, global identity, cross-day operations, or import; prove recovery, migration, queries, cost, and concurrency for that scope |
 | `customer-booking-journey` | Customer booking journey | Reimplemented | Independent public journey and browser coverage; no implementation carryover evidence | Generalize reusable states and failure behavior; retain public branding/accessibility system | Not assessed | Map production journey states, recovery cases, and tests before the next customer-parity slice |
 | `line-identity-notifications` | Optional LINE identity and notifications | Reimplemented | Independent provider-neutral adapter and delivery tests | Generalize production-tested retry, deduplication, quota, and failure-visibility behavior | Blocked | Confirm rights and map job states plus representative production tests |
 | `calendar-integration` | Calendar feed and outbound synchronization | Reimplemented | Independent feed/outbound adapter and reconciliation tests | Generalize production-tested outbound, retry, retention, and recovery behavior | Blocked | Confirm rights; separate targeted outbound behavior from unscheduled inbound scope; map tests |
@@ -22,6 +22,10 @@ The governing rule is [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md): inspect produ
 | `installation-private-material` | Installation data, credentials, branding, deployment details, private operations, and private history | Excluded-private | Public-release allowlist, fictional defaults, and private-boundary audits | Keep private; expose only generic guidance and fictional examples | Not assessed | Repeat boundary checks for every new release surface |
 
 No current row is labeled `Generalized`. Behavioral similarity or reuse of patterns already inside this repository is not evidence that a production implementation was retained.
+
+## Bounded create assessment
+
+[ADR0002](ADR-0002-CREATE-STORAGE-AUTHORITY.md) records the current authority and maps independently authored recovery checks to a pinned, publicly licensed application reference. It verifies failed-create exact-value rollback, identical retry, and stable replay for the existing bounded product. It does not establish application migration readiness, cross-location customer identity, measured backend superiority, or copied implementation provenance. Historical rights assessments of unpublished material remain separate and unchanged.
 
 ## How to read the table
 

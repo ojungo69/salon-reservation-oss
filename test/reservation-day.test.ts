@@ -1355,6 +1355,110 @@ describe("S2 calendar outbox substrate", () => {
     expect(bytes).not.toContain("managementDigest");
   });
 
+  it.each([
+    ["public", "receipt"],
+    ["public", "calendar sequence"],
+    ["owner", "receipt"],
+    ["owner", "calendar sequence"],
+  ] as const)("recovers an identical %s create after %s persistence fails", async (path, failure) => {
+    const calendarDay = configured(day, { line: true, calendar: true });
+    const stub = stubFor(calendarDay);
+    const create = (input: ReturnType<typeof createInput>) => path === "public"
+      ? stub.createPublic(calendarDay, input)
+      : stub.createOwner(calendarDay, input, TEST_ACTOR);
+    const snapshot = () => runInDurableObject(stub, async (_instance, state) => {
+      const tables = [
+        ["core_state", "singleton"],
+        ["booking_details", "reservation_id"],
+        ["adapter_receipts", "command_id"],
+        ["partition_meta", "singleton"],
+        ["closures", "closure_id"],
+        ["__attribution", "command_id"],
+        ["__adapter_meta", "consumer, generation"],
+        ["__adapter_outbox", "consumer, generation, seq"],
+      ] as const;
+      return { alarm: await state.storage.getAlarm(), tables: Object.fromEntries(tables.map(([table, order]) => [table,
+        state.storage.sql.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table,
+        ).toArray().length === 0
+          ? null
+          : state.storage.sql.exec(`SELECT * FROM ${table} ORDER BY ${order}`).toArray(),
+      ])) };
+    });
+
+    expect(await create(createInput(calendarDay, { serviceIds: ["service-cut"] })))
+      .toMatchObject({ ok: true });
+    const baseline = await snapshot();
+    const input = createInput(calendarDay, { serviceIds: ["service-cut"], startTime: "11:00" });
+    const beforeAvailability = await stub.availability(calendarDay, input.serviceIds);
+    expect(startsFor(beforeAvailability, input.resourceId)).toContain(input.startTime);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(failure === "receipt"
+        ? `CREATE TRIGGER fail_create_recovery BEFORE INSERT ON adapter_receipts
+           BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END`
+        : `CREATE TRIGGER fail_create_recovery BEFORE UPDATE ON __adapter_meta
+           WHEN NEW.consumer = 'calendar'
+           BEGIN SELECT RAISE(ABORT, 'injected calendar sequence failure'); END`);
+    });
+    try {
+      expect(await create(input)).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
+      expect(await snapshot()).toEqual(baseline);
+      expect(await stub.availability(calendarDay, input.serviceIds)).toEqual(beforeAvailability);
+    } finally {
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.sql.exec("DROP TRIGGER fail_create_recovery");
+      });
+    }
+
+    const retried = await create(input);
+    expect(retried).toMatchObject({
+      ok: true,
+      replayed: false,
+      status: path === "public" ? "pending" : "approved",
+      startTime: input.startTime,
+      snapshot: singleSnapshot,
+    });
+    const committed = await snapshot();
+    const facts = await runInDurableObject(stub, (_instance, state) => ({
+      core: state.storage.sql.exec<{ revision: number }>("SELECT revision FROM core_state").one(),
+      details: state.storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM booking_details").one(),
+      receipt: state.storage.sql.exec<{ operation: string; reservation_id: string }>(
+        "SELECT operation, reservation_id FROM adapter_receipts WHERE command_id = ?", input.commandId,
+      ).one(),
+      budget: state.storage.sql.exec<{ accepted_creates: number; accepted_mutations: number }>(
+        "SELECT accepted_creates, accepted_mutations FROM partition_meta",
+      ).one(),
+      events: state.storage.sql.exec<{ consumer: string; seq: number; type: string; reservation_id: string }>(
+        "SELECT consumer, seq, type, reservation_id FROM __adapter_outbox ORDER BY consumer, generation, seq",
+      ).toArray(),
+      sequence: state.storage.sql.exec<{ consumer: string; event_seq: number }>(
+        "SELECT consumer, event_seq FROM __adapter_meta ORDER BY consumer, generation",
+      ).toArray(),
+      attribution: state.storage.sql.exec(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__attribution'",
+      ).toArray().length > 0 ? state.storage.sql.exec<{ actor_kind: string }>(
+        "SELECT actor_kind FROM __attribution WHERE command_id = ?", input.commandId,
+      ).toArray() : [],
+    }));
+    expect(facts.core).toEqual({ revision: 2 });
+    expect(facts.details).toEqual({ count: 2 });
+    expect(facts.receipt).toEqual({
+      operation: `${path}-create`, reservation_id: reservationIdOf(retried),
+    });
+    expect(facts.budget).toEqual({ accepted_creates: 2, accepted_mutations: 0 });
+    expect(facts.events).toEqual([
+      expect.objectContaining({ consumer: "calendar", seq: 1, type: "create" }),
+      { consumer: "calendar", seq: 2, type: "create", reservation_id: reservationIdOf(retried) },
+    ]);
+    expect(facts.sequence).toEqual([{ consumer: "calendar", event_seq: 2 }]);
+    expect(facts.attribution).toEqual(path === "owner" ? [{ actor_kind: "break_glass" }] : []);
+    expect(startsFor(await stub.availability(calendarDay, input.serviceIds), input.resourceId))
+      .not.toContain(input.startTime);
+    expect(await create(input)).toEqual({ ...retried, replayed: true });
+    expect(await snapshot()).toEqual(committed);
+  });
+
   it("keeps completed and no-show schedule facts without emitting a calendar mutation", async () => {
     for (const [index, action] of (["complete", "no_show"] as const).entries()) {
       const calendarDay = configured(configFor(`2025-01-${25 + index}`), { calendar: true });

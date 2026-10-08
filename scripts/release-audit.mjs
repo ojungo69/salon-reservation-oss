@@ -54,6 +54,7 @@ const REQUIRED = new Set([
   "SECURITY.md",
   "docs/ADAPTER-CONTRACTS.md",
   "docs/ADR-0001-REUSE-FIRST-PORTING.md",
+  "docs/ADR-0002-CREATE-STORAGE-AUTHORITY.md",
   "docs/CALENDAR-SETUP.md",
   "docs/CLOUDFLARE.md",
   "docs/PARITY.md",

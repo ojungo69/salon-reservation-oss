@@ -331,6 +331,26 @@ test("the public pages carry no automated accessibility violations", async ({ pa
   }
 });
 
+test("the loading booking page has no automated accessibility violations", async ({ page }) => {
+  await stubTurnstile(page);
+  let releaseConfig = () => {};
+  const heldConfig = new Promise<void>((resolve) => { releaseConfig = resolve; });
+  await page.route("**/api/config", async (route) => {
+    await heldConfig;
+    await route.continue();
+  });
+  try {
+    const configRequest = page.waitForRequest("**/api/config");
+    await page.goto("/", { waitUntil: "commit" });
+    await configRequest;
+    await expect(page.locator("#turnstile-widget")).toBeVisible();
+    await expectNoAxeViolations(page);
+  } finally {
+    releaseConfig();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
 test("keyboard alone reaches the first booking control and the skip link", async ({ page }) => {
   await stubTurnstile(page);
   await page.goto("/");

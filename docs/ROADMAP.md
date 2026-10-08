@@ -40,6 +40,10 @@ target matrix is `Implemented` or `Deliberately excluded`. Completing stages S0�
 automatically confer the claim — it is read from the matrix as it stands at that time, never from
 this table — and the README derives its claim from the matrix for the same reason.
 
+## Bounded create authority
+
+[ADR0002](ADR-0002-CREATE-STORAGE-AUTHORITY.md) selects one day Durable Object for the existing single-location/accountless create scope and maps recovery evidence to the public relational reference. It does not complete S4 or S5. Reopen the storage comparison with representative identity, isolation, cross-day, recovery, migration, query, cost, and concurrency evidence before expanding that boundary. Capability status and migration readiness remain in their existing authorities.
+
 ## Stages
 
 | Stage | Status | Delivers | Prerequisites | Completion criteria |
