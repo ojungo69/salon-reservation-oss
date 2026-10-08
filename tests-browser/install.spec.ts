@@ -240,10 +240,10 @@ test("an issued credential does not survive signing out, or a second sign-in", {
       (element) => element.textContent === "",
     )).toBe(true);
   } finally {
+    // Detach cached credential nodes before releasing late replies.
+    await page.locator("[data-staff-credential]").evaluate((element) => element.remove());
     writeReply.resolve();
     rosterReply.resolve();
-    // Failed assertions must not leave a secret in Playwright's error context.
-    await page.locator("[data-staff-credential-value]").evaluate((element) => { element.textContent = ""; });
   }
 });
 
