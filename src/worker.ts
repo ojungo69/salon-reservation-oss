@@ -578,12 +578,14 @@ const withCalendarAdapter = async (
     calendarRecovery: _calendarRecovery,
     ...base
   } = context;
+  let recoveryGeneration: number | undefined;
   if (env.locationId !== DEFAULT_LOCATION_ID) {
     const intent = await withDeadline(
       installationStub(env).getCalendarContext(env.locationId),
       CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
     );
     if (!intent.feedEnabled && !intent.googleEnabled) return base;
+    recoveryGeneration = intent.activationVersion;
   }
   try {
     const calendarAdapter = await withDeadline(
@@ -600,6 +602,7 @@ const withCalendarAdapter = async (
       calendarRecovery: {
         leaseIssuedAt,
         leaseNotAfter: leaseIssuedAt + ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000,
+        ...(recoveryGeneration === undefined ? {} : { generation: recoveryGeneration }),
       },
     };
   }

@@ -1356,6 +1356,91 @@ describe("S2 calendar outbox substrate", () => {
       }
     });
 
+  it.each([["line", 288, 9], ["calendar", 384, 12]] as const)(
+    "S4 drains the conservative %s daily envelope of %i rows in %i bounded pages", async (consumer, count, rounds) => {
+      const root = env.INSTALLATION_CONFIG.getByName("installation");
+      expect(await root.createLocation({ commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東" }, null))
+        .toMatchObject({ ok: true });
+      expect(await root.setCalendarSettings({ expectedVersion: 0, googleEnabled: true,
+        calendarId: "fixture-studio-east@example.invalid", feedEnabled: false }, null, "studio-east"))
+        .toMatchObject({ ok: true });
+      const epoch = (await root.getCalendarContext("studio-east")).activationVersion;
+      const nativeDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${day.date}`);
+      const peer = env.RESERVATION_DAYS.getByName(`location:studio-west:${day.date}`);
+      const lease = { consumer, generation: epoch, phase: "active" as const,
+        leaseIssuedAt: Date.now(), leaseNotAfter: Date.now() + 30_000 };
+      const config = { ...day, ...(consumer === "line" ? { adapter: lease } : { calendarAdapter: lease }) };
+      for (const stub of [nativeDay, peer]) await runInDurableObject(stub, async (instance, state) => {
+        const holder = instance as unknown as { env: Env };
+        const original = holder.env;
+        holder.env = Object.assign(Object.create(original), { ADAPTER_DELIVERY: undefined, CALENDAR_ADAPTER: undefined });
+        try {
+          const created = await instance.createPublic(config, createInput(day, { serviceIds: ["service-cut"] }));
+          if (!created.ok) throw new Error("daily envelope fixture failed");
+          if (consumer === "line") expect(await instance.transitionOwner(config, {
+            commandId: crypto.randomUUID(), date: day.date, reservationId: created.reservationId, action: "approve",
+          }, TEST_ACTOR)).toMatchObject({ ok: true });
+          // Synthetic conservative envelope: 96 creates + 192 mutations, plus 96
+          // separately budgeted expirations. LINE does not emit create events.
+          state.storage.sql.exec("DELETE FROM __adapter_outbox WHERE consumer = ?", consumer);
+          state.storage.sql.exec(`WITH RECURSIVE rows(value) AS (
+            VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < ?
+          ) INSERT INTO __adapter_outbox (consumer, generation, seq, event_id, reservation_id, type,
+            start_time, end_time, service_label, reservation_status, occurred_at, purge_at)
+            SELECT ?, ?, value, ? || '#' || value, printf('10000000-0000-4000-8000-%012d', value),
+              'approve', '09:00', '10:00', '架空カット', 'approved', ?, ? FROM rows`,
+          count, consumer, epoch, day.date, new Date(Date.now()).toISOString(), day.purgeAt);
+          state.storage.sql.exec("UPDATE __adapter_meta SET event_seq = ? WHERE consumer = ? AND generation = ?", count, consumer, epoch);
+        } finally { holder.env = original; }
+      });
+      let received = 0;
+      for (let round = 0; round < rounds; round += 1) {
+        const batch = await nativeDay.drainOutbox({ consumer, limit: 32 });
+        expect(batch.events).toHaveLength(32);
+        expect(batch.more).toBe(round < rounds - 1);
+        expect(batch.events[0]?.seq).toBe(round * 32 + 1);
+        received += batch.events.length;
+        await nativeDay.ackOutbox({ consumer, events: batch.events.map(({ generation, eventId }) => ({ generation, eventId })) });
+      }
+      expect(received).toBe(count);
+      expect(await nativeDay.drainOutbox({ consumer, limit: 32 })).toEqual({ events: [], more: false });
+      expect(await nativeDay.drainOutbox({ consumer, limit: 32 })).toEqual({ events: [], more: false });
+      expect((await peer.drainOutbox({ consumer, limit: 32 })).events).toHaveLength(32);
+      expect(await runInDurableObject(peer, (_instance, state) =>
+        state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox WHERE consumer = ?", consumer).one().n)).toBe(count);
+    },
+  );
+
+  it.each([
+    ["studio-east", "recovery", 30_000, 3],
+    ["studio-east", "recovery", 30_001, null],
+    ["studio-east", "explicit", 30_001, 3],
+    ["default", "explicit", 30_001, 0],
+    ["studio-east", "explicit", 60_000, null],
+    ["default", "explicit", 60_000, null],
+    ["default", "recovery", 30_000, 0],
+    ["default", "recovery", 30_001, null],
+  ] as const)("S4 preserves %s %s lease semantics at +%i ms", async (locationId, kind, elapsed, generation) => {
+    const issuedAt = Date.parse("2025-01-14T15:00:00.000Z");
+    vi.mocked(Date.now).mockReturnValue(issuedAt + elapsed);
+    const lease = { leaseIssuedAt: issuedAt, leaseNotAfter: issuedAt + 30_000 };
+    const config: DayConfig = { ...day, ...(kind === "recovery"
+      ? { calendarRecovery: { ...lease, ...(locationId === "default" ? {} : { generation: 3 }) } }
+      : { calendarAdapter: { ...lease, consumer: "calendar", generation: 3, phase: "active" } }) };
+    const stub = env.RESERVATION_DAYS.getByName(locationId === "default"
+      ? `single-location:${day.date}` : `location:${locationId}:${day.date}`);
+    const result = await runInDurableObject(stub, async (instance) => {
+      const holder = instance as unknown as { env: Env };
+      const original = holder.env;
+      holder.env = Object.assign(Object.create(original), { CALENDAR_ADAPTER: undefined });
+      try {
+        const created = await instance.createPublic(config, createInput(day, { serviceIds: ["service-cut"] }));
+        return { ok: created.ok, generations: (await instance.drainOutbox({ consumer: "calendar" })).events.map((event) => event.generation) };
+      } finally { holder.env = original; }
+    });
+    expect(result).toEqual({ ok: true, generations: generation === null ? [] : [generation] });
+  });
+
   it("emits calendar create independently and projects only schedule facts", async () => {
     const stub = stubFor();
     const calendarDay = configured(day, { line: true, calendar: true });

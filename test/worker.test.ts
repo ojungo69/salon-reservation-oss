@@ -385,6 +385,34 @@ describe("S4 location routing", () => {
       };
     });
     expect({ status: response.status, ...stored }).toEqual({ status: 503, bookings: 0, recovery: [] });
+
+    const issued = await (await jsonRequest("/api/admin/calendar/feed-token?location=studio-east", { expectedVersion: 0 }, ownerHeaders)).json() as { token: string };
+    expect((await jsonRequest("/api/admin/calendar/settings?location=studio-east", {
+      expectedVersion: 1, googleEnabled: false, calendarId: null, feedEnabled: true,
+    }, ownerHeaders, "PUT")).status).toBe(200);
+    const epoch = (await env.INSTALLATION_CONFIG.getByName("installation").getCalendarContext("studio-east")).activationVersion;
+    const failingDescriptor = Object.create(env) as Env;
+    Object.defineProperty(failingDescriptor, "CALENDAR_ADAPTER", { value: { getByName: () => ({
+      descriptor: () => new Promise(() => undefined),
+    }) } });
+    let originalDayEnv: Env | undefined;
+    await runInDurableObject(namedDay, (instance) => {
+      const holder = instance as unknown as { env: Env };
+      originalDayEnv = holder.env;
+      holder.env = Object.assign(Object.create(holder.env), { CALENDAR_ADAPTER: undefined });
+    });
+    try {
+      expect((await worker.fetch(request(), failingDescriptor)).status).toBe(201);
+      expect((await namedDay.drainOutbox({ consumer: "calendar" })).events)
+        .toMatchObject([{ generation: epoch, type: "create" }]);
+    } finally {
+      await runInDurableObject(namedDay, (instance) => {
+        (instance as unknown as { env: Env }).env = originalDayEnv!;
+      });
+    }
+    await calendar.pokeDay({ date: day.date });
+    const feed = await calendar.feed({ token: issued.token });
+    expect(feed.ok && feed.body).toContain("BEGIN:VEVENT");
   });
 });
 

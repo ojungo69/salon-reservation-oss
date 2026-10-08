@@ -95,6 +95,7 @@ export type DayConfig = {
   calendarRecovery?: {
     leaseIssuedAt: number;
     leaseNotAfter: number;
+    generation?: number;
   };
 };
 
@@ -184,7 +185,7 @@ const calendarRecoveryDescriptor = (
   recovery: NonNullable<DayConfig["calendarRecovery"]>,
 ): DayAdapterDescriptor => ({
   consumer: "calendar",
-  generation: 0,
+  generation: recovery.generation ?? 0,
   phase: "active",
   leaseIssuedAt: recovery.leaseIssuedAt,
   leaseNotAfter: recovery.leaseNotAfter,
@@ -652,7 +653,8 @@ const isCalendarRecovery = (value: DayConfig["calendarRecovery"]): boolean =>
     value.leaseIssuedAt > 0 &&
     Number.isSafeInteger(value.leaseNotAfter) &&
     value.leaseNotAfter > value.leaseIssuedAt &&
-    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000);
+    value.leaseNotAfter - value.leaseIssuedAt <= ADAPTER.DESCRIPTOR_LEASE_WINDOW_S * 1_000 &&
+    (value.generation === undefined || (Number.isSafeInteger(value.generation) && value.generation >= 1)));
 
 const isDayConfig = (config: DayConfig): boolean => {
   const base =
@@ -1142,6 +1144,11 @@ export class ReservationDay extends DurableObject<Env> {
     );
   }
 
+  #locationId(date: string): string {
+    return locationFromDayId(this.ctx.id, date,
+      this.env.RESERVATION_DAYS.idFromName(dayObjectName(DEFAULT_LOCATION_ID, date)));
+  }
+
   #calendarWatermark(config: DayConfig): { generation: number; seq: number } {
     const generation = config.calendarAdapter?.generation ?? 0;
     if (generation === 0 || !this.#adapterOutboxExists()) return { generation, seq: 0 };
@@ -1200,8 +1207,8 @@ export class ReservationDay extends DurableObject<Env> {
   // commit itself. No adapter configured → no-op. Deactivating → no new events
   // (disable is an explicit stop; the sweep drains what already exists).
   // An expired LINE lease preserves the released retry contract. Calendar is
-  // optional: a stale or unavailable lease writes generation 0 only inside
-  // the bounded final-pass window; later commits omit the optional event.
+  // optional: default recovery uses generation 0; named recovery keeps the root
+  // activation generation. Commits outside the bounded lease omit the event.
   #emitAdapterEvents(
     config: DayConfig,
     events: Array<{
@@ -1252,16 +1259,18 @@ export class ReservationDay extends DurableObject<Env> {
       adapter.consumer === "line" ? events.filter(({ type }) => type !== "create") : events;
     if (adapter.phase !== "active" || accepted.length === 0) return;
     let generation = adapter.generation;
+    const namedCalendar = adapter.consumer === "calendar" && this.#locationId(config.date) !== DEFAULT_LOCATION_ID;
+    if (namedCalendar && generation === 0) throw new Error("missing named calendar generation");
     const now = Date.now();
     if (now > adapter.leaseNotAfter) {
       if (adapter.consumer === "line") throw new AdapterLeaseExpiredError();
       if (
-        adapter.generation === 0 ||
+        config.calendarRecovery !== undefined || adapter.generation === 0 ||
         now >= adapter.leaseIssuedAt + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000
       ) {
         return;
       }
-      generation = 0;
+      if (!namedCalendar) generation = 0;
     }
     this.#ensureAdapterSchema();
     const sql = this.ctx.storage.sql;
@@ -1340,11 +1349,7 @@ export class ReservationDay extends DurableObject<Env> {
         if (pending === undefined || pending === 0) continue;
         const namespace =
           adapter.consumer === "line" ? this.env.ADAPTER_DELIVERY : this.env.CALENDAR_ADAPTER;
-        const locationId = locationFromDayId(
-          this.ctx.id,
-          config.date,
-          this.env.RESERVATION_DAYS.idFromName(dayObjectName(DEFAULT_LOCATION_ID, config.date)),
-        );
+        const locationId = this.#locationId(config.date);
         const stub = namespace.getByName(adapterObjectName(locationId));
         this.ctx.waitUntil(
           Promise.resolve(stub.pokeDay({ date: config.date })).then(
