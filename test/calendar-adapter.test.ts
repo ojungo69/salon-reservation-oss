@@ -484,8 +484,8 @@ describe("calendar projection and feed authority", () => {
     });
   });
 
-  it("S4 ignores an old Google configuration failure after a newer activation starts", async () => {
-    const fixture = await namedFixture("studio-east", null, true);
+  it.each([false, true])("S4 ignores an old Google configuration failure after reconfiguration with feed=%s", async (keepFeed) => {
+    const fixture = await namedFixture("studio-east", keepFeed ? "B".repeat(43) : null, true);
     const descriptor = await fixture.authority.descriptor();
     if (descriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
@@ -500,12 +500,13 @@ describe("calendar projection and feed authority", () => {
         if (String(input) === "https://oauth2.googleapis.com/token") return mockGoogleAuthSuccess();
         writes += 1;
         // Complete an already-started old provider request only after the root
-        // and local actor have advanced to the new activation generation.
+        // and local actor have advanced to the new root configuration.
         expect(await root.setCalendarSettings({ expectedVersion: fixture.version,
-          googleEnabled: false, calendarId: fixture.calendarId, feedEnabled: false }, null, "studio-east"))
+          googleEnabled: false, calendarId: fixture.calendarId, feedEnabled: keepFeed }, null, "studio-east"))
           .toMatchObject({ ok: true });
+        await instance.descriptor();
         expect(await root.setCalendarSettings({ expectedVersion: fixture.version + 1,
-          googleEnabled: true, calendarId: fixture.calendarId, feedEnabled: false }, null, "studio-east"))
+          googleEnabled: true, calendarId: fixture.calendarId, feedEnabled: keepFeed }, null, "studio-east"))
           .toMatchObject({ ok: true });
         await instance.descriptor();
         return Response.json({ error: { errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
@@ -515,8 +516,8 @@ describe("calendar projection and feed authority", () => {
         mutation: state.storage.sql.exec("SELECT generation, status FROM google_mutations").one() };
     });
     expect(settled).toEqual({ writes: 1,
-      meta: { generation: fixture.version + 2, google_blocked_fingerprint: null },
-      mutation: { generation: fixture.version + 2, status: "queued" } });
+      meta: { generation: fixture.version + (keepFeed ? 0 : 2), google_blocked_fingerprint: null },
+      mutation: { generation: fixture.version + (keepFeed ? 0 : 2), status: "queued" } });
     let retried = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       if (String(input) === "https://oauth2.googleapis.com/token") return mockGoogleAuthSuccess();

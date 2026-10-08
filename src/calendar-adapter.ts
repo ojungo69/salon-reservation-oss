@@ -1897,6 +1897,8 @@ export class CalendarAdapter extends DurableObject<Env> {
       this.#pruneRetention(settledAt);
       return "advance";
     }
+    if (outcome.kind === "configuration" &&
+      !this.#sendConfigurationCurrent(configurationVersion, credentialFingerprint)) return "stop";
     this.#settleGoogle(row, outcome, settledAt, credentialFingerprint);
     if (outcome.kind === "configuration") return "stop";
     return "advance";
