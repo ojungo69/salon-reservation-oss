@@ -241,7 +241,7 @@ const createRememberedNamedBooking = async (page: Page): Promise<void> => {
     window.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
     history.go(-3);
   }));
-  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page).toHaveURL((url) => /\?location=salon-b$/.test(url.href));
   await expect(page.locator("#booking-result")).toBeVisible();
   await page.check("#remember-booking");
   expect(created.requests.length).toBe(1);
