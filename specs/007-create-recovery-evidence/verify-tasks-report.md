@@ -54,3 +54,9 @@ T010 self-evidence: this single independent audit verified T001–T009 against a
 ## Walkthrough log
 
 T009's structural classification was resolved by adding this report's path to its task description and recording both review rounds here. The original WEAK verdict above is retained as the immutable audit result. The change corrects the evidence pointer; it does not claim a rerun or alter the independently observed clean reviews. There is no remaining implementation or review work from this item.
+
+## Review follow-up — 2026-10-08
+
+PR 62 review found that ADR0002 was listed in the public manifest but absent from the release audit's required paths. The existing governance omission test gained an ADR0002 case: before the fix, removing it returned audit exit 0 and failed the new test (`0 !== 1`); after one `REQUIRED` entry was added, that case passed. The original task-verification verdicts and counts above remain historical results.
+
+The updated local checks passed: 101 core tests, 248 Worker tests, type and generated-type checks, deployment dry-run, dependency audit with zero vulnerabilities, release audit with 84 allowlisted files, and 41 browser tests. The fresh review of the pushed head remains a merge gate.
