@@ -167,13 +167,13 @@ describe("location configuration authority", () => {
   it("keeps named calendars off until configured and stores independent versioned feed digests", async () => {
     const original = await config().getState();
     await create("salon-b");
-    const off = { version: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
+    const off = { version: 0, activationVersion: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
     expect(await config().getCalendarContext("salon-b")).toEqual(off);
     expect(await tables()).toEqual(["__location_states"]);
     expect(await config().setCalendarSettings({ expectedVersion: 0, googleEnabled: false, calendarId: null, feedEnabled: true }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_NOT_CONFIGURED" });
     expect(await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "d".repeat(64) }, null, "salon-b")).toEqual({ ok: true, context: { ...off, version: 1, feedTokenDigest: "d".repeat(64) } });
     const desired = { expectedVersion: 1, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: true };
-    expect(await config().setCalendarSettings(desired, null, "salon-b")).toEqual({ ok: true, context: { version: 2, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: true, feedTokenDigest: "d".repeat(64) } });
+    expect(await config().setCalendarSettings(desired, null, "salon-b")).toEqual({ ok: true, context: { version: 2, activationVersion: 2, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: true, feedTokenDigest: "d".repeat(64) } });
     expect(await config().setCalendarSettings(desired, null, "salon-b")).toEqual({ ok: false, code: "VERSION_CONFLICT" });
     expect(await config().setCalendarSettings({ ...desired, expectedVersion: 2, googleEnabled: false, calendarId: "changed-calendar@example.invalid" }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_TARGET_IMMUTABLE" });
     expect((await config().setCalendarFeedDigest({ expectedVersion: 2, feedTokenDigest: "e".repeat(64) }, null, "salon-b")).ok).toBe(true);
@@ -372,5 +372,75 @@ describe("location configuration authority", () => {
     expect((await config().lineAdapterStatus("salon-c")).phase).toBe("active");
     expect(await config().getLineWebhookTargets()).toEqual(["salon-c"]);
     expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+  it("advances the calendar activation epoch only when all-off becomes enabled", async () => {
+    await create("salon-b");
+    expect(await config().getCalendarContext("salon-b")).toMatchObject({ version: 0, activationVersion: 0 });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "a".repeat(64) }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 1, activationVersion: 0 } });
+    expect(await config().setCalendarSettings({ expectedVersion: 1, googleEnabled: false, feedEnabled: true, calendarId: null }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 2, activationVersion: 2 } });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: 2, feedTokenDigest: "b".repeat(64) }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 3, activationVersion: 2 } });
+    const settings = { googleEnabled: true, feedEnabled: true, calendarId: "epoch-calendar@example.invalid" };
+    expect(await config().setCalendarSettings({ ...settings, expectedVersion: 3 }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 4, activationVersion: 2 } });
+    expect(await config().setCalendarSettings({ ...settings, expectedVersion: 4, googleEnabled: false }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 5, activationVersion: 2 } });
+    expect(await config().setCalendarSettings({ ...settings, expectedVersion: 5, feedEnabled: false }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 6, activationVersion: 2 } });
+    const off = { ...settings, googleEnabled: false, feedEnabled: false };
+    expect(await config().setCalendarSettings({ ...off, expectedVersion: 6 }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 7, activationVersion: 2 } });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: 7, feedTokenDigest: "c".repeat(64) }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 8, activationVersion: 2 } });
+    expect(await config().setCalendarSettings({ ...off, expectedVersion: 8, feedEnabled: true }, null, "salon-b")).toMatchObject({ ok: true, context: { version: 9, activationVersion: 9 } });
+    const accepted = await config().getCalendarContext("salon-b");
+    expect(await config().setCalendarSettings({ ...off, expectedVersion: 8 }, null, "salon-b")).toEqual({ ok: false, code: "VERSION_CONFLICT" });
+    expect(await config().getCalendarContext("salon-b")).toEqual(accepted);
+  });
+  it("refuses corrupt persisted calendar epochs without repairing them", async () => {
+    await create("salon-b");
+    await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "a".repeat(64) }, null, "salon-b");
+    await config().setCalendarSettings({ expectedVersion: 1, googleEnabled: false, feedEnabled: true, calendarId: null }, null, "salon-b");
+    for (const invalid of [0, -1, 2.5, 3, Number.MAX_SAFE_INTEGER + 1, "invalid"]) {
+      await runInDurableObject(config(), (_instance, state) => {
+        state.storage.sql.exec("UPDATE __location_calendar_settings SET activation_version = ? WHERE location_id = 'salon-b'", invalid);
+      });
+      await expect((async () => await config().getCalendarContext("salon-b"))()).rejects.toThrow("Invalid installation storage");
+      expect(await runInDurableObject(config(), (_instance, state) => state.storage.sql.exec("SELECT version, activation_version FROM __location_calendar_settings WHERE location_id = 'salon-b'").one())).toEqual({ version: 2, activation_version: invalid });
+    }
+    await runInDurableObject(config(), (_instance, state) => { state.storage.sql.exec("UPDATE __location_calendar_settings SET activation_version = 2 WHERE location_id = 'salon-b'"); });
+    expect(await config().getCalendarContext("salon-b")).toMatchObject({ version: 2, activationVersion: 2 });
+  });
+
+  it("fails closed on unpublished named rows missing the epoch column without altering them or default state", async () => {
+    const original = await config().getState();
+    await create("salon-b");
+    const before = await runInDurableObject(config(), (_instance, state) => {
+      state.storage.sql.exec(`CREATE TABLE __location_calendar_settings (
+        location_id TEXT PRIMARY KEY, version INTEGER NOT NULL, google_enabled INTEGER NOT NULL,
+        calendar_id TEXT UNIQUE, feed_enabled INTEGER NOT NULL, feed_token_digest TEXT
+      )`);
+      state.storage.sql.exec("INSERT INTO __location_calendar_settings VALUES ('salon-b', 2, 0, NULL, 0, NULL)");
+      return { columns: state.storage.sql.exec("PRAGMA table_info('__location_calendar_settings')").toArray(), rows: state.storage.sql.exec("SELECT * FROM __location_calendar_settings").toArray() };
+    });
+    await expect((async () => await config().getCalendarContext("salon-b"))()).rejects.toThrow("activation_version");
+    await expect((async () => await config().setCalendarFeedDigest({ expectedVersion: 2, feedTokenDigest: "a".repeat(64) }, null, "salon-b"))()).rejects.toThrow("activation_version");
+    const after = await runInDurableObject(config(), (_instance, state) => ({ columns: state.storage.sql.exec("PRAGMA table_info('__location_calendar_settings')").toArray(), rows: state.storage.sql.exec("SELECT * FROM __location_calendar_settings").toArray() }));
+    expect(after).toEqual(before);
+    expect(await config().getState()).toEqual(original);
+  });
+
+  it("does not spend calendar epochs on stale owners, concurrent losers or version overflow", async () => {
+    await create("salon-b");
+    const owner = await addStaff("owner", "a".repeat(64));
+    const revoked = await addStaff("owner", "b".repeat(64));
+    await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "a".repeat(64) }, null, "salon-b");
+    await config().executeRosterCommand({ operation: "staff.deactivate", staffId: revoked.id }, owner.id);
+    const enable = { expectedVersion: 1, googleEnabled: false, feedEnabled: true, calendarId: null };
+    expect(await config().setCalendarSettings(enable, revoked.id, "salon-b")).toEqual({ ok: false, code: "UNAUTHORIZED" });
+    expect(await config().getCalendarContext("salon-b")).toMatchObject({ version: 1, activationVersion: 0 });
+    const results = await Promise.all([config().setCalendarSettings(enable, owner.id, "salon-b"), config().setCalendarSettings(enable, null, "salon-b")]);
+    expect(results.filter(({ ok }) => ok)).toEqual([{ ok: true, context: { version: 2, activationVersion: 2, googleEnabled: false, feedEnabled: true, calendarId: null, feedTokenDigest: "a".repeat(64) } }]);
+    expect(results.filter(({ ok }) => !ok)).toEqual([{ ok: false, code: "VERSION_CONFLICT" }]);
+    await runInDurableObject(config(), (_instance, state) => { state.storage.sql.exec("UPDATE __location_calendar_settings SET version = ?, feed_enabled = 0 WHERE location_id = 'salon-b'", Number.MAX_SAFE_INTEGER); });
+    const before = await config().getCalendarContext("salon-b");
+    expect(before).toMatchObject({ version: Number.MAX_SAFE_INTEGER, activationVersion: 2, feedEnabled: false });
+    expect(await config().setCalendarSettings({ ...enable, expectedVersion: Number.MAX_SAFE_INTEGER }, null, "salon-b")).toEqual({ ok: false, code: "VERSION_CONFLICT" });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: Number.MAX_SAFE_INTEGER, feedTokenDigest: "b".repeat(64) }, null, "salon-b")).toEqual({ ok: false, code: "VERSION_CONFLICT" });
+    expect(await config().getCalendarContext("salon-b")).toEqual(before);
   });
 });

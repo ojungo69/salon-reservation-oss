@@ -125,6 +125,7 @@ export type LocationCreateResult =
 
 export type NamedCalendarContext = {
   version: number;
+  activationVersion: number;
   googleEnabled: boolean;
   calendarId: string | null;
   feedEnabled: boolean;
@@ -1959,21 +1960,23 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   #readCalendarContext(locationId: string): NamedCalendarContext {
     const row = this.#tableExists("__location_calendar_settings")
       ? this.ctx.storage.sql.exec<{
-        version: number; google_enabled: number; calendar_id: string | null;
+        version: number; activation_version: number; google_enabled: number; calendar_id: string | null;
         feed_enabled: number; feed_token_digest: string | null;
-      }>("SELECT version, google_enabled, calendar_id, feed_enabled, feed_token_digest FROM __location_calendar_settings WHERE location_id = ?", locationId).toArray()[0]
+      }>("SELECT version, activation_version, google_enabled, calendar_id, feed_enabled, feed_token_digest FROM __location_calendar_settings WHERE location_id = ?", locationId).toArray()[0]
       : undefined;
     if (row === undefined) {
-      return { version: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
+      return { version: 0, activationVersion: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
     }
     if (!Number.isSafeInteger(row.version) || row.version < 1 ||
+      !Number.isSafeInteger(row.activation_version) || row.activation_version < 0 || row.activation_version > row.version ||
       (row.google_enabled !== 0 && row.google_enabled !== 1) ||
       (row.feed_enabled !== 0 && row.feed_enabled !== 1) ||
       (row.calendar_id !== null && !isCalendarTargetId(row.calendar_id)) ||
       (row.feed_token_digest !== null && (typeof row.feed_token_digest !== "string" || !SHA256_HEX.test(row.feed_token_digest))) ||
       (row.google_enabled === 1 && row.calendar_id === null) ||
+      ((row.google_enabled === 1 || row.feed_enabled === 1) && row.activation_version === 0) ||
       (row.feed_enabled === 1 && row.feed_token_digest === null)) return corruptStorage();
-    return { version: row.version, googleEnabled: row.google_enabled === 1, calendarId: row.calendar_id,
+    return { version: row.version, activationVersion: row.activation_version, googleEnabled: row.google_enabled === 1, calendarId: row.calendar_id,
       feedEnabled: row.feed_enabled === 1, feedTokenDigest: row.feed_token_digest };
   }
 
@@ -1993,14 +1996,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       google_enabled INTEGER NOT NULL,
       calendar_id TEXT UNIQUE,
       feed_enabled INTEGER NOT NULL,
-      feed_token_digest TEXT
+      feed_token_digest TEXT,
+      activation_version INTEGER NOT NULL
     )`);
-    const rows = sql.exec<{ location_id: string }>(`INSERT INTO __location_calendar_settings VALUES (?, ?, ?, ?, ?, ?)
+    const rows = sql.exec<{ location_id: string }>(`INSERT INTO __location_calendar_settings
+      (location_id, version, google_enabled, calendar_id, feed_enabled, feed_token_digest, activation_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(location_id) DO UPDATE SET version = excluded.version,
         google_enabled = excluded.google_enabled, calendar_id = excluded.calendar_id,
-        feed_enabled = excluded.feed_enabled, feed_token_digest = excluded.feed_token_digest
+        feed_enabled = excluded.feed_enabled, feed_token_digest = excluded.feed_token_digest,
+        activation_version = excluded.activation_version
       WHERE version = ? RETURNING location_id`, locationId, context.version, context.googleEnabled ? 1 : 0,
-      context.calendarId, context.feedEnabled ? 1 : 0, context.feedTokenDigest, previousVersion).toArray();
+      context.calendarId, context.feedEnabled ? 1 : 0, context.feedTokenDigest, context.activationVersion, previousVersion).toArray();
     if (rows.length > 1) throw new Error("Invalid calendar CAS result");
     return rows.length === 1;
   }
@@ -2041,7 +2048,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         ).toArray().length > 0;
         if (credentials?.calendarId === calendarId || duplicate) return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
       }
-      const context: NamedCalendarContext = { ...current, version: current.version + 1, googleEnabled, calendarId, feedEnabled };
+      const version = current.version + 1;
+      const activationVersion = !current.googleEnabled && !current.feedEnabled && (googleEnabled || feedEnabled)
+        ? version : current.activationVersion;
+      const context: NamedCalendarContext = { ...current, version, activationVersion, googleEnabled, calendarId, feedEnabled };
       return this.#writeCalendarContext(locationId, current.version, context)
         ? { ok: true, context } : { ok: false, code: "VERSION_CONFLICT" };
     });
