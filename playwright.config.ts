@@ -136,11 +136,22 @@ export default defineConfig({
   },
   projects: [
     { name: "install", testMatch: /install\.spec\.ts/ },
-    { name: "app", testIgnore: /(?:install|multi-location(?:-calendar)?)\.spec\.ts/, dependencies: ["install"] },
-    { name: "multi-location", testMatch: /multi-location\.spec\.ts/, dependencies: ["app"] },
     {
-      name: "multi-location-calendar",
-      testMatch: /multi-location-calendar\.spec\.ts/,
+      name: "app",
+      testIgnore: /(?:install|multi-location(?:-calendar)?)\.spec\.ts/,
+      grepInvert: /@private-artifact/,
+      dependencies: ["install"],
+    },
+    {
+      name: "multi-location",
+      testMatch: /multi-location\.spec\.ts/,
+      dependencies: ["app"],
+      use: { trace: "off", screenshot: "off" },
+    },
+    {
+      name: "private-artifact",
+      testMatch: /(?:owner|multi-location-calendar)\.spec\.ts/,
+      grep: /@private-artifact/,
       dependencies: ["multi-location"],
       use: { trace: "off", screenshot: "off" },
     },

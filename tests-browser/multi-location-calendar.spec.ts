@@ -11,7 +11,7 @@ const signInSetup = async (page: Page, path = "/setup?location=salon-b"): Promis
 };
 
 test.describe("one-time calendar capability without artifacts", () => {
-  test("named calendar feed issue, rotation and conflict stay scoped to the owner panel", async ({ page }) => {
+  test("named calendar feed issue, rotation and conflict stay scoped to the owner panel", { tag: "@private-artifact" }, async ({ page }) => {
     test.setTimeout(120_000);
     page.on("dialog", (dialog) => dialog.accept());
     await signInSetup(page, "/setup?location=salon-b");

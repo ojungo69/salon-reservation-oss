@@ -126,7 +126,7 @@ test("reauthentication clears old operator details before the new directory retu
   await expect(page.locator("#auth-status")).toHaveAttribute("data-tone", "error");
 });
 
-test("reauthentication waits for an in-flight proxy booking to settle", async ({ page }) => {
+test("reauthentication waits for an in-flight proxy booking to settle", { tag: "@private-artifact" }, async ({ page }) => {
   await signIn(page);
   await page.locator("#owner-service-list input").first().check();
   // Keep the proxy fixture off the shared day used by the status-action test.
