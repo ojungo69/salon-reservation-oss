@@ -1375,6 +1375,15 @@ const timingSafeEqualHex = (left: string, right: string): boolean => {
 
 export type StaffRole = "owner" | "staff";
 
+export type StaffLocationScope = {
+  staffId: string;
+  scopeVersion: number;
+  locationIds: string[] | null;
+};
+export type StaffScopeResult =
+  | { ok: true; scope: StaffLocationScope }
+  | { ok: false; code: "BAD_REQUEST" | "UNAUTHORIZED" | "VERSION_CONFLICT" | "STAFF_UNAVAILABLE" };
+
 type StaffMember = {
   id: string;
   displayName: string;
@@ -1909,9 +1918,15 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           id === actorId && active && role === "owner") ?? false));
   }
 
-  listLocations(runtime: ReadinessRuntime): LocationSummary[] {
+  listLocations(runtime: ReadinessRuntime, actorId?: string | null): LocationSummary[] {
     const safeRuntime = parseRpcRuntime(runtime);
-    return this.#locationIds().map((id) => {
+    let allowed: string[] | null = null;
+    if (actorId !== undefined && actorId !== null) {
+      const member = this.#readRoster()?.roster.members.find(({ id, active }) => id === actorId && active);
+      if (member === undefined) throw new Error("UNAUTHORIZED");
+      allowed = this.#readStaffScope(member).locationIds;
+    }
+    return this.#locationIds().filter((id) => allowed === null || allowed.includes(id)).map((id) => {
       const { state } = this.#readStoredState(id);
       const settings = activeVersion(state).settings;
       return {
@@ -2059,6 +2074,80 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return { roster, rosterJson: row.roster_json };
   }
 
+  #validScopeIds(value: unknown): string[] | null {
+    if (!Array.isArray(value) || value.length > MAX_LOCATIONS) return null;
+    const ids: string[] = [];
+    for (const valueId of value) {
+      const id = parseLocationId(valueId);
+      if (id === null) return null;
+      ids.push(id);
+    }
+    const known = this.#locationIds();
+    if (new Set(ids).size !== ids.length || ids.some((id) => !known.includes(id))) return null;
+    return ids.sort();
+  }
+
+  #readStaffScope(member: StaffMember): StaffLocationScope {
+    const base = { staffId: member.id, scopeVersion: 0 };
+    if (member.role === "owner") return { ...base, locationIds: null };
+    const row = this.#tableExists("__staff_location_scopes")
+      ? this.ctx.storage.sql.exec<{ scope_version: number; location_ids_json: string }>(
+        "SELECT scope_version, location_ids_json FROM __staff_location_scopes WHERE staff_id = ?", member.id,
+      ).toArray()[0] : undefined;
+    if (row === undefined) return { ...base, locationIds: [DEFAULT_LOCATION_ID] };
+    if (!Number.isSafeInteger(row.scope_version) || row.scope_version < 1) return corruptStorage();
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.location_ids_json); }
+    catch { return corruptStorage(); }
+    const locationIds = this.#validScopeIds(parsed);
+    if (locationIds === null || JSON.stringify(locationIds) !== row.location_ids_json) return corruptStorage();
+    return { staffId: member.id, scopeVersion: row.scope_version, locationIds };
+  }
+
+  #writeStaffScope(scope: StaffLocationScope & { locationIds: string[] }, previousVersion: number): boolean {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS __staff_location_scopes (
+      staff_id TEXT PRIMARY KEY,
+      scope_version INTEGER NOT NULL,
+      location_ids_json TEXT NOT NULL
+    )`);
+    // RETURNING counts records; rowsWritten also counts primary-key index writes.
+    const rows = sql.exec<{ staff_id: string }>(`INSERT INTO __staff_location_scopes VALUES (?, ?, ?)
+      ON CONFLICT(staff_id) DO UPDATE SET scope_version = excluded.scope_version,
+        location_ids_json = excluded.location_ids_json WHERE scope_version = ? RETURNING staff_id`,
+      scope.staffId, scope.scopeVersion, JSON.stringify(scope.locationIds), previousVersion).toArray();
+    if (rows.length > 1) throw new Error("Invalid scope CAS result");
+    return rows.length === 1;
+  }
+
+  listStaffLocationScopes(actorId: string | null): StaffLocationScope[] {
+    if (!this.#ownerAuthorized(actorId)) throw new Error("UNAUTHORIZED");
+    return (this.#readRoster()?.roster.members ?? []).map((member) => this.#readStaffScope(member));
+  }
+
+  setStaffLocationScope(input: unknown, actorId: unknown): StaffScopeResult {
+    if (!isRecord(input) || !hasExactKeys(input, ["staffId", "expectedScopeVersion", "locationIds"]) ||
+      typeof input.staffId !== "string" || !UUID.test(input.staffId) ||
+      !Number.isSafeInteger(input.expectedScopeVersion) || (input.expectedScopeVersion as number) < 0 ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    return this.ctx.storage.transactionSync((): StaffScopeResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      const locationIds = this.#validScopeIds(input.locationIds);
+      if (locationIds === null) return { ok: false, code: "BAD_REQUEST" };
+      const member = this.#readRoster()?.roster.members.find(({ id }) => id === input.staffId);
+      if (member?.role !== "staff") return { ok: false, code: "STAFF_UNAVAILABLE" };
+      const previous = this.#readStaffScope(member);
+      if (input.expectedScopeVersion !== previous.scopeVersion || !Number.isSafeInteger(previous.scopeVersion + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      const scope = { staffId: member.id, scopeVersion: previous.scopeVersion + 1, locationIds };
+      return this.#writeStaffScope(scope, previous.scopeVersion)
+        ? { ok: true, scope } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
   /**
    * One statement for the first write and every later one. The insert path
    * bootstraps a roster that does not exist yet; on an existing row the `WHERE`
@@ -2078,11 +2167,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * lost update into a refusal instead of silent corruption.
    */
   #writeRoster(roster: StaffRoster, previousJson: string | null): boolean {
-    // Validated before the table is created, because the two statements are not
-    // in one transaction: a parser that threw after the `CREATE` would leave a
-    // table holding no rows, which `#readRoster` reads as corruption forever and
-    // which no screen can repair. Unreachable while everything
-    // `applyRosterCommand` builds parses — the ordering is what keeps it so.
+    // Validate before initialization; the caller's transaction also covers any
+    // initial location grant so neither record can commit without the other.
     const rosterJson = JSON.stringify(parseStaffRoster(roster));
     const sql = this.ctx.storage.sql;
     sql.exec(`
@@ -2118,11 +2204,12 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * loop the cheap option as well as the one that does not leak which
    * identifiers exist.
    */
-  resolveActor(digest: unknown): { staffId: string; role: StaffRole } | null {
+  resolveActor(digest: unknown, locationId?: string): { staffId: string; role: StaffRole } | null {
     if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return null;
+    if (locationId !== undefined && parseLocationId(locationId) === null) return null;
     const stored = this.#readRoster();
     if (stored === null) return null;
-    let found: { staffId: string; role: StaffRole } | null = null;
+    let found: StaffMember | null = null;
     for (const member of stored.roster.members) {
       // An inactive member holds an empty digest, which no SHA-256 hex string
       // equals, so deactivation needs no separate check here. `parseStaffMember`
@@ -2130,10 +2217,13 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       // digest disagree in either direction, so revocation rests on the parser
       // rather than on a test of `active` that could be forgotten here.
       if (timingSafeEqualHex(member.credentialDigest, digest)) {
-        found = { staffId: member.id, role: member.role };
+        found = member;
       }
     }
-    return found;
+    if (found === null) return null;
+    if (locationId !== undefined && found.role === "staff" &&
+      !this.#readStaffScope(found).locationIds?.includes(locationId)) return null;
+    return { staffId: found.id, role: found.role };
   }
 
   /** The roster as the operator screen sees it. Never a credential digest. */
@@ -2151,46 +2241,58 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeRosterCommand(
     input: unknown,
     actorId: unknown,
+    locationIds?: string[],
   ): Promise<RosterCommandResult> {
     const command = parseRosterCommand(input);
     if (command === null) return rosterFailure("BAD_REQUEST");
     if (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId))) {
       return rosterFailure("BAD_REQUEST");
     }
-    const stored = this.#readRoster();
-    const roster = stored?.roster ?? EMPTY_ROSTER;
-    // Re-checked here, not just at the gate. The Worker authorized this caller
-    // before the request body arrived, and on this surface that gap is the
-    // difference between an operation finishing with the rights it opened with
-    // and an operation restoring rights that were taken away while it was open.
-    // Read in the same synchronous turn as the write below, so the roster this
-    // decision is made against is the roster the command lands on.
-    // `null` is the deployment secret, which no roster command can revoke.
-    if (
-      actorId !== null &&
-      !roster.members.some(
-        ({ id, role, active }) => id === actorId && role === "owner" && active,
-      )
-    ) {
-      return rosterFailure("UNAUTHORIZED");
+    if (locationIds !== undefined && (command.operation !== "staff.create" || command.role !== "staff")) {
+      return rosterFailure("BAD_REQUEST");
     }
-    const applied = applyRosterCommand(
-      roster,
-      command,
-      new Date().toISOString(),
-      crypto.randomUUID(),
-    );
-    if ("ok" in applied) return applied;
-    if (command.operation === "staff.create" && command.dryRun) {
-      // Run the same parser the write runs, so "this would have worked" is a
-      // result rather than a claim. Nothing is written, and no credential is
-      // handed out for a record that will not exist.
-      parseStaffRoster(applied.roster);
-      return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
-    }
-    return this.#writeRoster(applied.roster, stored?.rosterJson ?? null)
-      ? { ok: true, member: publicStaffMember(applied.member) }
-      : rosterFailure("VERSION_CONFLICT");
+    const scopeIds = locationIds === undefined ? undefined : this.#validScopeIds(locationIds);
+    if (scopeIds === null) return rosterFailure("BAD_REQUEST");
+    return this.ctx.storage.transactionSync((): RosterCommandResult => {
+      const stored = this.#readRoster();
+      const roster = stored?.roster ?? EMPTY_ROSTER;
+      // Re-checked here, not just at the gate. The Worker authorized this caller
+      // before the request body arrived, and on this surface that gap is the
+      // difference between an operation finishing with the rights it opened with
+      // and an operation restoring rights that were taken away while it was open.
+      // Read in the same synchronous turn as the write below, so the roster this
+      // decision is made against is the roster the command lands on.
+      // `null` is the deployment secret, which no roster command can revoke.
+      if (
+        actorId !== null &&
+        !roster.members.some(
+          ({ id, role, active }) => id === actorId && role === "owner" && active,
+        )
+      ) {
+        return rosterFailure("UNAUTHORIZED");
+      }
+      const applied = applyRosterCommand(
+        roster,
+        command,
+        new Date().toISOString(),
+        crypto.randomUUID(),
+      );
+      if ("ok" in applied) return applied;
+      if (command.operation === "staff.create" && command.dryRun) {
+        // Run the same parser the write runs, so "this would have worked" is a
+        // result rather than a claim. Nothing is written, and no credential is
+        // handed out for a record that will not exist.
+        parseStaffRoster(applied.roster);
+        return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
+      }
+      if (!this.#writeRoster(applied.roster, stored?.rosterJson ?? null)) {
+        return rosterFailure("VERSION_CONFLICT");
+      }
+      if (scopeIds !== undefined && !this.#writeStaffScope({
+        staffId: applied.member.id, scopeVersion: 1, locationIds: scopeIds,
+      }, 0)) throw new Error("Initial staff scope conflict");
+      return { ok: true, member: publicStaffMember(applied.member) };
+    });
   }
 
   /**

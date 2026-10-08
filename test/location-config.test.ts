@@ -80,4 +80,74 @@ describe("location configuration authority", () => {
     expect(await tables()).toEqual(["__staff_roster"]);
     expect((await config().createLocation(input, firstOwner.id)).ok).toBe(true);
   });
+  it("keeps legacy staff default-only and supports a current scoped directory without altering actor projection", async () => {
+    await create("salon-b");
+    const staff = await addStaff("staff");
+    const actor = { staffId: staff.id, role: "staff" };
+    expect(await config().resolveActor("a".repeat(64))).toEqual(actor);
+    expect(await config().resolveActor("a".repeat(64), "default")).toEqual(actor);
+    expect(await config().resolveActor("a".repeat(64), "salon-b")).toBeNull();
+    expect(await config().listStaffLocationScopes(null)).toEqual([{ staffId: staff.id, scopeVersion: 0, locationIds: ["default"] }]);
+    expect(await config().setStaffLocationScope({ staffId: staff.id, expectedScopeVersion: 0, locationIds: ["salon-b"] }, null)).toEqual({ ok: true, scope: { staffId: staff.id, scopeVersion: 1, locationIds: ["salon-b"] } });
+    expect(await config().resolveActor("a".repeat(64))).toEqual(actor);
+    expect(await config().resolveActor("a".repeat(64), "default")).toBeNull();
+    expect(await config().resolveActor("a".repeat(64), "salon-b")).toEqual(actor);
+    expect(await config().listLocations(runtime, staff.id)).toEqual([{ id: "salon-b", label: "サロン B", bookable: false }]);
+    expect((await config().setStaffLocationScope({ staffId: staff.id, expectedScopeVersion: 1, locationIds: [] }, null)).ok).toBe(true);
+    expect(await config().listLocations(runtime, staff.id)).toEqual([]);
+    expect(await config().resolveActor("a".repeat(64), "salon-b")).toBeNull();
+  });
+  it("creates a staff credential and its intended scope atomically, including a no-write dry run", async () => {
+    await create("salon-b");
+    const input = { operation: "staff.create", displayName: "B 担当", role: "staff", credentialDigest: "b".repeat(64), dryRun: false };
+    expect(await config().executeRosterCommand(input, null, ["missing"])).toEqual({ ok: false, code: "BAD_REQUEST" });
+    expect(await config().listRoster()).toEqual([]);
+    expect(await config().executeRosterCommand({ ...input, dryRun: true }, null, ["salon-b"])).toEqual({ ok: true, dryRun: true, wouldBeFirstMember: true });
+    expect(await config().listRoster()).toEqual([]);
+    const result = await config().executeRosterCommand(input, null, ["salon-b"]);
+    if (!result.ok || "dryRun" in result) throw new Error("scoped staff creation failed");
+    expect(await config().listStaffLocationScopes(null)).toEqual([{ staffId: result.member.id, scopeVersion: 1, locationIds: ["salon-b"] }]);
+    expect(await config().resolveActor("b".repeat(64), "default")).toBeNull();
+    expect(await config().resolveActor("b".repeat(64), "salon-b")).toEqual({ staffId: result.member.id, role: "staff" });
+  });
+  it("refuses stale or invalid grants, keeps owners global, and persists revocation across restart", async () => {
+    await create("salon-b");
+    const staff = await addStaff("staff");
+    const owner = await addStaff("owner", "b".repeat(64));
+    const otherOwner = await addStaff("owner", "c".repeat(64));
+    const input = { staffId: staff.id, expectedScopeVersion: 0, locationIds: ["salon-b"] };
+    for (const locationIds of [["missing"], ["default", "default"], ["Default"], ["a", "b", "c", "d", "e"]]) {
+      expect(await config().setStaffLocationScope({ ...input, locationIds }, null)).toEqual({ ok: false, code: "BAD_REQUEST" });
+    }
+    expect((await config().setStaffLocationScope(input, owner.id)).ok).toBe(true);
+    expect(await config().setStaffLocationScope(input, owner.id)).toEqual({ ok: false, code: "VERSION_CONFLICT" });
+    expect(await config().setStaffLocationScope({ ...input, staffId: owner.id }, null)).toEqual({ ok: false, code: "STAFF_UNAVAILABLE" });
+    expect(await config().resolveActor("b".repeat(64), "salon-b")).toEqual({ staffId: owner.id, role: "owner" });
+    expect((await config().executeRosterCommand({ operation: "staff.deactivate", staffId: otherOwner.id }, owner.id)).ok).toBe(true);
+    expect(await config().setStaffLocationScope({ ...input, expectedScopeVersion: 1, locationIds: ["default"] }, otherOwner.id)).toEqual({ ok: false, code: "UNAUTHORIZED" });
+    expect((await config().setStaffLocationScope({ ...input, expectedScopeVersion: 1, locationIds: [] }, null)).ok).toBe(true);
+    await expect(runInDurableObject(config(), (_instance, state) => state.abort("location scope restart"))).rejects.toThrow("location scope restart");
+    expect(await config().resolveActor("a".repeat(64), "salon-b")).toBeNull();
+    expect(await config().resolveActor("a".repeat(64), "default")).toBeNull();
+    expect(await config().listLocations(runtime, staff.id)).toEqual([]);
+    expect((await config().listLocations(runtime, owner.id)).map(({ id }) => id)).toEqual(["default", "salon-b"]);
+  });
+
+  it("rolls the roster back exactly if the initial scope write fails", async () => {
+    await create("salon-b");
+    const existing = await addStaff("staff");
+    await config().setStaffLocationScope({ staffId: existing.id, expectedScopeVersion: 0, locationIds: ["salon-b"] }, null);
+    const before = await config().listRoster();
+    const beforeScopes = await config().listStaffLocationScopes(null);
+    await runInDurableObject(config(), (_instance, state) => {
+      state.storage.sql.exec("CREATE TRIGGER fail_new_scope BEFORE INSERT ON __staff_location_scopes BEGIN SELECT RAISE(ABORT, 'scope fixture failure'); END");
+    });
+    const input = { operation: "staff.create", displayName: "追加担当", role: "staff", credentialDigest: "d".repeat(64), dryRun: false };
+    await expect((async () => await config().executeRosterCommand(input, null, ["salon-b"]))()).rejects.toThrow("scope fixture failure");
+    expect(await config().listRoster()).toEqual(before);
+    expect(await config().listStaffLocationScopes(null)).toEqual(beforeScopes);
+    expect(await config().resolveActor("d".repeat(64))).toBeNull();
+    await runInDurableObject(config(), (_instance, state) => { state.storage.sql.exec("DROP TRIGGER fail_new_scope"); });
+    expect((await config().executeRosterCommand(input, null, ["salon-b"])).ok).toBe(true);
+  });
 });
