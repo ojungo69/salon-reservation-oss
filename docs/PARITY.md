@@ -2,7 +2,7 @@
 
 This file is the single authority for capability status. It holds two matrices, describing the
 current repository candidate at this commit and maintained against [roadmap](ROADMAP.md) document
-version 1.0.0 (whose baseline release is 0.2.0):
+version 1.1.0 (whose baseline release is 0.2.0):
 
 - the **implemented capability matrix** — what the current repository candidate delivers, with
   public-safe implementation paths and acceptance evidence (a row becomes a *release* claim only
@@ -10,10 +10,16 @@ version 1.0.0 (whose baseline release is 0.2.0):
 - the **production-parity target matrix** — every capability a production salon reservation
   product depends on, each resolved to exactly one status.
 
-Neither matrix is a source comparison, and neither contains private identity, data, asset,
-configuration, provider account, or deployment detail; the production system is referenced only by
-user task and capability. Delivery order lives in [the roadmap](ROADMAP.md); adapter obligations
-live in [the extension contracts](ADAPTER-CONTRACTS.md).
+Neither matrix is a source comparison. [Implementation provenance and migration readiness](PORTING.md)
+have a separate authority: an `Implemented` row here does not mean production implementation,
+schema, or tests were reused, and it does not make the capability migration-ready. Exact source
+mapping and rights evidence remain private under
+[the reuse-first decision](ADR-0001-REUSE-FIRST-PORTING.md).
+
+These matrices contain no private identity, data, asset, configuration, provider account, or
+deployment detail; the production system is referenced only by user task and capability. Delivery
+order lives in [the roadmap](ROADMAP.md); adapter obligations live in
+[the extension contracts](ADAPTER-CONTRACTS.md).
 
 ## Implemented capability matrix
 
@@ -152,3 +158,9 @@ documents (README, RELEASING, UX-PARITY) derive from or reference these matrices
 restate status independently. Adding a capability requires a new target row, implementation and
 acceptance evidence for implemented claims, a privacy/security review, and an updated
 public-candidate audit.
+
+Implementation provenance and migration readiness live **only** in [PORTING.md](PORTING.md),
+projected from the private porting ledger. A parity change must update that private row and its
+public projection in the same change, select exactly one disposition, map reused or equivalent
+tests, and satisfy [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md). Do not add provenance columns here
+or infer reuse from an `Implemented` status.

@@ -49,12 +49,14 @@
           </div>
           <p class="helper">トークンはこの画面を閉じると消えます。</p>
         </div>
+        <noscript><p class="helper">認証にはJavaScriptが必要です。ブラウザで有効にして再読み込みしてください。</p></noscript>
         <form id="setup-auth-form" class="inline-form" data-setup-auth-form>
           <div class="field-row grow">
             <label for="setup-owner-token">運営者トークン、または運営者権限のスタッフ認証情報</label>
             <input
               id="setup-owner-token"
               type="password"
+              disabled
               autocomplete="current-password"
               minlength="32"
               aria-describedby="setup-owner-token-help"
@@ -62,7 +64,7 @@
             >
             <p id="setup-owner-token-help" class="helper">設定値や受領書にはトークンとシークレットを含めません。この画面の変更には運営者権限が必要です。</p>
           </div>
-          <button id="setup-auth-submit" class="primary-button compact-button" type="submit">認証して設定を開く</button>
+          <button id="setup-auth-submit" class="primary-button compact-button" type="submit" disabled>認証して設定を開く</button>
           <button id="setup-logout" class="secondary-button compact-button" type="button" hidden>ログアウト</button>
         </form>
         <output id="setup-auth-status" class="status" aria-live="polite" data-setup-auth-status></output>

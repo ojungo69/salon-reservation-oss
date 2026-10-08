@@ -1,6 +1,6 @@
 # Production-parity roadmap
 
-**Roadmap document version**: 1.0.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-08-13
+**Roadmap document version**: 1.1.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-08-26
 
 This file records **order only**: the stages in which the remaining production-parity work lands.
 Capability *status* has a single authority — [the production-parity target matrix](PARITY.md) — and
@@ -21,6 +21,14 @@ review plus a separate over-implementation review for every diff; and, for chang
 scope (authentication, secrets, validation, hashing, payment-like paths), a security review
 battery — rule-based static analysis plus an adversarial security-focused review. No stage is
 completable on feature tests alone.
+
+**Reuse-first precondition**: architecture-expanding parity work may not move to `In progress`
+until its capability has a private porting-ledger row, exactly one current disposition, mapped
+production/public tests, publication-rights status, sanitization work, an evidence owner, and any
+ADR required by [the reuse-first decision](ADR-0001-REUSE-FIRST-PORTING.md). Its public-safe
+provenance and migration-readiness projection must appear in [PORTING.md](PORTING.md). Security
+fixes and work required to complete the porting audit may proceed within their stated scope, but
+still record a disposition. This is a cross-cutting gate, not another capability stage.
 
 **Dependencies versus recommended order**: `Prerequisites` distinguishes *hard* dependencies (must
 exist first) from *recommended* order (priority, revisable by recorded revision). The hard
@@ -47,6 +55,7 @@ this table — and the README derives its claim from the matrix for the same rea
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-08-26 | 1.1.0 | Added the reuse-first evidence precondition from issue #60; architecture-expanding parity work now requires provenance, test mapping, rights/sanitization evidence, and any semantic ADR before starting, while scoped security fixes remain allowed |
 | 2026-08-16 | 1.0.0 | S3 status → Complete (feature `005-staff-role-boundary`) |
 | 2026-08-13 | 1.0.0 | S2 status → Complete (feature `004-calendar-ladder`) |
 | 2026-08-13 | 1.0.0 | S1 status → Complete (feature `003-line-adapter`) |
