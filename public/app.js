@@ -568,6 +568,7 @@ const startCustomer = async () => {
   let turnstileToken = "";
   let widgetId;
   let resultRecord = null;
+  let resultLocationId = null;
   let busy = false;
   let duplicateAcknowledged = false;
 
@@ -1021,7 +1022,7 @@ const startCustomer = async () => {
     setStep("review", { history: "replace", focus: false });
   };
 
-  const restoreSavedDraft = async (draft, selected, today) => {
+  const restoreSavedDraft = async (draft, selected, today, epoch) => {
     dateInput.value = draft.date ?? today;
     if (draft.serviceIds.length && draft.date) {
       await loadAvailability({
@@ -1030,6 +1031,7 @@ const startCustomer = async () => {
         preferredTime: draft.startTime,
       });
     }
+    if (epoch !== locationEpoch) return;
     const slots = (availability?.resources ?? []).flatMap((resource) =>
       resource.startTimes.map((startTime) => ({
         resourceId: resource.id,
@@ -1138,7 +1140,7 @@ const startCustomer = async () => {
       const selected = pending?.request.serviceIds ?? draft?.serviceIds ?? [];
       renderServices(selected);
       if (pending) await resumePendingSubmission();
-      else if (draft) await restoreSavedDraft(draft, selected, today);
+      else if (draft) await restoreSavedDraft(draft, selected, today, epoch);
       else setStep("selection", { history: "replace", focus: false });
       if (epoch !== locationEpoch) return;
       setPendingMode();
@@ -1216,6 +1218,13 @@ const startCustomer = async () => {
     button.addEventListener("click", () => setStep(button.dataset.journeyBack));
   });
   window.addEventListener("popstate", (event) => {
+    if (!result.hidden && resultLocationId) {
+      setPageLocation(resultLocationId, locations.length > 1, "replaceState", {
+        journeyStep,
+        locationId: resultLocationId,
+      });
+      return;
+    }
     let nextId;
     try {
       const explicit = explicitLocation(window.location.search);
@@ -1392,6 +1401,7 @@ const startCustomer = async () => {
         managementKey: pending.managementKey,
         savedAt: Date.now(),
       };
+      resultLocationId = locationId;
       resultId.textContent = reservation.reservationId;
       resultKey.textContent = pending.managementKey;
       $("[data-result-location-row]").hidden = locations.length === 1;
@@ -1429,9 +1439,9 @@ const startCustomer = async () => {
     if (!resultRecord) return;
     try {
       const records = remember.checked
-        ? saveOwnedBookingRecord(readOwnedRecords(locationId), resultRecord, true)
-        : removeOwnedBookingRecord(readOwnedRecords(locationId), resultRecord.reservationId);
-      writeOwnedRecords(records, locationId);
+        ? saveOwnedBookingRecord(readOwnedRecords(resultLocationId), resultRecord, true)
+        : removeOwnedBookingRecord(readOwnedRecords(resultLocationId), resultRecord.reservationId);
+      writeOwnedRecords(records, resultLocationId);
       setStatus(
         keyStatus,
         remember.checked
@@ -1449,8 +1459,8 @@ const startCustomer = async () => {
     if (!resultRecord || !window.confirm("この端末から管理キーを削除します。元に戻せません。続けますか？")) return;
     try {
       writeOwnedRecords(
-        removeOwnedBookingRecord(readOwnedRecords(locationId), resultRecord.reservationId),
-        locationId,
+        removeOwnedBookingRecord(readOwnedRecords(resultLocationId), resultRecord.reservationId),
+        resultLocationId,
       );
     } catch {
       setStatus(keyStatus, "保存情報を削除できませんでした。ブラウザの設定を確認してください。", "error");
@@ -2508,8 +2518,24 @@ const startAdmin = async () => {
   authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!authForm.reportValidity()) return;
-    ownerToken = tokenInput.value;
+    const nextToken = tokenInput.value;
     tokenInput.value = "";
+    if (ownerCreateInFlight || ownerCreatePending || closurePending || commands.size > 0) {
+      setStatus(authStatus, "未確認の操作結果を再確認してから認証し直してください。", "error");
+      return;
+    }
+    if (ownerManagementKey.textContent &&
+      !window.confirm("表示中の管理キーは再表示できません。控えてから認証し直しますか？")) return;
+    ownerToken = "";
+    clearScopeViews();
+    locationId = null;
+    permittedLocations = [];
+    locationSelect = null;
+    locationAnchor.replaceChildren();
+    config = null;
+    logoutButton.hidden = true;
+    updateOwnerCreateControls();
+    ownerToken = nextToken;
     const token = ownerToken;
     const authEpoch = locationEpoch;
     setStatus(authStatus, "認証しています。");
@@ -3669,7 +3695,7 @@ const startSetup = async () => {
     loggedOutNotice = loggedOutNoticeFor(config.mode === "live");
     modeNotice.textContent = loggedOutNotice;
   } catch (error) {
-    setStatus(authStatus, error.message, "error");
+    setStatus(authStatus, `公開設定を読み込めませんでした。 ${error.message}`, "error");
   }
   showLoggedOut();
   try {
@@ -3682,13 +3708,22 @@ const startSetup = async () => {
   authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!authForm.reportValidity()) return;
-    ownerToken = tokenInput.value;
+    const nextToken = tokenInput.value;
     tokenInput.value = "";
-    const token = ownerToken;
-    const authEpoch = locationEpoch;
+    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffBusy) {
+      setStatus(authStatus, "未確認の変更結果を再確認してから認証し直してください。", "error");
+      return;
+    }
+    if ((staffCredentialValue.textContent || calendarToken.textContent) &&
+      !window.confirm("一度だけ表示する認証情報があります。安全に控えてから認証し直しますか？")) return;
+    if (settingsDirty && !window.confirm("保存していない設定を破棄して認証し直しますか？")) return;
     // A new session starts with no credential on screen, whoever the last one
     // belonged to.
     setCredential("");
+    showLoggedOut();
+    ownerToken = nextToken;
+    const token = ownerToken;
+    const authEpoch = locationEpoch;
     setStatus(authStatus, "認証して設定を読み込んでいます。");
     try {
       const explicit = explicitLocation(window.location.search);

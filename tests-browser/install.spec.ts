@@ -186,6 +186,38 @@ test("an issued credential does not survive signing out, or a second sign-in", a
   await expect(page.locator("[data-staff-credential-value]")).toBeEmpty();
 });
 
+test("reauthentication clears old setup fields and receipt before the new directory returns", async ({ page }) => {
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/setup");
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+  await page.fill("#setup-operator-contact", "OLD_PRIVATE");
+  await expect(page.locator("[data-installation-receipt]")).toBeVisible();
+
+  let release!: () => void;
+  let requested!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route("**/api/admin/locations", async (route) => {
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.fill("#setup-owner-token", "invalid-credential-000000000000000000000");
+  await page.click("#setup-auth-submit");
+  try {
+    await started;
+    await expect(page.locator("#setup-operator-contact")).toBeEmpty();
+    await expect(page.locator("#setup-operator-contact")).toBeDisabled();
+    await expect(page.locator("[data-installation-receipt]")).toBeHidden();
+    await expect(page.locator("[data-calendar-token-box]")).toBeHidden();
+  } finally {
+    release();
+  }
+  await expect(page.locator("#setup-auth-status")).toHaveAttribute("data-tone", "error");
+});
+
 /** Authentication is disabled in delivered HTML until its handlers are ready. */
 for (const outcome of ["success", "failure"] as const) {
   test(`setup authentication waits for initialization: ${outcome}`, async ({ page }) => {

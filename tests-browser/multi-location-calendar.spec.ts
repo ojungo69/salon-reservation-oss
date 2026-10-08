@@ -87,7 +87,10 @@ test.describe("one-time calendar capability without artifacts", () => {
     expect(denied).toBe(401);
 
     await page.click("#setup-logout");
-    await expect(page.locator("[data-calendar-token-box]")).toBeHidden();
-    await expect(page.locator("[data-calendar-token]")).toBeEmpty();
+    const cleared = await page.evaluate(() => ({
+      boxHidden: Boolean((document.querySelector("[data-calendar-token-box]") as HTMLElement | null)?.hidden),
+      tokenEmpty: document.querySelector("[data-calendar-token]")?.textContent === "",
+    }));
+    expect(cleared).toEqual({ boxHidden: true, tokenEmpty: true });
   });
 });

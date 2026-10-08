@@ -2,7 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 
 import {
   ALLOWED_HOSTNAME,
+  BROWSER_ORIGIN,
   OWNER_TOKEN,
+  SERVER_ORIGIN,
   SOURCE_URL,
   TURNSTILE_SITE_KEY,
   forwardCreateWithoutTurnstile,
@@ -72,15 +74,59 @@ test("an owner creates and publishes a second fictional location without changin
   expect(afterDuplicate).toBe(2);
 });
 
+test("a delayed default draft restore cannot overwrite the named booking form", async ({ page }) => {
+  await page.goto("/?location=default");
+  await expect(page.locator("#booking-date")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+  const today = await page.locator("#booking-date").inputValue();
+  const savedDate = openDateFrom(today);
+  await page.locator("#service-list input").first().check();
+  await page.fill("#booking-date", savedDate);
+  await page.locator("#booking-date").blur();
+  await expect(page.locator("#slot-list input").first()).toBeAttached();
+
+  let release!: () => void;
+  let requested!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route("**/api/availability?*", async (route) => {
+    if (new URL(route.request().url()).searchParams.has("location")) return route.fallback();
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.reload();
+  await started;
+  await page.locator("[data-location-select]").selectOption("salon-b");
+  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page.locator("[data-location-name]").first()).toHaveText("サロン B");
+  await expect(page.locator("#service-list input").first()).toBeAttached();
+  const lateResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/availability" &&
+    !new URL(response.url()).searchParams.has("location"));
+  release();
+  await lateResponse;
+  await page.evaluate(() => new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page.locator("#booking-date")).toHaveValue(today);
+  const namedDraftDate = await page.evaluate(async () => {
+    const { decodeJourneyDraft } = await import("/journey.js");
+    const encoded = localStorage.getItem("salon-reservation:journey-draft:v1:location:salon-b");
+    return decodeJourneyDraft(encoded, Date.now())?.date;
+  });
+  expect(namedDraftDate).toBe(today);
+});
+
 test("a remembered named booking stays bound to its own proof after another location is selected and paused", async ({ page }) => {
   test.setTimeout(180_000);
   await stubTurnstile(page);
   const created = await forwardCreateWithoutTurnstile(page);
-  await page.goto("/?location=salon-b");
+  await page.goto("/?location=default");
   await expect(page.locator("[data-location-select]")).toBeVisible();
+  await page.locator("[data-location-select]").selectOption("salon-b");
   await expect(page.locator("[data-location-name]").first()).toHaveText("サロン B");
   await page.locator("#service-list input").first().check();
   await page.fill("#booking-date", openDateFrom(await page.locator("#booking-date").inputValue()));
+  await page.locator("#booking-date").blur();
   const slot = page.locator("#slot-list input").first();
   await slot.waitFor({ state: "attached" });
   await slot.check();
@@ -94,6 +140,14 @@ test("a remembered named booking stays bound to its own proof after another loca
   await page.click("#booking-submit");
   await expect(page.locator("#booking-result")).toBeVisible();
   await expect(page.locator("[data-result-location]")).toHaveText("サロン B");
+  // Traverse past review, details and B selection back to the A URL. The
+  // result must keep its B scope even though that earlier history entry exists.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    window.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
+    history.go(-3);
+  }));
+  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page.locator("#booking-result")).toBeVisible();
   await page.check("#remember-booking");
   expect(created.requests).toHaveLength(1);
   expect(created.requests[0]).not.toHaveProperty("locationId");
@@ -178,12 +232,69 @@ test("a remembered named booking stays bound to its own proof after another loca
   await expectNoAxeViolations(page);
 });
 
+test("named LIFF login keeps the fixed return location and rejects callback state", async ({ page }) => {
+  await page.route("https://static.line-scdn.net/**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/javascript",
+    body: "",
+  }));
+  await page.addInitScript(() => {
+    const runtime = globalThis as typeof globalThis & {
+      __lineLoginCalls: Array<{ redirectUri: string }>;
+      __lineInitCalls: number;
+      liff: {
+        init: () => Promise<void>;
+        isLoggedIn: () => boolean;
+        login: (options: { redirectUri: string }) => void;
+      };
+    };
+    runtime.__lineLoginCalls = [];
+    runtime.__lineInitCalls = 0;
+    runtime.liff = {
+      init: async () => { runtime.__lineInitCalls += 1; },
+      isLoggedIn: () => false,
+      login: (options) => { runtime.__lineLoginCalls.push(options); },
+    };
+  });
+  await page.goto("/privacy?location=salon-b");
+  await page.evaluate(() => sessionStorage.setItem(
+    "salon-reservation:line-link-intent:v1:location:salon-b",
+    JSON.stringify({ nonce: "a".repeat(64), expiresAt: Date.now() + 60_000 }),
+  ));
+  await page.goto("/line.html?location=salon-b");
+  await expect(page.locator("[data-line-status]")).toContainText("ログイン画面へ移動します");
+  const login = await page.evaluate(() => {
+    const runtime = globalThis as typeof globalThis & {
+      __lineLoginCalls: Array<{ redirectUri: string }>;
+      __lineInitCalls: number;
+    };
+    return { calls: runtime.__lineLoginCalls, initCalls: runtime.__lineInitCalls };
+  });
+  expect(login).toEqual({
+    calls: [{ redirectUri: `${BROWSER_ORIGIN}/line.html?location=salon-b` }],
+    initCalls: 1,
+  });
+  await page.goto("/line.html?location=salon-b&liff.state=%2Fadmin%3Fevil%3D1");
+  await expect(page.locator("[data-line-status]")).toContainText("予約管理ページからもう一度");
+  expect(await page.evaluate(() => (globalThis as typeof globalThis & {
+    __lineInitCalls: number;
+  }).__lineInitCalls)).toBe(0);
+  await expect(page.locator("[data-line-back]")).toHaveAttribute("href", "/bookings.html?location=salon-b");
+});
+
 test("a staff member assigned only to the named location cannot see default, and revocation clears private data", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(120_000);
   let credential = "";
   await page.route("**/api/admin/staff", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const response = await route.fetch();
+    const response = await route.fetch({
+      url: `${SERVER_ORIGIN}/api/admin/staff`,
+      headers: {
+        ...route.request().headers(),
+        host: new URL(BROWSER_ORIGIN).host,
+        origin: BROWSER_ORIGIN,
+      },
+    });
     const result = await response.json() as Record<string, unknown>;
     credential = String(result.credential ?? "");
     await route.fulfill({
@@ -242,7 +353,14 @@ test("a staff member assigned only to the named location cannot see default, and
     if (route.request().method() !== "POST") return route.fallback();
     posted.push(JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>);
     if (posted.length === 1) {
-      const committed = await route.fetch();
+      const committed = await route.fetch({
+        url: `${SERVER_ORIGIN}/api/admin/reservations?location=salon-b`,
+        headers: {
+          ...route.request().headers(),
+          host: new URL(BROWSER_ORIGIN).host,
+          origin: BROWSER_ORIGIN,
+        },
+      });
       firstCommitStatus = committed.status();
       if (committed.ok()) await route.abort("failed");
       else await route.fulfill({ response: committed });
@@ -279,8 +397,25 @@ test("a staff member assigned only to the named location cannot see default, and
   await expect(page.locator("body")).not.toContainText("A_PENDING_PRIVATE");
   await page.click("#owner-create-form button[type=submit]");
   await expect(page.locator("#owner-create-result")).toBeVisible();
+  await expect(page.locator("#owner-create-status")).toContainText("代理予約を登録しました");
+  const keyLifecycle = await page.evaluate(() => {
+    const key = document.querySelector("#owner-management-key");
+    const visible = Boolean(key?.textContent);
+    (document.querySelector("#logout-button") as HTMLButtonElement).click();
+    const clearedByApp = !key?.textContent;
+    // Mask only after observing the runtime result, before a failure artifact.
+    if (!clearedByApp && key) key.textContent = "";
+    return { visible, clearedByApp };
+  });
+  expect(keyLifecycle).toEqual({ visible: true, clearedByApp: true });
+  await page.fill("#owner-token", credential);
+  await page.click("#auth-form button[type=submit]");
+  await expect(page.locator("#auth-status")).toContainText("認証しました");
   expect(posted).toHaveLength(2);
   expect(JSON.stringify(posted[0]) === JSON.stringify(posted[1])).toBe(true);
+  await page.click("#schedule-view-day");
+  await page.fill("#admin-date", targetDate);
+  await page.locator("#admin-date").blur();
   await expect(page.locator("[data-reservation-list] article", { hasText: "B_PROXY_PRIVATE" })).toHaveCount(1);
   const pendingAfter = await page.evaluate(() => ({
     original: sessionStorage.getItem("salon-reservation:pending-owner-create:v1") !== null,
@@ -296,13 +431,15 @@ test("a staff member assigned only to the named location cannot see default, and
   await page.selectOption("#closure-resource", "__all__");
   await page.fill("#closure-label", "架空休業 B");
   await page.click("#closure-submit");
-  await expect(page.locator("#closure-status")).toContainText("登録しました");
+  await expect(page.locator("[data-closure-status]")).toContainText("登録しました");
   await page.fill("#admin-date", closureDate);
   await page.locator("#admin-date").blur();
+  await page.click("#schedule-view-day");
+  await expect(page.locator("#day-board")).toBeVisible();
   await expect(page.locator("#closure-list")).toContainText("架空休業 B");
   await page.locator("#closure-list .closure-item", { hasText: "架空休業 B" })
-    .getByRole("button", { name: "解除する" }).click();
-  await expect(page.locator("#closure-status")).toContainText("解除しました");
+    .getByRole("button", { name: "解除する" }).click({ timeout: 10_000 });
+  await expect(page.locator("[data-closure-status]")).toContainText("解除しました");
 
   const ownerPage = await page.context().newPage();
   await signInSetup(ownerPage, "/setup?location=default");

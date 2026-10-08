@@ -18,6 +18,7 @@ const PUBLIC_PAGES = ["/", "/bookings", "/privacy", "/terms", "/cancellation"];
 
 const chooseSlot = async (page: Page, startTime?: string): Promise<void> => {
   await page.fill("#booking-date", openDateFrom(await page.locator("#booking-date").inputValue()));
+  await page.locator("#booking-date").blur();
   // The slot fieldset is disabled while availability loads, so this check waits
   // out the load and cannot land on a slot rendered for the previous date.
   // Explicit times keep later scenarios off the early slots the other specs take.
@@ -354,6 +355,7 @@ test("the loading booking page has no automated accessibility violations", async
 test("keyboard alone reaches the first booking control and the skip link", async ({ page }) => {
   await stubTurnstile(page);
   await page.goto("/");
+  await expect(page.locator("#service-list input").first()).toBeAttached();
 
   await page.keyboard.press("Tab");
   await expect(page.locator(".skip-link")).toBeFocused();
@@ -675,9 +677,9 @@ test("a sole accepting named location stays scoped without a selector", async ({
     "href", "/terms.html?location=default",
   );
   await page.locator('a[href^="/terms.html"]').first().click();
-  await expect(page).toHaveURL(/\/terms\.html\?location=default$/);
+  await expect(page).toHaveURL(/\/terms(?:\.html)?\?location=default$/);
   await page.locator('a[href^="/cancellation.html"]').first().click();
-  await expect(page).toHaveURL(/\/cancellation\.html\?location=default$/);
+  await expect(page).toHaveURL(/\/cancellation(?:\.html)?\?location=default$/);
   await page.locator(".brand-link").click();
   await expect(page).toHaveURL(/\/\?location=default$/);
   await expect(page.locator("[data-location-name]").first()).not.toHaveText("サロン B");
