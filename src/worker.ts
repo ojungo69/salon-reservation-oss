@@ -578,14 +578,14 @@ const withCalendarAdapter = async (
     calendarRecovery: _calendarRecovery,
     ...base
   } = context;
+  if (env.locationId !== DEFAULT_LOCATION_ID) {
+    const intent = await withDeadline(
+      installationStub(env).getCalendarContext(env.locationId),
+      CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
+    );
+    if (!intent.feedEnabled && !intent.googleEnabled) return base;
+  }
   try {
-    if (env.locationId !== DEFAULT_LOCATION_ID) {
-      const intent = await withDeadline(
-        installationStub(env).getCalendarContext(env.locationId),
-        CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
-      );
-      if (!intent.feedEnabled && !intent.googleEnabled) return base;
-    }
     const calendarAdapter = await withDeadline(
       calendarAdapterStub(env).descriptor(),
       CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
@@ -2860,9 +2860,11 @@ const handlePrivacyPage = async (
   headers.set("cache-control", "no-store");
   headers.delete("etag");
   headers.delete("content-length");
+  const lineNotice = env.locationId === DEFAULT_LOCATION_ID ? LINE_PRIVACY_SECTION
+    : LINE_PRIVACY_SECTION.replace("通知の本文には日時、", "通知の本文には店舗名、日時、");
   const body = (await asset.text()).replace(
     "<!-- adapter-disclosure-slot -->",
-    `${discloseLine ? LINE_PRIVACY_SECTION : ""}${
+    `${discloseLine ? lineNotice : ""}${
       discloseCalendar ? CALENDAR_PRIVACY_SECTION : ""
     }`,
   );

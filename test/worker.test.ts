@@ -346,6 +346,46 @@ describe("S4 location routing", () => {
       state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB '__adapter*'").toArray(),
     )).toEqual([]);
   });
+
+  it("refuses unreadable named mode intent without creating an orphan recovery event", async () => {
+    await jsonRequest("/api/admin/locations", {
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, ownerHeaders);
+    await jsonRequest("/api/admin/setup?location=studio-east", {
+      commandId: crypto.randomUUID(), expectedSettingsVersion: 1, settings: liveSettings(),
+    }, ownerHeaders, "PUT");
+    await jsonRequest("/api/admin/setup/live?location=studio-east", {
+      commandId: crypto.randomUUID(), expectedSettingsVersion: 2, live: true,
+    }, ownerHeaders);
+    const fixture = await publicCreateBody({ serviceIds: ["service-cut"] });
+    const { turnstileToken: _token, replayOnly: _replay, ...command } = fixture.body;
+    const request = () => new Request("https://example.test/api/admin/reservations?location=studio-east", {
+      method: "POST", headers: { ...ownerHeaders, origin: "https://example.test", "content-type": "application/json" },
+      body: JSON.stringify(command),
+    });
+    const failingMode = Object.create(env) as Env;
+    Object.defineProperty(failingMode, "INSTALLATION_CONFIG", { value: { getByName: (name: string) => {
+      const root = env.INSTALLATION_CONFIG.getByName(name);
+      return {
+        getContext: (locationId: string) => root.getContext(locationId),
+        getCalendarContext: async () => { throw new Error("fictional mode read outage"); },
+      };
+    } } });
+    const response = await worker.fetch(request(), failingMode);
+    const calendar = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    expect(await calendar.descriptor()).toBeNull();
+    await calendar.pokeDay({ date: day.date });
+    await runDurableObjectAlarm(calendar);
+    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${day.date}`);
+    const stored = await runInDurableObject(namedDay, (_instance, state) => {
+      const exists = (name: string) => state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name=?", name).toArray().length > 0;
+      return {
+        bookings: exists("booking_details") ? state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM booking_details").one().n : 0,
+        recovery: exists("__adapter_outbox") ? state.storage.sql.exec("SELECT consumer, generation, type FROM __adapter_outbox").toArray() : [],
+      };
+    });
+    expect({ status: response.status, ...stored }).toEqual({ status: 503, bookings: 0, recovery: [] });
+  });
 });
 
 const nextOpenJstDate = (minimumOffset = 0) => {
@@ -3978,6 +4018,7 @@ describe("S3 staff and role boundary", () => {
   // so a row with the wrong method would assert nothing about authorization.
   // `/api/admin/setup` is GET and PUT — never POST.
   const ownerOnly = (staffId: string): Array<[string, string]> => [
+    ["POST", "/api/admin/locations"],
     ["GET", "/api/admin/setup"],
     ["PUT", "/api/admin/setup"],
     ["POST", "/api/admin/setup/live"],
@@ -3988,8 +4029,12 @@ describe("S3 staff and role boundary", () => {
     ["GET", "/api/admin/line/status"],
     ["GET", "/api/admin/calendar/status"],
     ["POST", "/api/admin/calendar/reconcile"],
+    ["PUT", "/api/admin/calendar/settings"],
+    ["POST", "/api/admin/calendar/feed-token"],
     ["GET", "/api/admin/staff"],
     ["POST", "/api/admin/staff"],
+    ["GET", "/api/admin/staff/locations"],
+    ["PUT", `/api/admin/staff/${staffId}/locations`],
     ["POST", `/api/admin/staff/${staffId}/rotate`],
     ["POST", `/api/admin/staff/${staffId}/deactivate`],
     ["POST", `/api/admin/staff/${staffId}/reactivate`],
@@ -4004,6 +4049,7 @@ describe("S3 staff and role boundary", () => {
     })}`;
 
   const dayToDay = (reservationId: string): Array<[string, string]> => [
+    ["GET", "/api/admin/locations"],
     ["GET", adminAvailabilityPath(reservationId)],
     ["GET", schedulePath],
     ["POST", "/api/admin/reservations"],
