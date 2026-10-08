@@ -1,4 +1,5 @@
-import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, evictDurableObject, reset as resetBindings, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import type { DurableObject } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -55,6 +56,40 @@ const projection: CalendarProjection = {
   serviceLabel: "架空カット,カラー;相談\\確認\n二行目",
   status: "tentative",
 };
+
+const fixtures = new Map<string, () => DurableObjectStub>();
+
+function fixtureObject<T extends DurableObject>(
+  namespace: DurableObjectNamespace<T>, name: string,
+): DurableObjectStub<T> {
+  const stub = namespace.getByName(name);
+  fixtures.set(stub.id.toString(), () => namespace.getByName(name));
+  return stub;
+}
+
+async function reset(): Promise<void> {
+  const fetcher = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("Unexpected provider request during fixture reset"); };
+  try {
+    // workerd 1.20260801.1 only resets resident SQLite actors; wake stateful fixtures first.
+    await Promise.all([...fixtures.values()].map((getStub) =>
+      runInDurableObject(getStub(), (_instance, state) => state.storage.sql.exec("SELECT 1").toArray())));
+    await resetBindings();
+    fixtures.clear();
+  } finally {
+    globalThis.fetch = fetcher;
+  }
+}
+
+afterEach(async () => {
+  try {
+    await reset();
+  } finally {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+});
 
 describe("calendar adapter pure contracts", () => {
   it("accepts only exact bounded optional secret shapes", () => {
@@ -313,11 +348,11 @@ describe("calendar adapter pure contracts", () => {
 describe("calendar projection and feed authority", () => {
   const feedToken = "A".repeat(43);
   const adapterStub = () =>
-    env.CALENDAR_ADAPTER.getByName(
+    fixtureObject(env.CALENDAR_ADAPTER,
       "installation",
     ) as DurableObjectStub<CalendarAdapter>;
   const dayStub = (date: string) =>
-    env.RESERVATION_DAYS.getByName(
+    fixtureObject(env.RESERVATION_DAYS,
       `single-location:${date}`,
     ) as DurableObjectStub<ReservationDay>;
 
@@ -341,7 +376,7 @@ describe("calendar projection and feed authority", () => {
   });
 
   const namedFixture = async (locationId: string, token: string | null, googleEnabled: boolean) => {
-    const root = env.INSTALLATION_CONFIG.getByName("installation");
+    const root = fixtureObject(env.INSTALLATION_CONFIG, "installation");
     expect(await root.createLocation({
       commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
     }, null)).toMatchObject({ ok: true });
@@ -358,7 +393,7 @@ describe("calendar projection and feed authority", () => {
       expectedVersion: version, googleEnabled, calendarId: googleEnabled ? calendarId : null, feedEnabled: token !== null,
     }, null, locationId);
     if (!configured.ok) throw new Error("named calendar fixture failed");
-    return { root, authority: env.CALENDAR_ADAPTER.getByName(`location:${locationId}`), calendarId, version: configured.context.version };
+    return { root, authority: fixtureObject(env.CALENDAR_ADAPTER, `location:${locationId}`), calendarId, version: configured.context.version };
   };
 
   const fillGoogleMutationQueue = (
@@ -391,18 +426,22 @@ describe("calendar projection and feed authority", () => {
     vi.useFakeTimers({ toFake: ["Date"], now: SUITE_NOW });
   });
 
-  afterEach(async () => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
+  it("resets an evicted canonical day before reusing the same fixture slot", async () => {
+    const config = { ...lineDay, date: suiteDate(9) };
+    expect(await dayStub(config.date).createPublic(config, createInput(config.date)))
+      .toMatchObject({ ok: true });
+    await evictDurableObject(dayStub(config.date));
     await reset();
+    expect(await dayStub(config.date).createPublic(config, createInput(config.date)))
+      .toMatchObject({ ok: true });
   });
 
   it("S4 leaves a new named calendar off without inheriting default credentials or feed access", async () => {
-    const root = env.INSTALLATION_CONFIG.getByName("installation");
+    const root = fixtureObject(env.INSTALLATION_CONFIG, "installation");
     expect(await root.createLocation({
       commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
     }, null)).toMatchObject({ ok: true });
-    const named = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    const named = fixtureObject(env.CALENDAR_ADAPTER, "location:studio-east");
     expect(await named.descriptor()).toBeNull();
     expect(await named.feed({ token: feedToken })).toEqual({ ok: false });
     expect(await runInDurableObject(named, (_instance, state) => ({
@@ -439,7 +478,7 @@ describe("calendar projection and feed authority", () => {
     });
     await expect(runInDurableObject(authority, (_instance, state) => state.abort("calendar version restart fixture")))
       .rejects.toThrow("calendar version restart fixture");
-    authority = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    authority = fixtureObject(env.CALENDAR_ADAPTER, "location:studio-east");
     expect(await replayOldReply()).toEqual({
       error: "stale calendar configuration", meta: { state: "deactivating", generation: 1 },
     });
@@ -450,7 +489,7 @@ describe("calendar projection and feed authority", () => {
     const calendarAdapter = await fixture.authority.descriptor();
     if (calendarAdapter === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     expect(await namedDay.createPublic({ ...lineDay, date, calendarAdapter }, createInput(date)))
       .toMatchObject({ ok: true });
     await fixture.authority.pokeDay({ date });
@@ -489,7 +528,7 @@ describe("calendar projection and feed authority", () => {
     const descriptor = await fixture.authority.descriptor();
     if (descriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    expect(await env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`).createPublic(
+    expect(await fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`).createPublic(
       { ...lineDay, date, calendarAdapter: descriptor }, createInput(date),
     )).toMatchObject({ ok: true });
     await fixture.authority.pokeDay({ date });
@@ -551,7 +590,7 @@ describe("calendar projection and feed authority", () => {
   it("S4 finishes cleanup when a known-enabled recovery precedes the actor's first activation", async () => {
     const fixture = await namedFixture("studio-east", "B".repeat(43), false);
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     expect((await fixture.root.getCalendarContext("studio-east")).feedEnabled).toBe(true);
     expect(await runInDurableObject(namedDay, async (instance) => {
       const holder = instance as unknown as { env: Env };
@@ -595,7 +634,7 @@ describe("calendar projection and feed authority", () => {
     }, null, "studio-east");
     expect(await fixture.authority.descriptor()).toMatchObject({ generation: fixture.version + 2 });
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     const createRecovery = (startTime = "09:00") => runInDurableObject(namedDay, async (instance) => {
       const holder = instance as unknown as { env: Env };
       const original = holder.env;
@@ -626,7 +665,7 @@ describe("calendar projection and feed authority", () => {
     const oldDescriptor = await fixture.authority.descriptor();
     if (oldDescriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     const config = { ...lineDay, date, calendarAdapter: oldDescriptor };
     const first = await namedDay.createPublic(config, createInput(date));
     const second = await namedDay.createPublic(config, createInput(date, "11:00"));
@@ -688,7 +727,7 @@ describe("calendar projection and feed authority", () => {
     const descriptor = await fixture.authority.descriptor();
     if (descriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     const config = { ...lineDay, date, calendarAdapter: descriptor };
     expect(await namedDay.createPublic(config, createInput(date))).toMatchObject({ ok: true });
     await fixture.authority.pokeDay({ date });
@@ -738,7 +777,7 @@ describe("calendar projection and feed authority", () => {
     const descriptor = await authority.descriptor();
     if (descriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    const namedDay = fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`);
     await runInDurableObject(namedDay, async (instance, state) => {
       const holder = instance as unknown as { env: Env };
       const original = holder.env;
@@ -765,7 +804,7 @@ describe("calendar projection and feed authority", () => {
     await runInDurableObject(authority, (_instance, state) => { state.storage.sql.exec("UPDATE meta SET sweep_cursor = ?", date); });
     await expect(runInDurableObject(authority, (_instance, state) => state.abort("named backlog restart fixture")))
       .rejects.toThrow("named backlog restart fixture");
-    authority = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    authority = fixtureObject(env.CALENDAR_ADAPTER, "location:studio-east");
     const calls = await runInDurableObject(authority, async (instance, state) => {
       const holder = instance as unknown as { env: Env };
       const original = holder.env;
@@ -810,7 +849,7 @@ describe("calendar projection and feed authority", () => {
     for (const [locationId, fixture] of [["studio-east", east], ["studio-west", west]] as const) {
       const descriptor = await fixture.authority.descriptor();
       if (descriptor === null) throw new Error("named fixture activation failed");
-      const day = env.RESERVATION_DAYS.getByName(`location:${locationId}:${date}`);
+      const day = fixtureObject(env.RESERVATION_DAYS, `location:${locationId}:${date}`);
       const created = await day.createPublic({ ...lineDay, date, calendarAdapter: descriptor }, createInput(date));
       if (!created.ok) throw new Error("named fixture reservation failed");
       reservationIds[locationId] = created.reservationId;
@@ -849,7 +888,7 @@ describe("calendar projection and feed authority", () => {
     const descriptor = await fixture.authority.descriptor();
     if (descriptor === null) throw new Error("named fixture activation failed");
     const date = suiteDate(1);
-    expect(await env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`).createPublic(
+    expect(await fixtureObject(env.RESERVATION_DAYS, `location:studio-east:${date}`).createPublic(
       { ...lineDay, date, calendarAdapter: descriptor }, createInput(date),
     )).toMatchObject({ ok: true });
     await fixture.authority.pokeDay({ date });
@@ -2408,6 +2447,25 @@ describe("calendar projection and feed authority", () => {
   });
 
   it("bounds retry exhaustion and recovers an expired send claim", async () => {
+    const withEmptySweepDays = async (date: string, run: () => Promise<unknown>) => {
+      const namespace = env.RESERVATION_DAYS;
+      const restore = await runInDurableObject(adapterStub(), (instance) => {
+        const bindings = (instance as unknown as { env: Env }).env;
+        const original = Object.getOwnPropertyDescriptor(bindings, "RESERVATION_DAYS");
+        // Keep the fixture day native; separate sweep tests exercise the full empty window.
+        Object.defineProperty(bindings, "RESERVATION_DAYS", { configurable: true, value: {
+          idFromName: (name: string) => namespace.idFromName(name),
+          getByName: (name: string) => name === `single-location:${date}`
+            ? namespace.getByName(name)
+            : { drainOutbox: async () => ({ events: [], more: false }) },
+        } });
+        return () => {
+          if (original === undefined) delete (bindings as Partial<Env>).RESERVATION_DAYS;
+          else Object.defineProperty(bindings, "RESERVATION_DAYS", original);
+        };
+      });
+      try { await run(); } finally { restore(); }
+    };
     let calendarCalls = 0;
     vi.stubGlobal(
       "fetch",
@@ -2424,10 +2482,12 @@ describe("calendar projection and feed authority", () => {
       await dayStub(config.date).createPublic(config, createInput(config.date)),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: config.date });
-    for (const offset of ADAPTER.RETRY_OFFSETS_S) {
-      vi.setSystemTime(SUITE_NOW + offset * 1_000);
-      await runDurableObjectAlarm(adapterStub());
-    }
+    await withEmptySweepDays(config.date, async () => {
+      for (const offset of ADAPTER.RETRY_OFFSETS_S) {
+        vi.setSystemTime(SUITE_NOW + offset * 1_000);
+        await runDurableObjectAlarm(adapterStub());
+      }
+    });
     expect(calendarCalls).toBe(ADAPTER.RETRY_OFFSETS_S.length);
     expect(await adapterStub().diagnostics()).toMatchObject({
       pendingCount: 0,
@@ -2439,13 +2499,14 @@ describe("calendar projection and feed authority", () => {
     await reset();
     clearGoogleTokenCacheForTests();
     vi.setSystemTime(SUITE_NOW);
+    calendarCalls = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn<typeof fetch>(async (input) =>
-        String(input) === "https://oauth2.googleapis.com/token"
-          ? mockGoogleAuthSuccess()
-          : new Response(null, { status: 200 }),
-      ),
+      vi.fn<typeof fetch>(async (input) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") return mockGoogleAuthSuccess();
+        calendarCalls += 1;
+        return new Response(null, { status: 200 });
+      }),
     );
     const recoveryConfig = await configFor(suiteDate(11));
     expect(
@@ -2455,14 +2516,16 @@ describe("calendar projection and feed authority", () => {
       ),
     ).toMatchObject({ ok: true });
     await adapterStub().pokeDay({ date: recoveryConfig.date });
-    await runInDurableObject(adapterStub(), (_instance, state) => {
+    const claimedRows = await runInDurableObject(adapterStub(), (_instance, state) =>
       state.storage.sql.exec(
         `UPDATE google_mutations SET status = 'sending', claimed_at = ?,
                 claimed_version = desired_version`,
         SUITE_NOW - ADAPTER.SEND_CLAIM_LEASE_S * 1_000 - 1,
-      );
-    });
-    await runDurableObjectAlarm(adapterStub());
+      ).rowsWritten,
+    );
+    expect(claimedRows).toBe(1);
+    await withEmptySweepDays(recoveryConfig.date, () => runDurableObjectAlarm(adapterStub()));
+    expect(calendarCalls).toBe(1);
     expect(await adapterStub().diagnostics()).toMatchObject({ pendingCount: 0, failedCount: 0 });
   });
 
