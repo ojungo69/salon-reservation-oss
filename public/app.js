@@ -2887,6 +2887,7 @@ const startSetup = async () => {
   let settingsDirty = false;
   let staffScopes = new Map();
   let staffBusy = false;
+  let staffWritePending = false;
   let calendarSettings = null;
   let calendarBusy = false;
   let setupState = null;
@@ -3352,11 +3353,13 @@ const startSetup = async () => {
     if (!scopeCurrent(snapshot) || staffBusy) return;
     if (confirmation && !window.confirm(confirmation)) return;
     staffBusy = true;
+    staffWritePending = true;
     button.disabled = true;
     setCredential("");
     try {
       const result = await ownerApi(path, { method: "POST", body: "{}" });
       if (!scopeCurrent(snapshot)) return;
+      staffWritePending = false;
       // Keep the one-time credential even when the later roster refresh fails.
       setCredential(result.credential);
       setStatus(staffStatus, outcome, "success");
@@ -3368,6 +3371,7 @@ const startSetup = async () => {
     } finally {
       if (scopeCurrent(snapshot)) {
         staffBusy = false;
+        staffWritePending = false;
         if (button.isConnected) button.disabled = false;
       }
     }
@@ -3427,6 +3431,7 @@ const startSetup = async () => {
           if (!scopeCurrent(snapshot) || staffBusy) return;
           const locationIds = $$("input:checked", group).map(({ value }) => value);
           staffBusy = true;
+          staffWritePending = true;
           save.disabled = true;
           setStatus(staffStatus, "担当場所の変更結果を確認しています。");
           try {
@@ -3435,11 +3440,13 @@ const startSetup = async () => {
               { method: "PUT", body: JSON.stringify({ expectedScopeVersion: scope.scopeVersion, locationIds }) },
             );
             if (!scopeCurrent(snapshot)) return;
+            staffWritePending = false;
             staffScopes.set(member.id, result);
             await refreshRoster();
             if (scopeCurrent(snapshot)) setStatus(staffStatus, "担当場所を更新しました。", "success");
           } catch (error) {
             if (!scopeCurrent(snapshot)) return;
+            staffWritePending = false;
             if (handleOwnerError(error)) return;
             if (error.status === 409) await refreshRoster();
             if (scopeCurrent(snapshot)) setStatus(staffStatus, error.status === 409
@@ -3448,6 +3455,7 @@ const startSetup = async () => {
           } finally {
             if (scopeCurrent(snapshot)) {
               staffBusy = false;
+              staffWritePending = false;
               if (save.isConnected) save.disabled = false;
             }
           }
@@ -3513,6 +3521,7 @@ const startSetup = async () => {
     locations = [];
     pendingLocationCreate = null;
     staffBusy = false;
+    staffWritePending = false;
     staffScopes = new Map();
     settingsDirty = false;
     calendarBusy = false;
@@ -3710,7 +3719,7 @@ const startSetup = async () => {
     if (!authForm.reportValidity()) return;
     const nextToken = tokenInput.value;
     tokenInput.value = "";
-    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffBusy) {
+    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffWritePending) {
       setStatus(authStatus, "未確認の変更結果を再確認してから認証し直してください。", "error");
       return;
     }
@@ -3939,7 +3948,7 @@ const startSetup = async () => {
     }
   });
   logoutButton.addEventListener("click", () => {
-    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffBusy) {
+    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffWritePending) {
       setStatus(authStatus, "未確認の変更結果を再確認してからログアウトしてください。", "error");
       return;
     }
@@ -3964,6 +3973,7 @@ const startSetup = async () => {
       return;
     }
     staffBusy = true;
+    staffWritePending = true;
     staffSubmit.disabled = true;
     setCredential("");
     setStatus(staffStatus, "スタッフを登録しています。");
@@ -3978,6 +3988,7 @@ const startSetup = async () => {
         }),
       });
       if (!scopeCurrent(snapshot)) return;
+      staffWritePending = false;
       staffForm.reset();
       renderStaffCreateScope();
       // Committed before the refresh, for the same reason as in `rosterCommand`.
@@ -3990,6 +4001,7 @@ const startSetup = async () => {
     } finally {
       if (scopeCurrent(snapshot)) {
         staffBusy = false;
+        staffWritePending = false;
         staffSubmit.disabled = false;
       }
     }

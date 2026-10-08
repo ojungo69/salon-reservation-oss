@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   ALLOWED_HOSTNAME,
   OWNER_TOKEN,
+  SERVER_ORIGIN,
   SOURCE_URL,
   TURNSTILE_SITE_KEY,
   expectNoAxeViolations,
@@ -155,7 +156,7 @@ test("a failed roster refresh does not take the new credential with it", async (
   );
 });
 
-test("an issued credential does not survive signing out, or a second sign-in", async ({
+test("an issued credential does not survive signing out, or a second sign-in", { tag: "@private-artifact" }, async ({
   page,
 }) => {
   await page.goto("/setup");
@@ -164,26 +165,86 @@ test("an issued credential does not survive signing out, or a second sign-in", a
   await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
   await expect(page.locator("#staff-submit")).toBeEnabled();
 
-  await page.fill("#staff-display-name", "検証 交代");
-  await page.click("#staff-submit");
-  await expect(page.locator("[data-staff-credential-value]")).toHaveText(
-    /^[A-Za-z0-9_-]{43}$/,
-  );
+  const writeCommitted = Promise.withResolvers<void>();
+  const writeReply = Promise.withResolvers<void>();
+  const rosterRequested = Promise.withResolvers<void>();
+  const rosterReply = Promise.withResolvers<void>();
+  let holdRoster = true;
+  await page.route("**/api/admin/staff", async (route) => {
+    if (route.request().method() === "POST") {
+      const response = await route.fetch({
+        url: `${SERVER_ORIGIN}/api/admin/staff`,
+        headers: { ...route.request().headers(), host: new URL(route.request().url()).host },
+      });
+      expect(response.ok()).toBe(true);
+      writeCommitted.resolve();
+      await writeReply.promise;
+      await route.fulfill({ response });
+    } else if (holdRoster) {
+      holdRoster = false;
+      const response = await route.fetch({
+        url: `${SERVER_ORIGIN}/api/admin/staff`,
+        headers: { ...route.request().headers(), host: new URL(route.request().url()).host },
+      });
+      rosterRequested.resolve();
+      await rosterReply.promise;
+      await route.fulfill({ response });
+    } else {
+      await route.continue();
+    }
+  });
 
-  // Signing out is the owner saying they are finished. The box goes with the
-  // session, or the next person at this screen reads somebody's credential off
-  // it.
-  await page.click("#setup-logout");
-  await expect(page.locator("[data-staff-credential]")).toBeHidden();
-  await expect(page.locator("[data-staff-credential-value]")).toBeEmpty();
+  try {
+    await page.fill("#staff-display-name", "検証 交代");
+    await page.click("#staff-submit");
+    await writeCommitted.promise;
+    // The real write committed, but its response has not reached this session.
+    await page.click("#setup-logout");
+    await expect(page.locator("#setup-auth-status")).toContainText("再確認してからログアウト");
+    await expect(page.locator("#setup-location-name")).toBeEnabled();
+    await page.fill("#setup-owner-token", OWNER_TOKEN);
+    await page.click("#setup-auth-submit");
+    await expect(page.locator("#setup-auth-status")).toContainText("再確認してから認証し直して");
+    await expect(page.locator("#setup-location-name")).toBeEnabled();
 
-  // And it does not come back on the next sign-in, which is the same screen
-  // with the same nodes still in it.
-  await page.fill("#setup-owner-token", OWNER_TOKEN);
-  await page.click("#setup-auth-submit");
-  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
-  await expect(page.locator("[data-staff-credential]")).toBeHidden();
-  await expect(page.locator("[data-staff-credential-value]")).toBeEmpty();
+    writeReply.resolve();
+    await rosterRequested.promise;
+    await expect.poll(() => page.locator("[data-staff-credential-value]").evaluate(
+      (element) => /^[A-Za-z0-9_-]{43}$/.test(element.textContent ?? ""),
+    )).toBe(true);
+
+    // A read-only refresh must not keep the one-time secret on a signed-out screen.
+    await page.click("#setup-logout");
+    await expect.poll(() => page.locator("[data-staff-credential]").evaluate(
+      (element) => element instanceof HTMLElement && element.hidden,
+    )).toBe(true);
+    expect(await page.locator("[data-staff-credential-value]").evaluate(
+      (element) => element.textContent === "",
+    )).toBe(true);
+    const finished = page.waitForEvent("requestfinished", {
+      predicate: (request) => request.method() === "GET" && request.url().endsWith("/api/admin/staff"),
+    });
+    rosterReply.resolve();
+    await finished;
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await expect(page.locator("[data-staff-list]")).toContainText("認証すると、登録済みのスタッフを表示します");
+    await expect(page.locator("#staff-submit")).toBeDisabled();
+
+    await page.fill("#setup-owner-token", OWNER_TOKEN);
+    await page.click("#setup-auth-submit");
+    await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+    expect(await page.locator("[data-staff-credential]").evaluate(
+      (element) => element instanceof HTMLElement && element.hidden,
+    )).toBe(true);
+    expect(await page.locator("[data-staff-credential-value]").evaluate(
+      (element) => element.textContent === "",
+    )).toBe(true);
+  } finally {
+    writeReply.resolve();
+    rosterReply.resolve();
+    // Failed assertions must not leave a secret in Playwright's error context.
+    await page.locator("[data-staff-credential-value]").evaluate((element) => { element.textContent = ""; });
+  }
 });
 
 test("reauthentication clears old setup fields and receipt before the new directory returns", async ({ page }) => {

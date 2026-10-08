@@ -135,7 +135,7 @@ export default defineConfig({
     video: "off",
   },
   projects: [
-    { name: "install", testMatch: /install\.spec\.ts/ },
+    { name: "install", testMatch: /install\.spec\.ts/, grepInvert: /@private-artifact/ },
     {
       name: "app",
       testIgnore: /(?:install|multi-location(?:-calendar)?)\.spec\.ts/,
@@ -150,7 +150,7 @@ export default defineConfig({
     },
     {
       name: "private-artifact",
-      testMatch: /(?:owner|multi-location-calendar)\.spec\.ts/,
+      testMatch: /(?:install|owner|multi-location-calendar)\.spec\.ts/,
       grep: /@private-artifact/,
       dependencies: ["multi-location"],
       use: { trace: "off", screenshot: "off" },
