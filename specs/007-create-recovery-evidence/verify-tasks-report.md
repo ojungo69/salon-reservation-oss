@@ -60,3 +60,9 @@ T009's structural classification was resolved by adding this report's path to it
 PR 62 review found that ADR0002 was listed in the public manifest but absent from the release audit's required paths. The existing governance omission test gained an ADR0002 case: before the fix, removing it returned audit exit 0 and failed the new test (`0 !== 1`); after one `REQUIRED` entry was added, that case passed. The original task-verification verdicts and counts above remain historical results.
 
 The updated local checks passed: 101 core tests, 248 Worker tests, type and generated-type checks, deployment dry-run, dependency audit with zero vulnerabilities, release audit with 84 allowlisted files, and 41 browser tests. The fresh review of the pushed head remains a merge gate.
+
+## CI accessibility follow-up — 2026-10-08
+
+The `00dd2f9` CI browser run found `aria-prohibited-attr: #turnstile-widget` in its public-page axe case (40 passed, 1 failed), although the earlier local 41-case suite passed. Before config loads, the review stage and its labeled generic wrapper are visible. A new browser case holds that loading state: it failed before the fix with the same axe violation and passed after the wrapper gained `role="group"`. The existing normal-page axe check remains in place.
+
+The final local checks passed: 101 core tests, 248 Worker tests, type and generated-type checks, deployment dry-run, dependency audit with zero vulnerabilities, release audit with 84 allowlisted files, and 42 browser tests. The original task-verification verdicts and earlier results above remain historical evidence; fresh review and CI on the new head remain required before merge.
