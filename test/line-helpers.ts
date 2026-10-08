@@ -4,6 +4,7 @@ import { env } from "cloudflare:test";
 import type { AdapterDelivery } from "../src/adapter-delivery.ts";
 import type { InstallationConfig, ReadinessRuntime } from "../src/installation-config.ts";
 import type { DayConfig, ReservationDay } from "../src/reservation-day.ts";
+import { DEFAULT_LOCATION_ID, adapterObjectName, dayObjectName } from "../src/location.ts";
 
 export const LINE_TEST_SECRET = "line-test-channel-secret-0123456789abcdef";
 
@@ -77,14 +78,14 @@ export const lineDay: DayConfig & {
   purgeAt: SUITE_PURGE_AT,
 };
 
-export const dayStub = (date = lineDay.date) =>
+export const dayStub = (date = lineDay.date, locationId = DEFAULT_LOCATION_ID) =>
   env.RESERVATION_DAYS.getByName(
-    `single-location:${date}`,
+    dayObjectName(locationId, date),
   ) as unknown as DurableObjectStub<ReservationDay>;
 
-export const deliveryStub = () =>
+export const deliveryStub = (locationId = DEFAULT_LOCATION_ID) =>
   env.ADAPTER_DELIVERY.getByName(
-    "installation",
+    adapterObjectName(locationId),
   ) as unknown as DurableObjectStub<AdapterDelivery>;
 
 export const installationStub = () =>
@@ -103,8 +104,8 @@ export const testRuntime = (
   ...overrides,
 });
 
-export const configureTestProtection = async (): Promise<void> => {
-  const state = await installationStub().getState();
+export const configureTestProtection = async (locationId = DEFAULT_LOCATION_ID): Promise<void> => {
+  const state = await installationStub().getState(locationId);
   const current = state.settingsVersions.find(
     (version) => version.version === state.activeSettingsVersion,
   );
@@ -121,12 +122,13 @@ export const configureTestProtection = async (): Promise<void> => {
       },
     },
     testRuntime(),
+    locationId,
   );
   if (!updated.ok) throw new Error("test protection setup failed");
 };
 
-export const enableLineAdapter = async (): Promise<void> => {
-  await configureTestProtection();
+export const enableLineAdapter = async (locationId = DEFAULT_LOCATION_ID): Promise<void> => {
+  await configureTestProtection(locationId);
   const settings = await installationStub().executeLineCommand(
     {
       operation: "line.settings",
@@ -135,6 +137,7 @@ export const enableLineAdapter = async (): Promise<void> => {
       identifiers,
     },
     testRuntime(),
+    locationId,
   );
   if (!settings.ok) throw new Error("settings command failed");
   const enabled = await installationStub().executeLineCommand(
@@ -145,6 +148,7 @@ export const enableLineAdapter = async (): Promise<void> => {
       identifiers,
     },
     testRuntime(),
+    locationId,
   );
   if (!enabled.ok) throw new Error("enable command failed");
 };
@@ -163,6 +167,7 @@ export const sha256Hex = async (value: string): Promise<string> => {
 
 export const createPendingReservation = async (
   overrides: Partial<{
+    locationId: string;
     date: string;
     startTime: string;
     customerName: string;
@@ -170,7 +175,7 @@ export const createPendingReservation = async (
   }> = {},
 ): Promise<string> => {
   const date = overrides.date ?? lineDay.date;
-  const created = await dayStub(date).createPublic(
+  const created = await dayStub(date, overrides.locationId).createPublic(
     { ...lineDay, date },
     {
       commandId: crypto.randomUUID(),

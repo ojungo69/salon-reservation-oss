@@ -8,6 +8,7 @@ import {
   parseWebhookBody,
   pushMessage,
   serializeMessageV1,
+  serializeMessageV2,
   verifyIdToken,
   verifyWebhookSignature,
   type LineFetch,
@@ -486,6 +487,21 @@ describe("privacy page state rule", () => {
 });
 
 describe("message templates and the v1 serializer (FR-009)", () => {
+  it("S4 keeps literal v1 bytes and identifies the named location in v2", () => {
+    const common = {
+      type: "approve" as const,
+      date: "2030-01-15",
+      startTime: "09:00",
+      serviceLabel: "架空カット",
+    };
+    expect(JSON.stringify(serializeMessageV1({ v: 1, ...common }))).toBe(
+      '[{"type":"text","text":"ご予約が確定しました。\\n日時: 2030-01-15 09:00\\nサービス: 架空カット"}]',
+    );
+    expect(JSON.stringify(serializeMessageV2({ v: 2, locationLabel: "架空予約室 東", ...common }))).toBe(
+      '[{"type":"text","text":"ご予約が確定しました。\\n店舗: 架空予約室 東\\n日時: 2030-01-15 09:00\\nサービス: 架空カット"}]',
+    );
+  });
+
   const fragment = (type: MessageFragment["type"]): MessageFragment => ({
     v: 1,
     type,
@@ -757,6 +773,55 @@ describe("link flow over HTTP", () => {
     expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
     return body.nonce;
   };
+
+  it("S4 fans one signed webhook out to named actors while default is disabled", async () => {
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect(await installationStub().createLocation({
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, null)).toMatchObject({ ok: true });
+      await enableLineAdapter(locationId);
+    }
+    expect(await deliveryStub().readMeta()).toBeNull();
+    const body = JSON.stringify({ destination: "U0", events: [{
+      type: "unfollow", webhookEventId: "S4SHAREDEVENT0001", timestamp: NOW,
+      source: { type: "user", userId: SUBJECT }, deliveryContext: { isRedelivery: false },
+    }] });
+    const signature = await signWebhookBody(LINE_TEST_SECRET, body);
+    const send = () => worker.fetch(new Request("https://example.test/api/adapters/line/webhook", {
+      method: "POST", headers: { "x-line-signature": signature }, body,
+    }), env);
+    expect((await send()).status).toBe(200);
+    expect((await send()).status).toBe(200);
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect(await runInDurableObject(deliveryStub(locationId), (_instance, state) =>
+        state.storage.sql.exec("SELECT webhook_event_id FROM webhook_dedup").toArray(),
+      )).toEqual([{ webhook_event_id: "S4SHAREDEVENT0001" }]);
+    }
+    expect(await deliveryStub().readMeta()).toBeNull();
+  });
+
+  it("S4 scopes the LINE page's module request while preserving default HTML", async () => {
+    await installationStub().createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null);
+    await enableLineAdapter("studio-east");
+    const html = '<script src="/line-liff.mjs" type="module"></script>';
+    const assetsEnv = Object.create(env) as Env;
+    Object.defineProperty(assetsEnv, "ASSETS", { value: { fetch: async () => new Response(html, {
+      headers: { "content-type": "text/html", etag: '"fixture"', "content-length": String(html.length) },
+    }) } });
+    const named = await worker.fetch(new Request("https://example.test/line.html?location=studio-east"), assetsEnv);
+    expect(named.status).toBe(200);
+    expect(await named.text()).toBe('<script src="/line-liff.mjs?location=studio-east" type="module"></script>');
+    expect(named.headers.get("etag")).toBeNull();
+    expect(named.headers.get("content-security-policy")).toContain("https://static.line-scdn.net");
+    expect((await worker.fetch(new Request("https://example.test/line-liff.mjs?location=studio-east"), assetsEnv)).status).toBe(200);
+    expect((await worker.fetch(new Request("https://example.test/line-liff.mjs"), assetsEnv)).status).toBe(404);
+    await enableLineAdapter();
+    const legacy = await worker.fetch(new Request("https://example.test/line.html"), assetsEnv);
+    expect(await legacy.text()).toBe(html);
+    expect(legacy.headers.get("etag")).toBe('"fixture"');
+  });
 
   it("hides every link surface while the adapter is inactive", async () => {
     const reservationId = await createPendingReservation();

@@ -11,10 +11,13 @@ import {
   mintChannelToken,
   pushMessage,
   serializeMessageV1,
+  serializeMessageV2,
+  type LocationMessageFragment,
   type MessageFragment,
   type TokenResult,
 } from "./line-adapter.ts";
 import type { AdapterOutboxEvent } from "./reservation-day.ts";
+import { DEFAULT_LOCATION_ID, dayObjectName, locationFromAdapterId } from "./location.ts";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID =
@@ -32,6 +35,8 @@ type SendOutcome =
   | { kind: "retryable"; status: number | null }
   | { kind: "terminal"; reason: string; status: number | null }
   | { kind: "awaiting" };
+
+type StoredMessageFragment = MessageFragment | LocationMessageFragment;
 
 export type AdapterDeliveryMeta = {
   state: AdapterState;
@@ -57,7 +62,7 @@ export type AdapterDiagnostics = {
   generation: number;
   pending: number;
   oldestPendingAt: string | null;
-  // Installation-level aggregates only — never a subject or reservation ID.
+  // Location-level aggregates only — never a subject or reservation ID.
   links: { final: number; provisional: number };
   subjects: { followed: number; unfollowed: number };
   sweepCursor: string | null;
@@ -103,7 +108,7 @@ const retryKeyCutoff = (now: number): number =>
   now - (ADAPTER.RETRY_KEY_VALIDITY_S - ADAPTER.RETRY_KEY_SAFETY_MARGIN_S) * 1000;
 
 /**
- * Installation-singleton delivery and lifecycle authority for the LINE
+ * Per-location delivery and lifecycle authority for the LINE
  * adapter. Owns links, deliveries, webhook dedup, the redacted terminal
  * ledger, and the authoritative generation high-water. Isolated from the
  * reservation core: nothing here is on any booking path, and every timed
@@ -115,7 +120,26 @@ const retryKeyCutoff = (now: number): number =>
  * backout retains this class so their alarms can still run (research R5).
  */
 export class AdapterDelivery extends DurableObject<Env> {
+  readonly #legacyId = this.env.ADAPTER_DELIVERY.idFromName("installation");
+
+  #locationId(): string {
+    return locationFromAdapterId(this.ctx.id, this.#legacyId);
+  }
+
+  async #messageLabel(): Promise<string | undefined> {
+    const locationId = this.#locationId();
+    if (locationId === DEFAULT_LOCATION_ID) return undefined;
+    const state = await withDeadline(
+      this.env.INSTALLATION_CONFIG.getByName("installation").getState(locationId),
+      ADAPTER.SWEEP_RPC_DEADLINE_MS,
+    );
+    const current = state.settingsVersions.find(({ version }) => version === state.activeSettingsVersion);
+    if (current === undefined) throw new Error("missing active location settings");
+    return current.settings.locationName;
+  }
+
   #hasSchema(): boolean {
+    this.#locationId();
     return (
       this.ctx.storage.sql
         .exec<{ name: string }>(
@@ -377,7 +401,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     return this.#secretPresent() ? "queued" : "awaiting-configuration";
   }
 
-  #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number): string {
+  #disposeEvent(event: AdapterOutboxEvent, meta: AdapterDeliveryMeta, now: number, locationLabel?: string): string {
     if (event.type === "create") throw new Error("calendar event reached LINE delivery");
     const sql = this.ctx.storage.sql;
     let disposition: string;
@@ -392,8 +416,8 @@ export class AdapterDelivery extends DurableObject<Env> {
       now + fullCycleBoundS(WORST_CASE_PARTITIONS) * 1000 >
       occurredAtMs + ADAPTER.HANDOFF_TERMINAL_LEAD_S * 1000
     ) {
-      // Next-guaranteed-visit rule: if the lead would expire before the sweep
-      // provably returns, this visit is the last safe one — terminalize now.
+      // Under the documented cycle assumptions, terminalize when the next
+      // modeled visit would exceed the handoff lead.
       disposition = "late-terminal";
     } else {
       const link = sql
@@ -411,6 +435,9 @@ export class AdapterDelivery extends DurableObject<Env> {
           startTime: event.startTime,
           serviceLabel: event.serviceLabel,
         };
+        const storedFragment: StoredMessageFragment = locationLabel === undefined
+          ? fragment
+          : { ...fragment, v: 2, locationLabel };
         const linkVersion = link?.link_version ?? 0;
         sql.exec(
           `INSERT INTO deliveries
@@ -423,7 +450,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           event.eventId,
           event.reservationId,
           event.type,
-          JSON.stringify(fragment),
+          JSON.stringify(storedFragment),
           linkVersion,
           crypto.randomUUID(),
           now,
@@ -453,7 +480,7 @@ export class AdapterDelivery extends DurableObject<Env> {
   }
 
   /** Accept a pulled batch in one local transaction; returns accepted count. */
-  #acceptBatch(events: AdapterOutboxEvent[]): number {
+  #acceptBatch(events: AdapterOutboxEvent[], locationLabel?: string): number {
     let accepted = 0;
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
@@ -467,7 +494,7 @@ export class AdapterDelivery extends DurableObject<Env> {
           )
           .toArray();
         if (seen.length > 0) continue;
-        this.#disposeEvent(event, meta, now);
+        this.#disposeEvent(event, meta, now, locationLabel);
         accepted += 1;
       }
     });
@@ -487,6 +514,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     }
     if (!this.#hasSchema()) return { ok: true, drained: 0 };
     let drained = 0;
+    let locationLabel: string | undefined;
     // ponytail: bounded pull loop; anything beyond the budget waits for the
     // next poke or sweep cycle rather than growing one invocation unboundedly.
     for (let round = 0; round < 10; round += 1) {
@@ -494,14 +522,15 @@ export class AdapterDelivery extends DurableObject<Env> {
       if (meta.state !== "active" && meta.state !== "deactivating") {
         return { ok: true, drained };
       }
-      const stub = this.env.RESERVATION_DAYS.getByName(`single-location:${input.date}`);
+      const stub = this.env.RESERVATION_DAYS.getByName(dayObjectName(this.#locationId(), input.date));
       const batch = await stub.drainOutbox({
         consumer: "line",
         limit: ADAPTER.OUTBOX_DRAIN_BATCH,
       });
       if (batch.events.length > 0) {
         await this.#armAlarm(Date.now());
-        this.#acceptBatch(batch.events);
+        locationLabel ??= await this.#messageLabel();
+        this.#acceptBatch(batch.events, locationLabel);
         await stub.ackOutbox({
           consumer: "line",
           events: batch.events.map(({ generation, eventId }) => ({ generation, eventId })),
@@ -753,7 +782,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     if (pre.link_status !== "final") {
       try {
         const sequence = await this.env.RESERVATION_DAYS.getByName(
-          `single-location:${pre.date}`,
+          dayObjectName(this.#locationId(), pre.date),
         ).readEventSequence({ consumer: "line", generation: pre.generation });
         if (!Number.isSafeInteger(sequence.eventSeq) || sequence.eventSeq < 0) {
           throw new Error("bad event sequence");
@@ -1391,7 +1420,7 @@ export class AdapterDelivery extends DurableObject<Env> {
     row: DeliveryRow,
     meta: AdapterDeliveryMeta,
     snapshot: { messagingChannelId: string },
-  ): { subject: string; fragment: MessageFragment; firstAttemptAt: number } | null {
+  ): { subject: string; fragment: StoredMessageFragment; firstAttemptAt: number } | null {
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
       const current = this.#readMeta();
@@ -1451,14 +1480,14 @@ export class AdapterDelivery extends DurableObject<Env> {
         firstAttemptAt,
         fresh.delivery_id,
       );
-      const fragment = JSON.parse(fresh.payload_json) as MessageFragment;
+      const fragment = JSON.parse(fresh.payload_json) as StoredMessageFragment;
       return { subject: link.subject, fragment, firstAttemptAt };
     });
   }
 
   async #resolveDeliveryOutcome(
     token: TokenResult,
-    claim: { subject: string; fragment: MessageFragment; firstAttemptAt: number },
+    claim: { subject: string; fragment: StoredMessageFragment; firstAttemptAt: number },
     row: DeliveryRow,
   ): Promise<SendOutcome> {
     // Nothing here may await before pushMessage. The caller commits the claim
@@ -1473,7 +1502,9 @@ export class AdapterDelivery extends DurableObject<Env> {
     const push = await pushMessage({
       accessToken: token.accessToken,
       to: claim.subject,
-      messages: serializeMessageV1(claim.fragment),
+      messages: claim.fragment.v === 1
+        ? serializeMessageV1(claim.fragment)
+        : serializeMessageV2(claim.fragment),
       retryKey: row.retry_key,
     });
     if (push.ok) return { kind: "sent" };
@@ -1490,7 +1521,7 @@ export class AdapterDelivery extends DurableObject<Env> {
 
   #applyDeliveryOutcome(
     row: DeliveryRow,
-    claim: { subject: string; fragment: MessageFragment; firstAttemptAt: number },
+    claim: { subject: string; fragment: StoredMessageFragment; firstAttemptAt: number },
     outcome: SendOutcome,
     now: number,
   ): void {
@@ -1589,7 +1620,7 @@ export class AdapterDelivery extends DurableObject<Env> {
    * One sweep batch over the fixed worst-case window
    * [today − SWEEP_PAST_DAYS, today + SWEEP_FUTURE_DAYS] — a deliberate
    * superset of every configurable retention/horizon window, so the authority
-   * needs no config read; days that never emitted return immediately from
+   * needs no config read for empty days; days that never emitted return immediately from
    * `drainOutbox` without creating anything. During `deactivating` each visit
    * also purges the day's LINE consumer rows; a cycle that both started after
    * the lease-expiry wait and finished marks the purge complete.
@@ -1610,10 +1641,11 @@ export class AdapterDelivery extends DurableObject<Env> {
       );
     }
     let faulted = false;
+    let locationLabel: string | undefined;
     for (let visited = 0; visited < ADAPTER.SWEEP_DAY_BATCH; visited += 1) {
       if (cursor > windowEnd) break;
       const date = cursor;
-      const stub = this.env.RESERVATION_DAYS.getByName(`single-location:${date}`);
+      const stub = this.env.RESERVATION_DAYS.getByName(dayObjectName(this.#locationId(), date));
       try {
         const batch = await withDeadline(
           stub.drainOutbox({ consumer: "line", limit: ADAPTER.OUTBOX_DRAIN_BATCH }),
@@ -1621,7 +1653,8 @@ export class AdapterDelivery extends DurableObject<Env> {
         );
         if (batch.events.length > 0) {
           await this.#armAlarm(Date.now());
-          this.#acceptBatch(batch.events);
+          locationLabel ??= await this.#messageLabel();
+          this.#acceptBatch(batch.events, locationLabel);
           await withDeadline(
             stub.ackOutbox({
               consumer: "line",

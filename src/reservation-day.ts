@@ -2,6 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 
 import { ADAPTER } from "./adapter-constants.ts";
 import {
+  DEFAULT_LOCATION_ID,
+  adapterObjectName,
+  dayObjectName,
+  locationFromDayId,
+} from "./location.ts";
+import {
   createEmptyReservationState,
   executeReservationCommand,
   type ReservationState,
@@ -1334,7 +1340,12 @@ export class ReservationDay extends DurableObject<Env> {
         if (pending === undefined || pending === 0) continue;
         const namespace =
           adapter.consumer === "line" ? this.env.ADAPTER_DELIVERY : this.env.CALENDAR_ADAPTER;
-        const stub = namespace.getByName("installation");
+        const locationId = locationFromDayId(
+          this.ctx.id,
+          config.date,
+          this.env.RESERVATION_DAYS.idFromName(dayObjectName(DEFAULT_LOCATION_ID, config.date)),
+        );
+        const stub = namespace.getByName(adapterObjectName(locationId));
         this.ctx.waitUntil(
           Promise.resolve(stub.pokeDay({ date: config.date })).then(
             () => undefined,

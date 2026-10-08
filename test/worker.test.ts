@@ -16,6 +16,338 @@ import type { CalendarAdapter } from "../src/calendar-adapter.ts";
 import type { InstallationConfig } from "../src/installation-config.ts";
 import worker from "../src/worker.ts";
 
+describe("S4 location routing", () => {
+  const heldBody = (body: unknown) => {
+    let reading!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => { reading = resolve; });
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        reading();
+        await ready;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(body)));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    return { stream, reached, release };
+  };
+
+  it("preserves the exact legacy config response for explicit default selection", async () => {
+    const legacy = await SELF.fetch("https://example.test/api/config");
+    const explicit = await SELF.fetch("https://example.test/api/config?location=default");
+    expect(legacy.status).toBe(200);
+    expect(explicit.status).toBe(200);
+    expect(await explicit.text()).toBe(await legacy.text());
+  });
+
+  it("creates, replays and configures a named salon without changing the default", async () => {
+    const before = await (await SELF.fetch("https://example.test/api/config")).text();
+    const input = { commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東" };
+    const created = await jsonRequest("/api/admin/locations", input, ownerHeaders);
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ location: { id: "studio-east", label: "架空予約室 東" }, replayed: false });
+    const replayed = await jsonRequest("/api/admin/locations", input, ownerHeaders);
+    expect(replayed.status).toBe(201);
+    expect(await replayed.json()).toEqual({ location: { id: "studio-east", label: "架空予約室 東" }, replayed: true });
+
+    const saved = await jsonRequest("/api/admin/setup?location=studio-east", {
+      commandId: crypto.randomUUID(),
+      expectedSettingsVersion: 1,
+      settings: { ...liveSettings(), locationName: "架空予約室 東" },
+    }, ownerHeaders, "PUT");
+    expect(saved.status).toBe(200);
+    expect((await SELF.fetch("https://example.test/api/config?location=studio-east")).status).toBe(200);
+    const live = await jsonRequest("/api/admin/setup/live?location=studio-east", {
+      commandId: crypto.randomUUID(), expectedSettingsVersion: 2, live: true,
+    }, ownerHeaders);
+    expect(live.status).toBe(200);
+    const directory = await SELF.fetch("https://example.test/api/locations");
+    expect(directory.status).toBe(200);
+    expect(await directory.json()).toEqual({ locations: [
+      { id: "default", label: "架空予約サロン", bookable: false },
+      { id: "studio-east", label: "架空予約室 東", bookable: true },
+    ] });
+    expect(await (await SELF.fetch("https://example.test/api/config")).text()).toBe(before);
+    const privateDirectory = await SELF.fetch("https://example.test/api/admin/locations", { headers: ownerHeaders });
+    expect(privateDirectory.status).toBe(200);
+    expect(await privateDirectory.json()).toEqual({ role: "owner", locations: [
+      { id: "default", label: "架空予約サロン", bookable: false },
+      { id: "studio-east", label: "架空予約室 東", bookable: true },
+    ] });
+  });
+
+  it("rejects malformed, duplicate and unknown selections without accessing a day", async () => {
+    for (const query of ["location=", "location=UPPER", "location=trailing-", "location=%20east", "location=east&location=default"]) {
+      const response = await jsonRequest(`/api/reservations?${query}`, {}, {});
+      expect(response.status, query).toBe(400);
+    }
+    const selectedDays: string[] = [];
+    const bindings = Object.create(env) as Env;
+    Object.defineProperty(bindings, "RESERVATION_DAYS", {
+      value: { getByName: (name: string) => {
+        selectedDays.push(name);
+        throw new Error("unknown location reached a day");
+      } },
+    });
+    const unknown = await worker.fetch(new Request(
+      `https://example.test/api/availability?date=${day.date}&serviceId=service-cut&location=missing`,
+    ), bindings);
+    expect(unknown.status).toBe(404);
+    expect(selectedDays).toEqual([]);
+    expect((await SELF.fetch("https://example.test/api/config?location=missing")).status).toBe(404);
+    expect((await SELF.fetch("https://example.test/api/locations?location=default")).status).toBe(400);
+    expect((await SELF.fetch("https://example.test/api/admin/staff?location=default", { headers: ownerHeaders })).status).toBe(400);
+    expect((await jsonRequest("/api/adapters/line/webhook?location=default", {})).status).toBe(400);
+  });
+
+  it("keeps directory and creation authorization, origin and input bounds", async () => {
+    const input = { commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東" };
+    expect((await SELF.fetch("https://example.test/api/admin/locations")).status).toBe(401);
+    expect((await jsonRequest("/api/admin/locations", input)).status).toBe(401);
+    expect((await jsonRequest("/api/admin/locations", input, { ...ownerHeaders, origin: "https://elsewhere.invalid" })).status).toBe(403);
+    expect((await jsonRequest("/api/admin/locations", { ...input, extra: true }, ownerHeaders)).status).toBe(400);
+    expect((await jsonRequest("/api/admin/locations", { ...input, locationName: "x".repeat(16 * 1024) }, ownerHeaders)).status).toBe(413);
+    expect((await jsonRequest("/api/admin/locations", input, ownerHeaders)).status).toBe(201);
+    expect((await jsonRequest("/api/admin/locations", { ...input, commandId: crypto.randomUUID() }, ownerHeaders)).status).toBe(409);
+    expect((await jsonRequest("/api/admin/locations", { ...input, locationName: "異なる名前" }, ownerHeaders)).status).toBe(409);
+  });
+
+  it("lets named-only staff discover their salon and revokes every private route on the next request", async () => {
+    await jsonRequest("/api/admin/locations", {
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, ownerHeaders);
+    const response = await jsonRequest("/api/admin/staff", {
+      displayName: "架空 東担当", role: "staff", locationIds: ["studio-east"],
+    }, ownerHeaders);
+    expect(response.status).toBe(201);
+    const created = await response.json() as { member: { id: string }; credential: string };
+    const headers = { authorization: `Bearer ${created.credential}` };
+    const discovery = await SELF.fetch("https://example.test/api/admin/locations", { headers });
+    expect(discovery.status).toBe(200);
+    expect(await discovery.json()).toEqual({ role: "staff", locations: [
+      { id: "studio-east", label: "架空予約室 東", bookable: false },
+    ] });
+    const schedule = `/api/admin/schedule?startDate=${day.date}&days=1`;
+    expect((await SELF.fetch(`https://example.test${schedule}&location=studio-east`, { headers })).status).toBe(200);
+    const reservationId = crypto.randomUUID();
+    const denied: Array<[string, string]> = [
+      ["GET", schedule],
+      ["GET", `/api/admin/availability?date=${day.date}&serviceId=service-cut&reservationId=${reservationId}`],
+      ["POST", "/api/admin/reservations"],
+      ["POST", `/api/admin/reservations/${reservationId}/transition`],
+      ["POST", "/api/admin/closures"],
+      ["POST", `/api/admin/closures/${crypto.randomUUID()}/remove`],
+    ];
+    const call = (method: string, path: string) => method === "GET"
+      ? SELF.fetch(`https://example.test${path}`, { headers })
+      : jsonRequest(path, {}, headers, method);
+    for (const [method, path] of denied) expect((await call(method, path)).status, path).toBe(401);
+    const scopes = await SELF.fetch("https://example.test/api/admin/staff/locations", { headers: ownerHeaders });
+    expect(scopes.status).toBe(200);
+    expect(await scopes.json()).toEqual({ members: [
+      { staffId: created.member.id, scopeVersion: 1, locationIds: ["studio-east"] },
+    ] });
+    const removed = await jsonRequest(`/api/admin/staff/${created.member.id}/locations`, {
+      expectedScopeVersion: 1, locationIds: [],
+    }, ownerHeaders, "PUT");
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ staffId: created.member.id, scopeVersion: 2, locationIds: [] });
+    for (const [method, path] of denied) {
+      const selected = `${path}${path.includes("?") ? "&" : "?"}location=studio-east`;
+      expect((await call(method, selected)).status, selected).toBe(401);
+    }
+    expect(await (await SELF.fetch("https://example.test/api/admin/locations", { headers })).json())
+      .toEqual({ role: "staff", locations: [] });
+  });
+
+  it("preserves already-authorized booking completion while denying its replay after grant removal", async () => {
+    await updateInstallation();
+    await setLive();
+    const staff = await (await jsonRequest("/api/admin/staff", { displayName: "架空 受付", role: "staff" }, ownerHeaders)).json() as {
+      member: { id: string }; credential: string;
+    };
+    const fixture = await publicCreateBody({ serviceIds: ["service-cut"] });
+    const { turnstileToken: _token, replayOnly: _replay, ...command } = fixture.body;
+    const body = heldBody(command);
+    const pending = worker.fetch(new Request("https://example.test/api/admin/reservations", {
+      method: "POST", headers: { authorization: `Bearer ${staff.credential}`, origin: "https://example.test", "content-type": "application/json" },
+      body: body.stream,
+    }), env);
+    await body.reached;
+    try {
+      expect((await jsonRequest(`/api/admin/staff/${staff.member.id}/locations`, {
+        expectedScopeVersion: 0, locationIds: [],
+      }, ownerHeaders, "PUT")).status).toBe(200);
+    } finally {
+      body.release();
+    }
+    expect((await pending).status).toBe(201);
+    expect((await jsonRequest("/api/admin/reservations", command, { authorization: `Bearer ${staff.credential}` })).status).toBe(401);
+  });
+
+  it("rechecks the current owner after a slow grant-update body without restoring revoked authority", async () => {
+    const add = async (role: "owner" | "staff", displayName: string) =>
+      await (await jsonRequest("/api/admin/staff", { role, displayName }, ownerHeaders)).json() as {
+        member: { id: string }; credential: string;
+      };
+    const first = await add("owner", "架空 運営者 A");
+    const second = await add("owner", "架空 運営者 B");
+    const staff = await add("staff", "架空 受付");
+    const body = heldBody({ expectedScopeVersion: 0, locationIds: [] });
+    const pending = worker.fetch(new Request(`https://example.test/api/admin/staff/${staff.member.id}/locations`, {
+      method: "PUT", headers: { authorization: `Bearer ${first.credential}`, origin: "https://example.test", "content-type": "application/json" },
+      body: body.stream,
+    }), env);
+    await body.reached;
+    try {
+      expect((await jsonRequest(`/api/admin/staff/${first.member.id}/deactivate`, {}, {
+        authorization: `Bearer ${second.credential}`,
+      })).status).toBe(200);
+    } finally {
+      body.release();
+    }
+    expect((await pending).status).toBe(401);
+    const scopes = await (await SELF.fetch("https://example.test/api/admin/staff/locations", { headers: ownerHeaders })).json() as {
+      members: Array<{ staffId: string; scopeVersion: number; locationIds: string[] | null }>;
+    };
+    expect(scopes.members.find(({ staffId }) => staffId === staff.member.id))
+      .toEqual({ staffId: staff.member.id, scopeVersion: 0, locationIds: ["default"] });
+  });
+
+  it("issues independent named feed capabilities once and rotates only the selected location", async () => {
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect((await jsonRequest("/api/admin/locations", {
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, ownerHeaders)).status).toBe(201);
+    }
+    const issue = (locationId: string, expectedVersion: number) =>
+      jsonRequest(`/api/admin/calendar/feed-token?location=${locationId}`, { expectedVersion }, ownerHeaders);
+    const first = await issue("studio-east", 0);
+    expect(first.status).toBe(200);
+    const east = await first.json() as { version: number; token: string };
+    expect(east).toEqual({ version: 1, token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
+    const second = await issue("studio-west", 0);
+    expect(second.status).toBe(200);
+    const west = await second.json() as { version: number; token: string };
+    expect(west.token).not.toBe(east.token);
+    for (const locationId of ["studio-east", "studio-west"]) {
+      const saved = await jsonRequest(`/api/admin/calendar/settings?location=${locationId}`, {
+        expectedVersion: 1, googleEnabled: false, calendarId: null, feedEnabled: true,
+      }, ownerHeaders, "PUT");
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toEqual({ settings: {
+        version: 2, googleEnabled: false, calendarId: null, feedEnabled: true, feedTokenPresent: true,
+      } });
+    }
+    const feed = (locationId: string, token: string) =>
+      SELF.fetch(`https://example.test/api/adapters/calendar/feed.ics?token=${token}&location=${locationId}`);
+    expect((await feed("studio-east", east.token)).status).toBe(200);
+    expect((await feed("studio-west", west.token)).status).toBe(200);
+    const refused = await (await feed("studio-west", east.token)).text();
+    for (const [locationId, token] of [["studio-east", "A".repeat(43)], ["default", east.token], ["missing", east.token]]) {
+      const response = await feed(locationId!, token!);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe(refused);
+    }
+    const rotated = await issue("studio-east", 2);
+    const next = await rotated.json() as { version: number; token: string };
+    expect(next.version).toBe(3);
+    expect(next.token).not.toBe(east.token);
+    expect((await feed("studio-east", east.token)).status).toBe(404);
+    expect((await feed("studio-east", next.token)).status).toBe(200);
+    expect((await feed("studio-west", west.token)).status).toBe(200);
+    expect((await feed("default", "A".repeat(43))).status).toBe(200);
+    const status = await SELF.fetch("https://example.test/api/admin/calendar/status?location=studio-east", { headers: ownerHeaders });
+    const statusText = await status.text();
+    expect(JSON.parse(statusText)).toMatchObject({ settings: { version: 3, feedTokenPresent: true } });
+    expect(statusText).not.toContain(next.token);
+    expect(statusText).not.toContain("feedTokenDigest");
+    const withoutDefaultFeed = Object.create(env) as Env;
+    Object.defineProperty(withoutDefaultFeed, "CALENDAR_FEED_TOKEN", { value: undefined });
+    expect((await worker.fetch(new Request(`https://example.test/api/adapters/calendar/feed.ics?location=studio-east&token=${next.token}`), withoutDefaultFeed)).status).toBe(200);
+  });
+
+  it("binds booking, challenge replay and retained management proof to the selected location", async () => {
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect((await jsonRequest("/api/admin/locations", {
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, ownerHeaders)).status).toBe(201);
+      expect((await jsonRequest(`/api/admin/setup?location=${locationId}`, {
+        commandId: crypto.randomUUID(), expectedSettingsVersion: 1,
+        settings: { ...liveSettings(), locationName: `架空予約室 ${locationId}` },
+      }, ownerHeaders, "PUT")).status).toBe(200);
+      expect((await jsonRequest(`/api/admin/setup/live?location=${locationId}`, {
+        commandId: crypto.randomUUID(), expectedSettingsVersion: 2, live: true,
+      }, ownerHeaders)).status).toBe(200);
+    }
+    const consumed = new Map<string, string>();
+    const keys: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | Request | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+      const verified = JSON.parse(String(init?.body)) as { response: string; idempotency_key: string };
+      keys.push(verified.idempotency_key);
+      const prior = consumed.get(verified.response);
+      if (prior !== undefined && prior !== verified.idempotency_key) {
+        return Response.json({ success: false, "error-codes": ["timeout-or-duplicate"] });
+      }
+      consumed.set(verified.response, verified.idempotency_key);
+      return Response.json({ success: true, action: "reservation-create", hostname: "example.test" });
+    }));
+    const fixture = await publicCreateBody({ serviceIds: ["service-cut"] }, "K".repeat(43));
+    const eastResponse = await jsonRequest("/api/reservations?location=studio-east", fixture.body);
+    expect(eastResponse.status).toBe(201);
+    const east = await eastResponse.json() as { reservation: { reservationId: string } };
+    expect((await jsonRequest("/api/reservations?location=studio-west", fixture.body)).status).toBe(403);
+    expect(keys[0]).not.toBe(keys[1]);
+    const westResponse = await jsonRequest("/api/reservations?location=studio-west", {
+      ...fixture.body, turnstileToken: "independent-west-challenge",
+    });
+    expect(westResponse.status).toBe(201);
+    const west = await westResponse.json() as { reservation: { reservationId: string } };
+    expect(west.reservation.reservationId).not.toBe(east.reservation.reservationId);
+    expect((await jsonRequest("/api/reservations?location=studio-east", { ...fixture.body, replayOnly: true })).status).toBe(201);
+    const proof = { date: day.date, managementKey: fixture.managementKey };
+    const wrong = await jsonRequest(`/api/reservations/${east.reservation.reservationId}/status?location=studio-west`, proof);
+    const unknown = await jsonRequest(`/api/reservations/${crypto.randomUUID()}/status?location=studio-west`, proof);
+    expect(wrong.status).toBe(404);
+    expect(await wrong.text()).toBe(await unknown.text());
+    expect((await jsonRequest("/api/admin/setup/live?location=studio-east", {
+      commandId: crypto.randomUUID(), expectedSettingsVersion: 2, live: false,
+    }, ownerHeaders)).status).toBe(200);
+    expect((await jsonRequest(`/api/reservations/${east.reservation.reservationId}/status?location=studio-east`, proof)).status).toBe(200);
+    expect((await jsonRequest(`/api/reservations/${east.reservation.reservationId}/cancel?location=studio-east`, {
+      commandId: crypto.randomUUID(), ...proof,
+    })).status).toBe(200);
+    const westStatus = await jsonRequest(`/api/reservations/${west.reservation.reservationId}/status?location=studio-west`, proof);
+    expect(await westStatus.json()).toMatchObject({ status: "pending" });
+    expect((await jsonRequest("/api/reservations?location=studio-east", { ...fixture.body, commandId: crypto.randomUUID(), startTime: "11:00" })).status).toBe(403);
+    for (const locationId of ["studio-east", "studio-west"]) {
+      const stub = env.RESERVATION_DAYS.getByName(`location:${locationId}:${day.date}`);
+      expect(await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB '__adapter*'").toArray(),
+      )).toEqual([]);
+    }
+    const attemptedActors: string[] = [];
+    const absentCalendar = Object.create(env) as Env;
+    Object.defineProperty(absentCalendar, "CALENDAR_ADAPTER", { value: { getByName: (name: string) => {
+      attemptedActors.push(name);
+      return { descriptor: () => new Promise(() => undefined) };
+    } } });
+    expect((await worker.fetch(new Request(
+      `https://example.test/api/availability?location=studio-west&date=${day.date}&serviceId=service-cut`,
+    ), absentCalendar)).status).toBe(200);
+    expect((await worker.fetch(new Request("https://example.test/api/reservations?location=studio-west", {
+      method: "POST", headers: { "content-type": "application/json", origin: "https://example.test" },
+      body: JSON.stringify({ ...fixture.body, commandId: crypto.randomUUID(), startTime: "11:00", turnstileToken: "another-west-challenge" }),
+    }), absentCalendar)).status).toBe(201);
+    expect(attemptedActors).toEqual([]);
+    expect(await runInDurableObject(env.RESERVATION_DAYS.getByName(`location:studio-west:${day.date}`), (_instance, state) =>
+      state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB '__adapter*'").toArray(),
+    )).toEqual([]);
+  });
+});
+
 const nextOpenJstDate = (minimumOffset = 0) => {
   const now = Date.now() + 9 * 60 * 60 * 1000;
   for (let offset = minimumOffset; offset < 97; offset += 1) {

@@ -213,6 +213,74 @@ const driveAuthorityPurge = async (): Promise<void> => {
 };
 
 describe("adapter event foundation", () => {
+  it("S4 accepts the exact legacy opaque ID and rejects unrelated nameless actors", async () => {
+    const legacyId = env.ADAPTER_DELIVERY.idFromName("installation");
+    const legacy = env.ADAPTER_DELIVERY.get(env.ADAPTER_DELIVERY.idFromString(legacyId.toString()));
+    expect(await legacy.activate({ generation: 1 })).toMatchObject({ ok: true });
+    const unknown = env.ADAPTER_DELIVERY.get(env.ADAPTER_DELIVERY.newUniqueId());
+    expect(await runInDurableObject(unknown, (_instance, state) => state.id.name)).toBeUndefined();
+    await expect((async () => await unknown.activate({ generation: 1 }))())
+      .rejects.toThrow("Invalid adapter identity");
+    expect((await legacy.readMeta())?.generation).toBe(1);
+  });
+
+  it("S4 reconstructs the named sweep prefix after eviction and an actual alarm", async () => {
+    let stub = env.ADAPTER_DELIVERY.getByName("location:studio-east");
+    await stub.activate({ generation: 1 });
+    await expect(runInDurableObject(stub, (_instance, state) => state.abort("named actor restart fixture")))
+      .rejects.toThrow("named actor restart fixture");
+    stub = env.ADAPTER_DELIVERY.getByName("location:studio-east");
+    const names: string[] = [];
+    let restore: (() => void) | undefined;
+    await runInDurableObject(stub, (instance, state) => {
+      expect(state.id.name).toBe("location:studio-east");
+      const bindings = (instance as unknown as { env: Env }).env;
+      const original = Object.getOwnPropertyDescriptor(bindings, "RESERVATION_DAYS");
+      Object.defineProperty(bindings, "RESERVATION_DAYS", {
+        configurable: true,
+        value: { getByName: (name: string) => {
+          names.push(name);
+          return { drainOutbox: async () => ({ events: [], more: false }) };
+        } },
+      });
+      restore = () => {
+        if (original === undefined) delete (bindings as Partial<Env>).RESERVATION_DAYS;
+        else Object.defineProperty(bindings, "RESERVATION_DAYS", original);
+      };
+    });
+    try {
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      expect(names).toHaveLength(16);
+      expect(names.every((name) => /^location:studio-east:\d{4}-\d{2}-\d{2}$/.test(name))).toBe(true);
+    } finally {
+      restore?.();
+    }
+  });
+
+  it("S4 finalizes a named link against only that location's event watermark", async () => {
+    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${day.date}`);
+    const namedDelivery = env.ADAPTER_DELIVERY.getByName("location:studio-east");
+    const created = await namedDay.createPublic(day, createInput());
+    if (!created.ok) throw new Error("named fixture create failed");
+    expect(await namedDay.transitionOwner(adapterDay(), approveInput(created.reservationId), TEST_ACTOR))
+      .toMatchObject({ ok: true, status: "approved" });
+    await namedDelivery.activate({ generation: 1, snapshot: { messagingChannelId: identifiers.messagingChannelId } });
+    const intent = await namedDelivery.mintIntent({
+      reservationId: created.reservationId,
+      date: day.date,
+      generation: 1,
+      purgeAt: day.purgeAt,
+    });
+    if (!intent.ok) throw new Error("named fixture intent failed");
+    expect(await namedDelivery.finalizeLink({ nonce: intent.nonce, subject: `U${"a".repeat(32)}` }))
+      .toMatchObject({ ok: true, replayed: false });
+    const watermark = await runInDurableObject(namedDelivery, (_instance, state) =>
+      state.storage.sql.exec<{ watermark_seq: number }>("SELECT watermark_seq FROM links").one().watermark_seq,
+    );
+    expect(watermark).toBe(1);
+    expect(await deliveryStub().readMeta()).toBeNull();
+  });
+
   it("keeps adapter tables invisible to legacy callers while still refusing unknown tables", async () => {
     const reservationId = await createPending();
     const approved = await dayStub().transitionOwner(adapterDay(), approveInput(reservationId), TEST_ACTOR);
@@ -1026,6 +1094,50 @@ describe("delivery pipeline", () => {
     expect(await deliveryRows()).toMatchObject([{ status: "queued" }]);
     return reservationId;
   };
+
+  it("S4 snapshots a trusted named label and retries the same v2 bytes after a rename", async () => {
+    clearTokenCacheForTests();
+    const calls = lineApi({ push: () => 503 });
+    const root = installationStub();
+    expect(await root.createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null)).toMatchObject({ ok: true });
+    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${pDate}`);
+    const namedDelivery = env.ADAPTER_DELIVERY.getByName("location:studio-east");
+    const created = await namedDay.createPublic(pDay(), { ...createInput(), date: pDate });
+    if (!created.ok) throw new Error("named fixture create failed");
+    await namedDelivery.activate({ generation: 1, snapshot });
+    const intent = await namedDelivery.mintIntent({
+      reservationId: created.reservationId, date: pDate, generation: 1, purgeAt: futurePurgeAt(),
+    });
+    if (!intent.ok) throw new Error("named fixture intent failed");
+    await namedDelivery.finalizeLink({ nonce: intent.nonce, subject: SUBJECT });
+    await namedDay.transitionOwner(pAdapterDay(), pApprove(created.reservationId), TEST_ACTOR);
+    await namedDelivery.pokeDay({ date: pDate });
+    const payload = await runInDurableObject(namedDelivery, (_instance, state) =>
+      state.storage.sql.exec<{ payload_json: string }>("SELECT payload_json FROM deliveries").one().payload_json,
+    );
+    expect(JSON.parse(payload)).toEqual({
+      v: 2, type: "approve", date: pDate, startTime: "09:00", serviceLabel: "架空カット", locationLabel: "架空予約室 東",
+    });
+    await runDurableObjectAlarm(namedDelivery);
+    expect(calls.push).toHaveLength(1);
+    const state = await root.getState("studio-east");
+    const settings = state.settingsVersions.find(({ version }) => version === state.activeSettingsVersion)!.settings;
+    expect(await root.executeCommand({
+      type: "settings.update", commandId: crypto.randomUUID(), expectedSettingsVersion: state.activeSettingsVersion,
+      settings: { ...settings, locationName: "架空予約室 改称後" },
+    }, runtime(), "studio-east")).toMatchObject({ ok: true });
+    advanceNow(60_000);
+    await runDurableObjectAlarm(namedDelivery);
+    expect(calls.push).toHaveLength(2);
+    expect(calls.push[1]!.body).toBe(calls.push[0]!.body);
+    expect(String(calls.push[1]!.body)).toContain("架空予約室 東");
+    expect(String(calls.push[1]!.body)).not.toContain("改称後");
+    expect((calls.push[1]!.headers as Record<string, string>)["x-line-retry-key"])
+      .toBe((calls.push[0]!.headers as Record<string, string>)["x-line-retry-key"]);
+    expect(await deliveryStub().readMeta()).toBeNull();
+  });
 
   it("pushes a queued delivery end to end with the persisted retry key", async () => {
     const calls = lineApi();

@@ -411,6 +411,11 @@ export type MessageFragment = {
   serviceLabel: string;
 };
 
+export type LocationMessageFragment = Omit<MessageFragment, "v"> & {
+  v: 2;
+  locationLabel: string;
+};
+
 const EVENT_LINES: Record<MessageFragment["type"], string> = {
   approve: "ご予約が確定しました。",
   reject: "ご予約をお受けできませんでした。",
@@ -439,6 +444,17 @@ export const serializeMessageV1 = (
     },
   ];
 };
+
+export const serializeMessageV2 = (
+  fragment: LocationMessageFragment,
+): { type: "text"; text: string }[] => [{
+  type: "text",
+  text:
+    `${EVENT_LINES[fragment.type]}\n` +
+    `店舗: ${fragment.locationLabel}\n` +
+    `日時: ${fragment.date} ${fragment.startTime}\n` +
+    `サービス: ${fragment.serviceLabel}`,
+}];
 
 // ---- push client (retry-key idempotent) ----
 

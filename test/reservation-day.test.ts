@@ -251,6 +251,50 @@ afterEach(async () => {
 });
 
 describe("T007 ReservationDay v0.2 runtime contract", () => {
+  it.each([
+    ["single-location:2025-01-15", "installation"],
+    ["location:studio-east:2025-01-15", "location:studio-east"],
+  ])("S4 hands off %s only to its own adapter", async (name, expected) => {
+    const stub = env.RESERVATION_DAYS.getByName(name);
+    const destinations = await runInDurableObject(stub, async (instance) => {
+      const bindings = (instance as unknown as { env: Env }).env;
+      const original = Object.getOwnPropertyDescriptor(bindings, "ADAPTER_DELIVERY");
+      const called: string[] = [];
+      Object.defineProperty(bindings, "ADAPTER_DELIVERY", {
+        configurable: true,
+        value: { getByName: (actorName: string) => {
+          called.push(actorName);
+          return { pokeDay: async () => ({ ok: true, drained: 0 }) };
+        } },
+      });
+      try {
+        const created = await instance.createPublic(day, createInput());
+        if (!created.ok) throw new Error("handoff fixture create failed");
+        const changed = await instance.transitionOwner({
+          ...day,
+          adapter: {
+            consumer: "line",
+            generation: 1,
+            phase: "active",
+            leaseIssuedAt: Date.now(),
+            leaseNotAfter: Date.now() + 30_000,
+          },
+        }, {
+          commandId: crypto.randomUUID(),
+          date: day.date,
+          reservationId: created.reservationId,
+          action: "approve",
+        }, TEST_ACTOR);
+        if (!changed.ok) throw new Error("handoff fixture approve failed");
+        return called;
+      } finally {
+        if (original === undefined) delete (bindings as Partial<Env>).ADAPTER_DELIVERY;
+        else Object.defineProperty(bindings, "ADAPTER_DELIVERY", original);
+      }
+    });
+    expect(destinations).toEqual([expected]);
+  });
+
   it("pins the settings version and stores an immutable pending booking snapshot", async () => {
     const stub = stubFor();
     const created = await stub.createPublic(day, createInput());
@@ -880,6 +924,27 @@ describe("T007 ReservationDay v0.2 runtime contract", () => {
     });
   });
 
+  it("S4 gives each location one winner in simultaneous 50-way races with identical local inputs", async () => {
+    const east = env.RESERVATION_DAYS.getByName(`location:studio-east:${day.date}`);
+    const west = env.RESERVATION_DAYS.getByName(`location:studio-west:${day.date}`);
+    const inputs = Array.from({ length: 50 }, () => createInput(day, { serviceIds: ["service-cut"] }));
+    const results = await Promise.all([east, west].map((stub) =>
+      Promise.all(inputs.map((input) => stub.createPublic(day, input))),
+    ));
+    for (const result of results) {
+      expect(result.filter(({ ok }) => ok)).toHaveLength(1);
+      expect(result.filter((value) => !value.ok && value.code === "UNAVAILABLE")).toHaveLength(49);
+    }
+    const westBefore = await west.listOwner(day);
+    const winner = results[0]!.find(({ ok }) => ok)!;
+    if (!winner.ok) throw new Error("missing race winner");
+    expect(await east.transitionOwner(day, {
+      commandId: crypto.randomUUID(), date: day.date, reservationId: winner.reservationId, action: "cancel",
+    }, TEST_ACTOR)).toMatchObject({ ok: true, status: "cancelled" });
+    expect(await west.listOwner(day)).toEqual(westBefore);
+    expect(await stubFor().listOwner(day)).toMatchObject({ ok: true, reservations: [] });
+  });
+
   it("returns a bounded projection at the 96-create and 192-mutation ceiling", async () => {
     const resources = Array.from({ length: 8 }, (_, index) => ({
       id: `resource-${index + 1}`,
@@ -1356,17 +1421,22 @@ describe("S2 calendar outbox substrate", () => {
   });
 
   it.each([
-    ["public", "receipt"],
-    ["public", "calendar sequence"],
-    ["owner", "receipt"],
-    ["owner", "calendar sequence"],
-  ] as const)("recovers an identical %s create after %s persistence fails", async (path, failure) => {
+    ["public", "receipt", "default"],
+    ["public", "calendar sequence", "default"],
+    ["owner", "receipt", "default"],
+    ["owner", "calendar sequence", "default"],
+    ["public", "receipt", "studio-east"],
+    ["public", "calendar sequence", "studio-east"],
+    ["owner", "receipt", "studio-east"],
+    ["owner", "calendar sequence", "studio-east"],
+  ] as const)("recovers an identical %s create after %s persistence fails at %s", async (path, failure, locationId) => {
     const calendarDay = configured(day, { line: true, calendar: true });
-    const stub = stubFor(calendarDay);
+    const stub = locationId === "default" ? stubFor(calendarDay)
+      : env.RESERVATION_DAYS.getByName(`location:${locationId}:${day.date}`) as unknown as DurableObjectStub<TargetReservationDay>;
     const create = (input: ReturnType<typeof createInput>) => path === "public"
       ? stub.createPublic(calendarDay, input)
       : stub.createOwner(calendarDay, input, TEST_ACTOR);
-    const snapshot = () => runInDurableObject(stub, async (_instance, state) => {
+    const snapshot = (target = stub) => runInDurableObject(target, async (_instance, state) => {
       const tables = [
         ["core_state", "singleton"],
         ["booking_details", "reservation_id"],
@@ -1386,8 +1456,12 @@ describe("S2 calendar outbox substrate", () => {
       ])) };
     });
 
-    expect(await create(createInput(calendarDay, { serviceIds: ["service-cut"] })))
+    const initial = createInput(calendarDay, { serviceIds: ["service-cut"] });
+    expect(await create(initial))
       .toMatchObject({ ok: true });
+    const peer = locationId === "default" ? null : stubFor(calendarDay);
+    if (peer !== null) expect(await peer.createPublic(calendarDay, initial)).toMatchObject({ ok: true });
+    const peerBaseline = peer === null ? null : await snapshot(peer);
     const baseline = await snapshot();
     const input = createInput(calendarDay, { serviceIds: ["service-cut"], startTime: "11:00" });
     const beforeAvailability = await stub.availability(calendarDay, input.serviceIds);
@@ -1404,6 +1478,7 @@ describe("S2 calendar outbox substrate", () => {
     try {
       expect(await create(input)).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
       expect(await snapshot()).toEqual(baseline);
+      if (peer !== null) expect(await snapshot(peer)).toEqual(peerBaseline);
       expect(await stub.availability(calendarDay, input.serviceIds)).toEqual(beforeAvailability);
     } finally {
       await runInDurableObject(stub, (_instance, state) => {
@@ -1457,6 +1532,7 @@ describe("S2 calendar outbox substrate", () => {
       .not.toContain(input.startTime);
     expect(await create(input)).toEqual({ ...retried, replayed: true });
     expect(await snapshot()).toEqual(committed);
+    if (peer !== null) expect(await snapshot(peer)).toEqual(peerBaseline);
   });
 
   it("keeps completed and no-show schedule facts without emitting a calendar mutation", async () => {

@@ -8,6 +8,7 @@ import {
   type InstallationSettings,
   type InstallationState,
   type LineContext,
+  type NamedCalendarContext,
   type ReadinessRuntime,
   type RosterCommandResult,
   type RosterFailureCode,
@@ -32,6 +33,7 @@ import {
 import { AdapterDelivery } from "./adapter-delivery.ts";
 import {
   CalendarAdapter,
+  googleCredentialsForLocation,
   parseCalendarFeedToken,
   parseGoogleCredentials,
 } from "./calendar-adapter.ts";
@@ -43,11 +45,18 @@ import {
   verifyWebhookSignature,
 } from "./line-adapter.ts";
 import { ADAPTER, withDeadline } from "./adapter-constants.ts";
+import {
+  DEFAULT_LOCATION_ID,
+  adapterObjectName,
+  dayObjectName,
+  parseLocationId,
+} from "./location.ts";
 
 export { AdapterDelivery, CalendarAdapter, InstallationConfig, ReservationDay };
 
 type AppEnv = Env & {
   INSTALLATION_CONFIG: DurableObjectNamespace<InstallationConfig>;
+  locationId: string;
 };
 
 type JsonObject = Record<string, unknown>;
@@ -111,6 +120,11 @@ const ERROR_MESSAGES = {
     "LINE のチャネルシークレットが設定されていません。シークレットを登録してから有効化してください。",
   CALENDAR_NOT_CONFIGURED:
     "カレンダー連携が設定されていません。任意の連携情報を設定してからやり直してください。",
+  LOCATION_NOT_FOUND: "指定された店舗が見つかりません。",
+  LOCATION_EXISTS: "この店舗 ID はすでに使われています。",
+  LOCATION_LIMIT_REACHED: "登録できる店舗数の上限に達しています。",
+  CALENDAR_TARGET_CONFLICT: "ほかの店舗と異なるカレンダー ID を設定してください。",
+  CALENDAR_TARGET_IMMUTABLE: "設定済みのカレンダー ID は変更できません。",
 } as const;
 
 type PublicErrorCode = keyof typeof ERROR_MESSAGES;
@@ -309,11 +323,24 @@ const ROUTE_ROLE = {
   "line-status": "owner",
   "calendar-status": "owner",
   "calendar-reconcile": "owner",
+  "calendar-settings": "owner",
+  "calendar-feed-token": "owner",
   "owner-staff": "owner",
   "owner-staff-credential": "owner",
+  "owner-locations": "staff",
+  "owner-location-create": "owner",
+  "owner-staff-locations": "owner",
 } as const satisfies Record<string, "owner" | "staff">;
 
 type OperatorRoute = keyof typeof ROUTE_ROLE;
+
+const GLOBAL_OPERATOR_ROUTES = new Set<OperatorRoute>([
+  "owner-staff",
+  "owner-staff-credential",
+  "owner-locations",
+  "owner-location-create",
+  "owner-staff-locations",
+]);
 
 /**
  * Who is making an operator request. `break_glass` is the deployment secret:
@@ -337,7 +364,7 @@ const bearerToken = (request: Request): string | null =>
  * lives for one request and only its digest crosses the RPC boundary — never at
  * rest in the object, the settings, or a log.
  */
-const newStaffCredential = (): string => {
+const newCredential = (): string => {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   let binary = "";
   for (const byte of bytes) binary += String.fromCodePoint(byte);
@@ -416,7 +443,10 @@ const operatorGate = async (
   // state of it can lock the installation's holder out. (FR-009, FR-017)
   const provided = bearerToken(request);
   if (provided === null) return refused();
-  const resolved = await installationStub(env).resolveActor(await sha256Hex(provided));
+  const resolved = await installationStub(env).resolveActor(
+    await sha256Hex(provided),
+    GLOBAL_OPERATOR_ROUTES.has(route) ? undefined : env.locationId,
+  );
   if (resolved === null) return refused();
   if (ROUTE_ROLE[route] === "owner" && resolved.role !== "owner") return refused();
   return { actor: { kind: "staff", role: resolved.role, staffId: resolved.staffId } };
@@ -464,20 +494,40 @@ const installationStub = (env: AppEnv): DurableObjectStub<InstallationConfig> =>
   env.INSTALLATION_CONFIG.getByName("installation");
 
 const adapterDeliveryStub = (env: AppEnv): DurableObjectStub<AdapterDelivery> =>
-  env.ADAPTER_DELIVERY.getByName("installation");
+  env.ADAPTER_DELIVERY.getByName(adapterObjectName(env.locationId));
 
 const calendarAdapterStub = (env: AppEnv): DurableObjectStub<CalendarAdapter> =>
-  env.CALENDAR_ADAPTER.getByName("installation");
+  env.CALENDAR_ADAPTER.getByName(adapterObjectName(env.locationId));
 
-const calendarModes = (env: AppEnv) => ({
-  feed: parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN) !== null,
-  google: parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS) !== null,
+const calendarModes = (env: AppEnv, named?: NamedCalendarContext) => {
+  const google = parseGoogleCredentials(env.GOOGLE_CALENDAR_CREDENTIALS);
+  return {
+    feed: named === undefined
+      ? parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN) !== null
+      : named.feedEnabled && named.feedTokenDigest !== null,
+    google: named === undefined
+      ? google !== null
+      : named.googleEnabled && googleCredentialsForLocation(google, named.calendarId) !== null,
+  };
+};
+
+const readCalendarSettings = async (env: AppEnv): Promise<NamedCalendarContext | undefined> =>
+  env.locationId === DEFAULT_LOCATION_ID
+    ? undefined
+    : await installationStub(env).getCalendarContext(env.locationId);
+
+const calendarSettingsProjection = (settings: NamedCalendarContext) => ({
+  version: settings.version,
+  googleEnabled: settings.googleEnabled,
+  calendarId: settings.calendarId,
+  feedEnabled: settings.feedEnabled,
+  feedTokenPresent: settings.feedTokenDigest !== null,
 });
 
 const CALENDAR_AUTHORITY_RPC_DEADLINE_MS = 250;
 
 const dayStub = (env: AppEnv, date: string): DurableObjectStub<ReservationDay> =>
-  env.RESERVATION_DAYS.getByName(`single-location:${date}`);
+  env.RESERVATION_DAYS.getByName(dayObjectName(env.locationId, date));
 
 const runtimeFor = (
   env: AppEnv,
@@ -496,7 +546,7 @@ const installationContext = async (
   url: URL,
   authenticated: boolean,
 ): Promise<InstallationContext> => {
-  const { state, line } = await installationStub(env).getContext();
+  const { state, line } = await installationStub(env).getContext(env.locationId);
   const record = state.settingsVersions.find(
     ({ version }) => version === state.activeSettingsVersion,
   );
@@ -519,14 +569,23 @@ const withCalendarAdapter = async (
   ) {
     return context;
   }
-  const modes = calendarModes(env);
-  if (!modes.feed && !modes.google) return context;
+  if (env.locationId === DEFAULT_LOCATION_ID) {
+    const modes = calendarModes(env);
+    if (!modes.feed && !modes.google) return context;
+  }
   const {
     calendarAdapter: _calendarAdapter,
     calendarRecovery: _calendarRecovery,
     ...base
   } = context;
   try {
+    if (env.locationId !== DEFAULT_LOCATION_ID) {
+      const intent = await withDeadline(
+        installationStub(env).getCalendarContext(env.locationId),
+        CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
+      );
+      if (!intent.feedEnabled && !intent.googleEnabled) return base;
+    }
     const calendarAdapter = await withDeadline(
       calendarAdapterStub(env).descriptor(),
       CALENDAR_AUTHORITY_RPC_DEADLINE_MS,
@@ -1038,8 +1097,10 @@ const siteverifyIdempotencyKey = async (
   date: string,
   commandId: string,
   token: string,
+  locationId: string,
 ): Promise<string> => {
-  const digest = await sha256(`turnstile:${date}:${commandId}:${token}`);
+  const scope = locationId === DEFAULT_LOCATION_ID ? date : `location:${locationId}:${date}`;
+  const digest = await sha256(`turnstile:${scope}:${commandId}:${token}`);
   const bytes = digest.slice(0, 16);
   bytes[6] = ((bytes[6] as number) & 0x0f) | 0x80;
   bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80;
@@ -1141,7 +1202,7 @@ const verifyTurnstile = async (
   const body: Record<string, string> = {
     secret: turnstileSecret,
     response: token,
-    idempotency_key: await siteverifyIdempotencyKey(date, commandId, token),
+    idempotency_key: await siteverifyIdempotencyKey(date, commandId, token, env.locationId),
   };
   const remoteip = request.headers.get("cf-connecting-ip");
   if (remoteip !== null) body.remoteip = remoteip;
@@ -1297,6 +1358,68 @@ const linePublicConfig = (
   }
   if (line.phase === "deactivating") return { cleanup: true };
   return null;
+};
+
+type LocationControlFailureCode = Exclude<
+  Awaited<ReturnType<InstallationConfig["createLocation"] | InstallationConfig["setStaffLocationScope"] | InstallationConfig["setCalendarSettings"]>>,
+  { ok: true }
+>["code"];
+
+const LOCATION_CONTROL_STATUS: Record<LocationControlFailureCode, number> = {
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  LOCATION_EXISTS: 409,
+  LOCATION_LIMIT_REACHED: 409,
+  IDEMPOTENCY_CONFLICT: 409,
+  VERSION_CONFLICT: 409,
+  STAFF_UNAVAILABLE: 404,
+  LOCATION_NOT_FOUND: 404,
+  CALENDAR_TARGET_CONFLICT: 409,
+  CALENDAR_TARGET_IMMUTABLE: 409,
+  CALENDAR_NOT_CONFIGURED: 409,
+};
+
+const locationControlFailure = (code: LocationControlFailureCode): Response =>
+  errorResponse(LOCATION_CONTROL_STATUS[code], code,
+    code === "UNAUTHORIZED" ? { "www-authenticate": "Bearer" } : {});
+
+const handleLocations = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET") return errorResponse(405, "BAD_REQUEST", { allow: "GET" });
+  if (await limited(env.PUBLIC_RATE_LIMITER, request, "public-locations")) return rateLimited();
+  return json({ locations: await installationStub(env).listLocations(runtimeFor(env, url, false)) });
+};
+
+const handleOwnerLocations = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "GET" && request.method !== "POST") {
+    return errorResponse(405, "BAD_REQUEST", { allow: "GET, POST" });
+  }
+  if (request.method === "POST") {
+    const originFailure = requireMutationOrigin(request, url);
+    if (originFailure !== null) return originFailure;
+  }
+  const gate = await operatorGate(request, env,
+    request.method === "GET" ? "owner-locations" : "owner-location-create");
+  if ("response" in gate) return gate.response;
+  if (request.method === "GET") {
+    return json({
+      role: gate.actor.role,
+      locations: await installationStub(env).listLocations(runtimeFor(env, url, true), rosterActor(gate.actor)),
+    });
+  }
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const result = await installationStub(env).createLocation(parsed.value, rosterActor(gate.actor));
+  return result.ok
+    ? json({ location: result.location, replayed: result.replayed }, 201)
+    : locationControlFailure(result.code);
 };
 
 const handleConfig = async (
@@ -1541,6 +1664,7 @@ const handleSetup = async (
   const result = await installationStub(env).executeCommand(
     { type: "settings.update", ...parsed.value },
     runtimeFor(env, url, true),
+    env.locationId,
   );
   return setupResultResponse(result);
 };
@@ -1569,6 +1693,7 @@ const handleLive = async (
   const result = await installationStub(env).executeCommand(
     { type: "settings.live", ...parsed.value },
     runtimeFor(env, url, true),
+    env.locationId,
   );
   return setupResultResponse(result);
 };
@@ -1622,6 +1747,7 @@ const handleLineLifecycle = async (
   const result = await installationStub(env).executeLineCommand(
     { operation, ...parsed.value },
     runtimeFor(env, url, true),
+    env.locationId,
   );
   return lineCommandResponse(result);
 };
@@ -1637,7 +1763,7 @@ const handleLineStatus = async (
   const gate = await ownerGate(request, env, "line-status");
   if (gate !== null) return gate;
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
-  const lifecycle = await installationStub(env).lineAdapterStatus();
+  const lifecycle = await installationStub(env).lineAdapterStatus(env.locationId);
   // The authority read is diagnostic; a stalled delivery object must not take
   // the setup surface down with it.
   let authority: Awaited<ReturnType<AdapterDelivery["diagnostics"]>> | "unavailable" = null;
@@ -1726,20 +1852,23 @@ const handleStaffRoster = async (
   const parsed = await bodyOrError(request);
   if ("response" in parsed) return parsed.response;
   const body = parsed.value;
+  if (!isObject(body)) return errorResponse(400, "BAD_REQUEST");
+  const locationIds = body.locationIds;
   if (
-    !isObject(body) ||
-    !(
-      hasExactKeys(body, ["displayName", "role"]) ||
-      hasExactKeys(body, ["displayName", "role", "dryRun"])
-    ) ||
+    !hasExactKeys(body, ["displayName", "role",
+      ...(Object.hasOwn(body, "dryRun") ? ["dryRun"] : []),
+      ...(Object.hasOwn(body, "locationIds") ? ["locationIds"] : []),
+    ]) ||
     !boundedText(body.displayName, 1, 80) ||
     (body.role !== "owner" && body.role !== "staff") ||
-    (body.dryRun !== undefined && typeof body.dryRun !== "boolean")
+    (body.dryRun !== undefined && typeof body.dryRun !== "boolean") ||
+    (locationIds !== undefined && (body.role !== "staff" || !Array.isArray(locationIds) ||
+      !locationIds.every((locationId) => typeof locationId === "string")))
   ) {
     return errorResponse(400, "BAD_REQUEST");
   }
   const dryRun = body.dryRun === true;
-  const credential = dryRun ? "" : newStaffCredential();
+  const credential = dryRun ? "" : newCredential();
   return rosterResponse(
     await installationStub(env).executeRosterCommand(
       {
@@ -1750,10 +1879,44 @@ const handleStaffRoster = async (
         dryRun,
       },
       rosterActor(gate.actor),
+      locationIds,
     ),
     credential,
     201,
   );
+};
+
+const handleStaffLocations = async (
+  request: Request,
+  env: AppEnv,
+): Promise<Response> => {
+  if (request.method !== "GET") return errorResponse(405, "BAD_REQUEST", { allow: "GET" });
+  const gate = await operatorGate(request, env, "owner-staff-locations");
+  if ("response" in gate) return gate.response;
+  return json({ members: await installationStub(env).listStaffLocationScopes(rosterActor(gate.actor)) });
+};
+
+const handleStaffLocationUpdate = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+  staffId: string,
+): Promise<Response> => {
+  if (request.method !== "PUT") return errorResponse(405, "BAD_REQUEST", { allow: "PUT" });
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await operatorGate(request, env, "owner-staff-locations");
+  if ("response" in gate) return gate.response;
+  if (!UUID.test(staffId)) return errorResponse(404, "STAFF_UNAVAILABLE");
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (!isObject(parsed.value) || !hasExactKeys(parsed.value, ["expectedScopeVersion", "locationIds"])) {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  const result = await installationStub(env).setStaffLocationScope(
+    { ...parsed.value, staffId }, rosterActor(gate.actor),
+  );
+  return result.ok ? json(result.scope) : locationControlFailure(result.code);
 };
 
 const handleStaffCredential = async (
@@ -1783,7 +1946,7 @@ const handleStaffCredential = async (
   // Deactivation destroys the digest, so reactivation has nothing to restore
   // and issues a new credential rather than pretending the old one survived.
   const issues = operation !== "staff.deactivate";
-  const credential = issues ? newStaffCredential() : "";
+  const credential = issues ? newCredential() : "";
   return rosterResponse(
     await installationStub(env).executeRosterCommand(
       {
@@ -1810,7 +1973,7 @@ const handleReceipt = async (
   if (gate !== null) return gate;
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
   return json(
-    await installationStub(env).installationReceipt(runtimeFor(env, url, true)),
+    await installationStub(env).installationReceipt(runtimeFor(env, url, true), env.locationId),
   );
 };
 
@@ -2281,19 +2444,18 @@ const handleLineLinkStatus = async (
 const handleLineWebhook = async (
   request: Request,
   env: AppEnv,
-  url: URL,
 ): Promise<Response> => {
-  // LINE posts cross-origin; the signature is the only authentication, and
-  // while the adapter is not effectively active the endpoint does not exist.
-  const context = await installationContext(env, url, false);
-  if (!lineEffectivelyActive(context)) {
+  // The signature authenticates one shared realm; public query scope never routes it.
+  const channelSecret = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
+  if (channelSecret === null || !lineSecretPresent(env)) {
     return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   }
+  const targets = await withDeadline(installationStub(env).getLineWebhookTargets(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
+  if (targets.length === 0) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
   if (request.method !== "POST") {
     return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
   }
-  const channelSecret = secret(env, "LINE_MESSAGING_CHANNEL_SECRET");
-  if (channelSecret === null) return errorResponse(404, "NOT_FOUND_OR_UNAUTHORIZED");
+  const authorities = targets.map((locationId) => env.ADAPTER_DELIVERY.getByName(adapterObjectName(locationId)));
   // Unauthenticated endpoint: its own rate-limit bucket caps diagnostic writes
   // and keeps it from crowding out customer routes. Reject malformed headers
   // before reading the body or paying for HMAC. LINE retries webhooks, and
@@ -2303,19 +2465,25 @@ const handleLineWebhook = async (
     return rateLimited();
   }
   if (signature === null || signature.length === 0 || signature.length > 64) {
-    await adapterDeliveryStub(env).noteSignatureFailure();
+    await Promise.allSettled(authorities.map((authority) =>
+      withDeadline(authority.noteSignatureFailure(), ADAPTER.SWEEP_RPC_DEADLINE_MS)));
     return errorResponse(403, "PROTECTION_REFUSED");
   }
   const body = await readBoundedBytes(request.body, ADAPTER.WEBHOOK_BODY_MAX_BYTES);
   if (body === null) return errorResponse(413, "BAD_REQUEST");
   const signatureValid = await verifyWebhookSignature(channelSecret, signature, body);
   if (!signatureValid) {
-    await adapterDeliveryStub(env).noteSignatureFailure();
+    await Promise.allSettled(authorities.map((authority) =>
+      withDeadline(authority.noteSignatureFailure(), ADAPTER.SWEEP_RPC_DEADLINE_MS)));
     return errorResponse(403, "PROTECTION_REFUSED");
   }
   const parsedBody = parseWebhookBody(body);
   if (parsedBody === null) return errorResponse(400, "BAD_REQUEST");
-  await adapterDeliveryStub(env).processWebhook({ events: parsedBody.events });
+  const delivered = await Promise.allSettled(authorities.map((authority) =>
+    withDeadline(authority.processWebhook({ events: parsedBody.events }), ADAPTER.SWEEP_RPC_DEADLINE_MS)));
+  if (delivered.some((result) => result.status === "rejected" || result.value.ok !== true)) {
+    return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
+  }
   return json({});
 };
 
@@ -2380,6 +2548,14 @@ const handleLineAsset = async (
   if (isPage) {
     headers.set("content-security-policy", LINE_PAGE_CSP);
   }
+  if (isPage && env.locationId !== DEFAULT_LOCATION_ID) {
+    headers.delete("etag");
+    headers.delete("content-length");
+    const body = request.method === "HEAD" ? null : (await asset.text()).replace(
+      'src="/line-liff.mjs"', `src="/line-liff.mjs?location=${env.locationId}"`,
+    );
+    return new Response(body, { status: asset.status, headers });
+  }
   return new Response(asset.body, { status: asset.status, headers });
 };
 
@@ -2394,16 +2570,17 @@ const handleCalendarFeed = async (
   if (await limited(env.PUBLIC_RATE_LIMITER, request, "calendar-feed")) {
     return calendarFeedNotFound();
   }
-  const configured = parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN);
   const presented = parseCalendarFeedToken(url.searchParams.get("token"));
   if (
-    configured === null ||
     presented === null ||
-    url.search !== `?token=${presented}`
+    url.search !== `?token=${presented}` ||
+    (env.locationId === DEFAULT_LOCATION_ID && parseCalendarFeedToken(env.CALENDAR_FEED_TOKEN) === null)
   ) {
     return calendarFeedNotFound();
   }
   try {
+    const settings = await readCalendarSettings(env);
+    if (settings !== undefined && (!settings.feedEnabled || settings.feedTokenDigest === null)) return calendarFeedNotFound();
     const result = await calendarAdapterStub(env).feed({ token: presented });
     if (!result.ok) return calendarFeedNotFound();
     return new Response(result.body, {
@@ -2429,7 +2606,9 @@ const handleCalendarStatus = async (
   if (url.search !== "") return errorResponse(400, "BAD_REQUEST");
   const gate = await ownerGate(request, env, "calendar-status");
   if (gate !== null) return gate;
-  const configured = calendarModes(env);
+  const settings = await readCalendarSettings(env);
+  const configured = calendarModes(env, settings);
+  const settingsBody = settings === undefined ? {} : { settings: calendarSettingsProjection(settings) };
   try {
     const authority = await calendarAdapterStub(env).diagnostics();
     const active = authority?.state === "active";
@@ -2440,6 +2619,7 @@ const handleCalendarStatus = async (
         google: { configured: configured.google, active: configured.google && active },
       },
       authority,
+      ...settingsBody,
     });
   } catch {
     return json({
@@ -2449,8 +2629,49 @@ const handleCalendarStatus = async (
         google: { configured: configured.google, active: false },
       },
       authority: "unavailable",
+      ...settingsBody,
     });
   }
+};
+
+const handleCalendarSettings = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "PUT") return errorResponse(405, "BAD_REQUEST", { allow: "PUT" });
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await operatorGate(request, env, "calendar-settings");
+  if ("response" in gate) return gate.response;
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  const result = await installationStub(env).setCalendarSettings(parsed.value, rosterActor(gate.actor), env.locationId);
+  if (!result.ok) return locationControlFailure(result.code);
+  await withDeadline(calendarAdapterStub(env).descriptor(), CALENDAR_AUTHORITY_RPC_DEADLINE_MS).catch(() => undefined);
+  return json({ settings: calendarSettingsProjection(result.context) });
+};
+
+const handleCalendarFeedToken = async (
+  request: Request,
+  env: AppEnv,
+  url: URL,
+): Promise<Response> => {
+  if (request.method !== "POST") return errorResponse(405, "BAD_REQUEST", { allow: "POST" });
+  const originFailure = requireMutationOrigin(request, url);
+  if (originFailure !== null) return originFailure;
+  const gate = await operatorGate(request, env, "calendar-feed-token");
+  if ("response" in gate) return gate.response;
+  const parsed = await bodyOrError(request);
+  if ("response" in parsed) return parsed.response;
+  if (!isObject(parsed.value) || !hasExactKeys(parsed.value, ["expectedVersion"])) return errorResponse(400, "BAD_REQUEST");
+  const token = newCredential();
+  const result = await installationStub(env).setCalendarFeedDigest({
+    expectedVersion: parsed.value.expectedVersion, feedTokenDigest: await sha256Hex(token),
+  }, rosterActor(gate.actor), env.locationId);
+  if (!result.ok) return locationControlFailure(result.code);
+  await withDeadline(calendarAdapterStub(env).descriptor(), CALENDAR_AUTHORITY_RPC_DEADLINE_MS).catch(() => undefined);
+  return json({ version: result.context.version, token });
 };
 
 const parseReconcileCursor = (
@@ -2529,7 +2750,7 @@ const handleCalendarReconcile = async (
   if (originFailure !== null) return originFailure;
   const gate = await ownerGate(request, env, "calendar-reconcile");
   if (gate !== null) return gate;
-  const configured = calendarModes(env);
+  const configured = calendarModes(env, await readCalendarSettings(env));
   if (!configured.feed && !configured.google) {
     return errorResponse(409, "CALENDAR_NOT_CONFIGURED");
   }
@@ -2602,8 +2823,13 @@ const handlePrivacyPage = async (
 ): Promise<Response> => {
   const context = await installationContext(env, url, false);
   const discloseLine = linePublicConfig(context) !== null;
-  const modes = calendarModes(env);
-  let discloseCalendar = modes.feed || modes.google;
+  let discloseCalendar = true;
+  try {
+    const modes = calendarModes(env, await readCalendarSettings(env));
+    discloseCalendar = modes.feed || modes.google;
+  } catch {
+    // Configuration uncertainty must not hide a possible retained-data disclosure.
+  }
   if (!discloseCalendar) {
     if (await limited(env.PUBLIC_RATE_LIMITER, request, "privacy-disclosure")) {
       // Do not let abuse controls hide a residual cleanup disclosure. The
@@ -2653,6 +2879,8 @@ type CaptureRoute = {
 };
 
 const EXACT_ROUTES: Record<string, ExactRoute> = {
+  "/api/locations": handleLocations,
+  "/api/admin/locations": handleOwnerLocations,
   "/api/adapters/calendar/feed.ics": handleCalendarFeed,
   "/api/config": handleConfig,
   "/api/availability": handleAvailability,
@@ -2669,9 +2897,12 @@ const EXACT_ROUTES: Record<string, ExactRoute> = {
   "/api/admin/line/status": handleLineStatus,
   "/api/admin/calendar/status": handleCalendarStatus,
   "/api/admin/calendar/reconcile": handleCalendarReconcile,
+  "/api/admin/calendar/settings": handleCalendarSettings,
+  "/api/admin/calendar/feed-token": handleCalendarFeedToken,
   "/api/admin/setup/live": handleLive,
   "/api/admin/installation-receipt": handleReceipt,
   "/api/admin/staff": handleStaffRoster,
+  "/api/admin/staff/locations": handleStaffLocations,
   "/api/admin/availability": handleOwnerAvailability,
   "/api/admin/schedule": handleSchedule,
   "/api/admin/reservations": handleOwnerCreate,
@@ -2681,6 +2912,7 @@ const EXACT_ROUTES: Record<string, ExactRoute> = {
 };
 
 const CAPTURE_ROUTES: CaptureRoute[] = [
+  { pattern: /^\/api\/admin\/staff\/([^/]+)\/locations$/, handle: handleStaffLocationUpdate },
   { pattern: /^\/api\/reservations\/([^/]+)\/status$/, handle: handlePublicStatus },
   { pattern: /^\/api\/reservations\/([^/]+)\/cancel$/, handle: handlePublicCancel },
   {
@@ -2711,8 +2943,39 @@ const CAPTURE_ROUTES: CaptureRoute[] = [
   },
 ];
 
-const handle = async (request: Request, env: AppEnv): Promise<Response> => {
+const globalLocationRoute = (path: string): boolean =>
+  path === "/api/locations" ||
+  path === "/api/admin/locations" ||
+  path === "/api/adapters/line/webhook" ||
+  path === "/api/admin/staff" ||
+  path.startsWith("/api/admin/staff/");
+
+const QUERY_ROUTES = new Set([
+  "/api/availability",
+  "/api/admin/availability",
+  "/api/admin/schedule",
+  "/api/adapters/calendar/feed.ics",
+]);
+
+const handle = async (request: Request, bindings: Env): Promise<Response> => {
   const url = new URL(request.url);
+  const selected = url.searchParams.getAll("location");
+  const locationId = selected.length === 0
+    ? DEFAULT_LOCATION_ID
+    : selected.length === 1
+      ? parseLocationId(selected[0])
+      : null;
+  if (locationId === null || (globalLocationRoute(url.pathname) && selected.length > 0)) {
+    return url.pathname === "/api/adapters/calendar/feed.ics"
+      ? calendarFeedNotFound()
+      : errorResponse(400, "BAD_REQUEST");
+  }
+  if (selected.length > 0) url.searchParams.delete("location");
+  if (url.pathname.startsWith("/api/") && !QUERY_ROUTES.has(url.pathname) && url.search !== "") {
+    return errorResponse(400, "BAD_REQUEST");
+  }
+  // Runtime bindings and test overrides can be inherited or non-enumerable.
+  const env = Object.assign(Object.create(bindings) as AppEnv, { locationId });
   const exact = EXACT_ROUTES[url.pathname];
   if (exact !== undefined) return exact(request, env, url);
   for (const route of CAPTURE_ROUTES) {
@@ -2729,8 +2992,14 @@ const handle = async (request: Request, env: AppEnv): Promise<Response> => {
 export default {
   async fetch(request, env): Promise<Response> {
     try {
-      return await handle(request, env as AppEnv);
-    } catch {
+      return await handle(request, env);
+    } catch (error) {
+      if (error instanceof Error && error.message === "LOCATION_NOT_FOUND") {
+        return errorResponse(404, "BAD_REQUEST");
+      }
+      if (error instanceof Error && error.message === "UNAUTHORIZED") {
+        return errorResponse(401, "UNAUTHORIZED", { "www-authenticate": "Bearer" });
+      }
       return errorResponse(503, "TEMPORARILY_UNAVAILABLE");
     }
   },

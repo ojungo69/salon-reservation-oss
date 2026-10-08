@@ -11,6 +11,7 @@ import {
   foldCalendarLine,
   googleEventBody,
   googleEventUrl,
+  googleCredentialsForLocation,
   getGoogleAccessToken,
   parseCalendarFeedToken,
   parseGoogleCredentials,
@@ -71,6 +72,16 @@ describe("calendar adapter pure contracts", () => {
     expect(parseGoogleCredentials("not-json")).toBeNull();
   });
 
+  it("S4 resolves only an independent explicit Google target with the existing credential set", () => {
+    expect(googleCredentialsForLocation(credentials, "named@example.invalid"))
+      .toEqual({ ...credentials, calendarId: "named@example.invalid" });
+    for (const target of [null, "primary", "PRIMARY", credentials.calendarId, "bad\ncalendar"]) {
+      expect(googleCredentialsForLocation(credentials, target)).toBeNull();
+    }
+    expect(googleCredentialsForLocation(null, "named@example.invalid")).toBeNull();
+    expect(googleCredentialsForLocation({ ...credentials, calendarId: "primary" }, "named@example.invalid")).toBeNull();
+  });
+
   it("derives stable non-reversible calendar identifiers", async () => {
     const reservationId = "00000000-0000-4000-8000-000000000001";
     const first = await calendarIdentifiers(reservationId);
@@ -79,6 +90,24 @@ describe("calendar adapter pure contracts", () => {
     expect(first.uid).toMatch(/^[a-f0-9]{64}@example\.invalid$/);
     expect(JSON.stringify(first)).not.toContain(reservationId);
     expect(await calendarIdentifiers("00000000-0000-4000-8000-000000000002")).not.toEqual(first);
+  });
+
+  it("S4 isolates identical reservation IDs while keeping default identifiers exact", async () => {
+    const reservationId = "00000000-0000-4000-8000-000000000001";
+    const legacy = await calendarIdentifiers(reservationId);
+    const east = await calendarIdentifiers(reservationId, "studio-east");
+    expect(east).not.toEqual(legacy);
+    expect(legacy).toEqual({
+      uid: "90b3f569dd6f5816e2c8af9936cc7a96186e3fef45e9f1737d18c0dbcb73d70d@example.invalid",
+      externalId: "srb5a37c136646d2cd801e59cb56e7fa515ce4a55fd2d889d9388a8455b60cc684",
+    });
+    expect(east).toEqual({
+      uid: "1bd29b4d044f1f8c18bafe883bca52fcff05c1356937ba4896308747d87f9d4d@example.invalid",
+      externalId: "sr899ebd1536bb0134f7282fea92c24e0cddbf7f546ed5ce0b1165cde5a4cf1a33",
+    });
+    expect(await calendarIdentifiers(reservationId, "studio-west")).not.toEqual(east);
+    expect(await calendarIdentifiers(reservationId, "default")).toEqual(legacy);
+    expect(await calendarIdentifiers(reservationId, "studio-east")).toEqual(east);
   });
 
   it("escapes and folds RFC 5545 text on UTF-8 boundaries", () => {
@@ -311,6 +340,27 @@ describe("calendar projection and feed authority", () => {
     managementDigest: "a".repeat(64),
   });
 
+  const namedFixture = async (locationId: string, token: string | null, googleEnabled: boolean) => {
+    const root = env.INSTALLATION_CONFIG.getByName("installation");
+    expect(await root.createLocation({
+      commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+    }, null)).toMatchObject({ ok: true });
+    let version = 0;
+    if (token !== null) {
+      const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))]
+        .map((value) => value.toString(16).padStart(2, "0")).join("");
+      const issued = await root.setCalendarFeedDigest({ expectedVersion: version, feedTokenDigest: digest }, null, locationId);
+      if (!issued.ok) throw new Error("named feed fixture failed");
+      version = issued.context.version;
+    }
+    const calendarId = `fixture-${locationId}@example.invalid`;
+    const configured = await root.setCalendarSettings({
+      expectedVersion: version, googleEnabled, calendarId: googleEnabled ? calendarId : null, feedEnabled: token !== null,
+    }, null, locationId);
+    if (!configured.ok) throw new Error("named calendar fixture failed");
+    return { root, authority: env.CALENDAR_ADAPTER.getByName(`location:${locationId}`), calendarId, version: configured.context.version };
+  };
+
   const fillGoogleMutationQueue = (
     { operation = "upsert", status = "failed" }: {
       operation?: "upsert" | "delete";
@@ -345,6 +395,93 @@ describe("calendar projection and feed authority", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     await reset();
+  });
+
+  it("S4 leaves a new named calendar off without inheriting default credentials or feed access", async () => {
+    const root = env.INSTALLATION_CONFIG.getByName("installation");
+    expect(await root.createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null)).toMatchObject({ ok: true });
+    const named = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    expect(await named.descriptor()).toBeNull();
+    expect(await named.feed({ token: feedToken })).toEqual({ ok: false });
+    expect(await runInDurableObject(named, (_instance, state) => ({
+      tables: state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'").toArray(),
+    }))).toEqual({ tables: [] });
+  });
+
+  it("S4 refuses an older enabled snapshot after a newer disable, including after restart", async () => {
+    const fixture = await namedFixture("studio-east", null, true);
+    let authority = fixture.authority;
+    expect(await authority.descriptor()).toMatchObject({ phase: "active", generation: 1 });
+    const oldContext = await fixture.root.getCalendarContext("studio-east");
+    expect(await fixture.root.setCalendarSettings({
+      expectedVersion: fixture.version, googleEnabled: false, calendarId: fixture.calendarId, feedEnabled: false,
+    }, null, "studio-east")).toMatchObject({ ok: true });
+    expect(await authority.descriptor()).toBeNull();
+    const replayOldReply = () => runInDurableObject(authority, async (instance, state) => {
+      const bindings = (instance as unknown as { env: Env }).env;
+      const original = Object.getOwnPropertyDescriptor(bindings, "INSTALLATION_CONFIG");
+      Object.defineProperty(bindings, "INSTALLATION_CONFIG", { configurable: true, value: {
+        getByName: () => ({ getCalendarContext: async () => oldContext }),
+      } });
+      try {
+        let error: string | null = null;
+        try { await instance.descriptor(); } catch (cause) { error = (cause as Error).message; }
+        return { error, meta: state.storage.sql.exec("SELECT state, generation FROM meta").one() };
+      } finally {
+        if (original === undefined) delete (bindings as Partial<Env>).INSTALLATION_CONFIG;
+        else Object.defineProperty(bindings, "INSTALLATION_CONFIG", original);
+      }
+    });
+    expect(await replayOldReply()).toEqual({
+      error: "stale calendar configuration", meta: { state: "deactivating", generation: 1 },
+    });
+    await expect(runInDurableObject(authority, (_instance, state) => state.abort("calendar version restart fixture")))
+      .rejects.toThrow("calendar version restart fixture");
+    authority = env.CALENDAR_ADAPTER.getByName("location:studio-east");
+    expect(await replayOldReply()).toEqual({
+      error: "stale calendar configuration", meta: { state: "deactivating", generation: 1 },
+    });
+  });
+
+  it("S4 rechecks the named configuration after token acquisition before starting a provider write", async () => {
+    const fixture = await namedFixture("studio-east", null, true);
+    const calendarAdapter = await fixture.authority.descriptor();
+    if (calendarAdapter === null) throw new Error("named fixture activation failed");
+    const date = suiteDate(1);
+    const namedDay = env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`);
+    expect(await namedDay.createPublic({ ...lineDay, date, calendarAdapter }, createInput(date)))
+      .toMatchObject({ ok: true });
+    await fixture.authority.pokeDay({ date });
+    const outcome = await runInDurableObject(fixture.authority, async (instance, state) => {
+      const root = (instance as unknown as { env: Env }).env.INSTALLATION_CONFIG.getByName("installation");
+      const urls: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        urls.push(url);
+        if (url === "https://oauth2.googleapis.com/token") {
+          const disabled = await root.setCalendarSettings({
+            expectedVersion: fixture.version, googleEnabled: false, calendarId: fixture.calendarId, feedEnabled: false,
+          }, null, "studio-east");
+          if (!disabled.ok) throw new Error("named disable fixture failed");
+          await instance.descriptor();
+          return mockGoogleAuthSuccess();
+        }
+        return new Response(null, { status: 204 });
+      });
+      await instance.alarm();
+      return {
+        urls,
+        meta: state.storage.sql.exec("SELECT state, generation FROM meta").one(),
+        pending: state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM google_mutations").one().count,
+      };
+    });
+    expect(outcome).toEqual({
+      urls: ["https://oauth2.googleapis.com/token"],
+      meta: { state: "deactivating", generation: 1 },
+      pending: 1,
+    });
   });
 
   it("deduplicates lifecycle events and converges on one stable feed UID", async () => {
