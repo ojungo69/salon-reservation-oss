@@ -1,6 +1,6 @@
 # ADR 0003: bounded multi-location authority
 
-- Status: Accepted design; implementation and acceptance evidence pending
+- Status: Accepted; implemented in the S4 candidate, with acceptance evidence in Spec008
 - Date: 2026-10-09
 - Selection: maintainer-delegated design under [ADR0001](ADR-0001-REUSE-FIRST-PORTING.md)
 - Related: [bounded create authority](ADR-0002-CREATE-STORAGE-AUTHORITY.md), [provenance](PORTING.md), [capability status](PARITY.md), feature 008-multi-location-boundary
@@ -42,10 +42,10 @@ The four-location limit bounds discovery, webhook and lifecycle work; it is not 
 
 Nominal empty polling with both optional adapters at four locations is approximately 193,000 DO requests/day before customer/operator/provider/configuration work. This already exceeds the currently documented Free-plan daily request allowance. Therefore S4 does not claim that all supported multi-location configurations fit the Free plan. Record local measured scenarios separately from source-derived arithmetic; no live quota, billing or performance verification is asserted. See [Cloudflare pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 
-The installed-runtime experiment confirms canonical names reach actual DO alarm handlers. [Cloudflare's ID contract](https://developers.cloudflare.com/durable-objects/api/id/) also documents missing-name cases; fallback is allowed only when the object ID equals the known legacy default ID. Unknown names/locations fail closed. This experiment is a routing prerequisite, not proof that the feature is implemented.
+The installed-runtime experiment confirms canonical names reach actual DO alarm handlers. [Cloudflare's ID contract](https://developers.cloudflare.com/durable-objects/api/id/) also documents missing-name cases; fallback is allowed only when the object ID equals the known legacy default ID. Unknown names/locations fail closed. The prerequisite experiment is complemented by the implementation/runtime/browser checks in [Spec008 verification](../specs/008-multi-location-boundary/verification.md).
 
 ## Acceptance and backout
 
-Implementation must pass exact legacy compatibility, cross-location races/rollback/proof isolation, the full staff route matrix, stale browser response protection, local provider consent/delivery/feed/target isolation, lifecycle/retention/restart tests and all standing quality/security/browser/current-head review gates. Generated design references precede UI code; actual browser evidence remains required. Capability stays Planned until that evidence exists.
+Implementation must pass exact legacy compatibility, cross-location races/rollback/proof isolation, the full staff route matrix, stale browser response protection, local provider consent/delivery/feed/target isolation, lifecycle/retention/restart tests and all standing quality/security/browser/current-head review gates. Generated design references precede UI code; actual browser evidence remains required. The completed candidate evidence is recorded in [Spec008 verification](../specs/008-multi-location-boundary/verification.md); publication still requires current-head remote gates.
 
 Use a forward backout retaining named-location readers/routes, namespaces and alarms until retained data can be served and expire safely. A pre-S4 code rollback is not a data rollback. No existing-system import, migration, export, restore, cutover, production or provider-account operation is included. Actual data migration requires separate user confirmation and remains unstarted; this design is not a migration tool or readiness claim.

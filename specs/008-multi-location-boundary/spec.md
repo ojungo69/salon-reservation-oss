@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feat/multi-location-s4`
 **Created**: 2026-10-09
-**Status**: Accepted design; implementation pending
+**Status**: Implemented candidate; verification and publication evidence in verification.md
 **Input**: Deliver roadmap S4 for up to four locations, preserving the existing location and booking contracts. Existing-system data migration is excluded and requires separate user confirmation.
 
 ## User Scenarios & Testing
@@ -75,7 +75,7 @@ Explicit unknown/duplicate/empty location selection; only a named salon acceptin
 - **FR-007**: Owner-role accounts and the deployment credential retain all-location authority. Legacy staff remain default-only; explicit empty grants mean no access. Staff cannot read or mutate another location by changing a request.
 - **FR-008**: Scope changes and scoped staff creation MUST be atomic, reject stale edits and recheck current owner authority. Revocation applies to subsequent requests; already-authorized reservation operations retain the existing completion boundary.
 - **FR-009**: Customer and operator location switches MUST invalidate old dependent state and late responses. Unresolved mutations retain their original scope and cannot be resubmitted elsewhere.
-- **FR-010**: Optional LINE integrations MUST support one shared provider realm with independent per-location consent/delivery/lifecycle. Verified shared events reach only configured active locations and retries do not duplicate effects.
+- **FR-010**: Optional LINE integrations MUST support one shared provider realm with independent per-location consent/delivery/lifecycle. Verified shared events reach only configured active or still-draining locations and retries do not duplicate effects.
 - **FR-011**: Optional calendar integrations MUST isolate feeds, destinations, reconciliation and deletion/retention. Named destinations use the existing credential set and become immutable once bound; multiple provider accounts and destination migration are excluded.
 - **FR-012**: New feed capabilities are independently random, disclosed once to an owner and never returned by a read. Existing capabilities and previously queued notification bytes remain compatible.
 - **FR-013**: Provider/configuration failures MUST NOT alter reservation capacity or imply integration disable. Recovery, retry, retention and earliest scheduled work MUST remain correct after restart.
