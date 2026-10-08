@@ -25,9 +25,9 @@ Independent test: one comparison ADR and consistent public provenance identify t
 
 ## Phase 5: final gates
 
-- [ ] T008 Run `npm run check`, `npm run test:browser`, install-script allowlist verification, and public-diff checks; record exact outcomes in `specs/007-create-recovery-evidence/verify-tasks-report.md`.
-- [ ] T009 Independently review the exact task diff using `code-review` and `ponytail-review`, then fix valid findings and rerun affected checks.
-- [ ] T010 Verify every marked task once against files and actual results in `specs/007-create-recovery-evidence/verify-tasks-report.md`.
+- [X] T008 Run `npm run check`, `npm run test:browser`, install-script allowlist verification, and public-diff checks; record exact outcomes in `specs/007-create-recovery-evidence/verify-tasks-report.md`.
+- [X] T009 Independently review the exact task diff using `code-review` and `ponytail-review`, then fix valid findings and rerun affected checks; record the review evidence in `specs/007-create-recovery-evidence/verify-tasks-report.md`.
+- [X] T010 Verify every marked task once against files and actual results in `specs/007-create-recovery-evidence/verify-tasks-report.md`.
 
 ## Dependencies and strategy
 
