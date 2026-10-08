@@ -81,11 +81,13 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Fixed
 
+- The booking anti-automation check keeps a valid accessible group label while configuration loads.
 - Operator and setup authentication controls now remain disabled until initialization has
   installed their handlers, preventing lost sign-in attempts during slow configuration loading.
   Both pages explain the JavaScript requirement when scripting is unavailable.
 - Failing rendered-page runs retain hidden Playwright trace and screenshot files.
-- Public release candidates must include the maintainer instructions and PR declaration template.
+- Public release candidates must include the maintainer instructions, PR declaration template,
+  and storage-authority decision (ADR0002).
 - Release auditing inspects original Git objects and merge diffs, rejects blob/tree refs and tag
   targets outside commit history, and requires its metadata regression suite in public candidates.
 - Development dependencies use patched Sharp, Undici, and source-map-js versions while retaining
