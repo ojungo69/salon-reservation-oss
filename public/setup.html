@@ -70,6 +70,35 @@
         <output id="setup-auth-status" class="status" aria-live="polite" data-setup-auth-status></output>
       </section>
 
+      <section class="panel setup-locations-panel" aria-labelledby="locations-title" data-setup-locations-panel hidden>
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">場所の設定</p>
+            <h2 id="locations-title">編集する場所を選ぶ</h2>
+          </div>
+          <span class="count-chip" data-setup-location-count>1 / 4</span>
+        </div>
+        <div class="setup-location-list" data-setup-location-list aria-live="polite"></div>
+        <form data-location-create-form>
+          <fieldset data-location-create-fields disabled>
+            <legend>場所を追加する</legend>
+            <div class="field-grid">
+              <div class="field-row">
+                <label for="new-location-id">固定の識別子</label>
+                <input id="new-location-id" data-new-location-id maxlength="32" pattern="[a-z][a-z0-9-]{0,31}" required>
+                <p class="helper">小文字の英数字とハイフン。追加後は変更できません。</p>
+              </div>
+              <div class="field-row">
+                <label for="new-location-name">表示名</label>
+                <input id="new-location-name" data-new-location-name maxlength="160" required>
+              </div>
+            </div>
+          </fieldset>
+          <button class="secondary-button" type="submit" data-location-create-submit>場所を追加する</button>
+        </form>
+        <output class="status" aria-live="polite" data-location-status></output>
+      </section>
+
       <ol class="setup-progress" aria-label="公開準備の手順" data-setup-progress>
         <li data-setup-progress-step="identity"><span>1</span><strong>運営情報</strong></li>
         <li data-setup-progress-step="schedule"><span>2</span><strong>サービスと時間</strong></li>
@@ -277,6 +306,44 @@
         <output id="receipt-status" class="status" aria-live="polite" data-receipt-status></output>
       </section>
 
+      <section class="panel named-calendar-panel" aria-labelledby="calendar-title" data-calendar-panel hidden>
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">選択中の場所だけ</p>
+            <h2 id="calendar-title">カレンダー連携</h2>
+          </div>
+          <span class="count-chip" data-calendar-version>未確認</span>
+        </div>
+        <p class="helper">
+          Google の送信先には実際のカレンダー ID を指定します。<code>primary</code> は使えず、設定後は変更できません。
+          <a href="https://github.com/ojungo69/salon-reservation-oss/blob/main/docs/CALENDAR-SETUP.md" target="_blank" rel="noopener noreferrer">設定手順</a>
+        </p>
+        <form data-calendar-settings-form>
+          <fieldset data-calendar-settings-fields disabled>
+            <div class="field-row">
+              <label for="calendar-target-id">送信先カレンダー ID</label>
+              <input id="calendar-target-id" data-calendar-target-id maxlength="320" autocomplete="off">
+            </div>
+            <label class="consent-row" for="calendar-google-enabled">
+              <input id="calendar-google-enabled" data-calendar-google-enabled type="checkbox">
+              <span>Google 同期を有効にする</span>
+            </label>
+            <label class="consent-row" for="calendar-feed-enabled">
+              <input id="calendar-feed-enabled" data-calendar-feed-enabled type="checkbox">
+              <span>この場所の予約予定の購読フィードを有効にする（空き枠には影響しません）</span>
+            </label>
+            <button class="secondary-button" type="submit" data-calendar-save>設定を保存する</button>
+          </fieldset>
+        </form>
+        <div class="result-box" data-calendar-token-box hidden>
+          <p class="result-label">購読トークンは発行時だけ表示します</p>
+          <code class="key-value" data-calendar-token></code>
+          <button class="secondary-button" type="button" data-calendar-token-copy>トークンをコピー</button>
+        </div>
+        <button class="secondary-button" type="button" data-calendar-issue disabled>購読トークンを発行・再発行する</button>
+        <output class="status" aria-live="polite" data-calendar-status></output>
+      </section>
+
       <section class="panel staff-panel" aria-labelledby="staff-title" data-staff-panel>
         <div class="panel-heading">
           <div>
@@ -307,6 +374,11 @@
                 </select>
               </div>
             </div>
+            <fieldset class="selection-field" data-staff-create-scope hidden>
+              <legend>担当する場所</legend>
+              <div data-staff-create-scope-options></div>
+              <p class="helper">未選択なら、担当できる場所はありません。</p>
+            </fieldset>
           </fieldset>
           <button id="staff-submit" class="secondary-button" type="submit" data-staff-submit disabled>スタッフを追加する</button>
         </form>

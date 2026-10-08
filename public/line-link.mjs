@@ -3,6 +3,8 @@
 // mode "capability" = 連携の開始と解除、mode "cleanup" = 既存連携の確認と解除のみ
 // (LINE への通信は一切行いません)。
 
+import { scopedPath, storageKey } from "./location.js";
+
 const INTENT_STORAGE_KEY = "salon-reservation:line-link-intent:v1";
 
 const rowFor = (card) => {
@@ -28,8 +30,9 @@ const rowFor = (card) => {
   return row;
 };
 
-export const enhanceBookingCards = ({ mode, list, records, api }) => {
+export const enhanceBookingCards = ({ locationId = "default", mode, list, records, api }) => {
   const recordById = new Map(records.map((record) => [record.reservationId, record]));
+  const intentKey = storageKey(INTENT_STORAGE_KEY, locationId);
 
   const setRow = (row, message, buttons) => {
     row.querySelector("[data-line-link-status]").textContent = message;
@@ -77,11 +80,11 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
         },
       );
       sessionStorage.setItem(
-        INTENT_STORAGE_KEY,
+        intentKey,
         JSON.stringify({ nonce: intent.nonce, expiresAt: intent.expiresAt }),
       );
       // 固定の同一オリジンページのみに遷移します。
-      window.location.assign("/line.html");
+      window.location.assign(scopedPath("/line.html", locationId));
     } catch (error) {
       setRowError(row, error);
     }
@@ -185,6 +188,7 @@ export const enhanceBookingCards = ({ mode, list, records, api }) => {
 
   const cards = list.querySelectorAll("[data-booking-card][data-reservation-id]");
   for (const card of cards) {
+    if (card.dataset.locationId !== locationId) continue;
     const record = recordById.get(card.dataset.reservationId);
     if (record !== undefined) void renderCard(record, card);
   }

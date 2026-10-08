@@ -70,6 +70,7 @@
             </div>
           </div>
 
+          <div data-location-anchor></div>
           <fieldset id="service-field" class="selection-field" aria-describedby="service-help">
             <legend>サービス</legend>
             <div class="service-filter" data-service-filter hidden>
@@ -159,6 +160,11 @@
           <section class="summary-card" data-summary-card aria-labelledby="summary-card-title">
             <h3 id="summary-card-title">ここまでの選択</h3>
             <dl class="summary-list">
+              <div data-summary-location-row hidden>
+                <dt>場所</dt>
+                <dd data-summary-location>未選択</dd>
+                <dd class="summary-edit"><button class="text-button" type="button" data-summary-edit="booking-location" aria-label="場所を選び直す">変更</button></dd>
+              </div>
               <div>
                 <dt>サービス</dt>
                 <dd data-summary-services>未選択</dd>
@@ -250,6 +256,7 @@
 
           <div class="confirmation-panel" data-confirmation-panel>
             <dl id="booking-review" class="summary-list" data-booking-review>
+              <div data-review-location-row hidden><dt>場所</dt><dd data-review-location>未選択</dd></div>
               <div><dt>サービス</dt><dd data-review-services>選択後に表示されます</dd></div>
               <div><dt>担当・設備</dt><dd data-review-resource>選択後に表示されます</dd></div>
               <div><dt>日時</dt><dd data-review-time>選択後に表示されます</dd></div>
@@ -292,6 +299,7 @@
         <h2 id="result-title">予約を受け付けました</h2>
         <p data-booking-result-status>運営者の確認後に状態が更新されます。</p>
         <dl class="result-details">
+          <div data-result-location-row hidden><dt>場所</dt><dd data-result-location>—</dd></div>
           <div><dt>予約番号</dt><dd><code id="result-reservation-id"></code></dd></div>
           <div><dt>管理キー</dt><dd><code id="result-management-key" class="key-value"></code></dd></div>
         </dl>
@@ -320,6 +328,7 @@
         <p>
           選んだ日に、受付中または確定済みの予約がすでに保存されています。二重の予約になっていないか確認のうえ、続けるか選んでください。
         </p>
+        <p data-duplicate-location-summary hidden></p>
         <div class="button-row">
           <button class="secondary-button" value="cancel" data-duplicate-review>内容を見直す</button>
           <button class="primary-button" value="confirm" data-duplicate-continue>このまま申請する</button>

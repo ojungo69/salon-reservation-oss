@@ -115,9 +115,10 @@ export const forwardCreateWithoutTurnstile = async (
   page: Page,
 ): Promise<{ requests: Array<Record<string, unknown>> }> => {
   const requests: Array<Record<string, unknown>> = [];
-  await page.route("**/api/reservations", async (route) => {
+  await page.route(/\/api\/reservations(?:\?.*)?$/, async (route) => {
     const request = route.request();
     if (request.method() !== "POST") return route.fallback();
+    const search = new URL(request.url()).search;
     const body = JSON.parse(request.postData() ?? "{}") as Record<string, unknown>;
     requests.push(body);
     const { turnstileToken, replayOnly, ...owner } = body;
@@ -126,7 +127,7 @@ export const forwardCreateWithoutTurnstile = async (
     // owner mutation is refused unless the request arrives on the hostname the
     // installation allows, and unless the origin matches it.
     const response = await route.fetch({
-      url: `${SERVER_ORIGIN}/api/admin/reservations`,
+      url: `${SERVER_ORIGIN}/api/admin/reservations${search}`,
       method: "POST",
       headers: {
         ...request.headers(),

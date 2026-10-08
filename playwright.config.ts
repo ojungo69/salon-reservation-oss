@@ -136,7 +136,14 @@ export default defineConfig({
   },
   projects: [
     { name: "install", testMatch: /install\.spec\.ts/ },
-    { name: "app", testIgnore: /install\.spec\.ts/, dependencies: ["install"] },
+    { name: "app", testIgnore: /(?:install|multi-location(?:-calendar)?)\.spec\.ts/, dependencies: ["install"] },
+    { name: "multi-location", testMatch: /multi-location\.spec\.ts/, dependencies: ["app"] },
+    {
+      name: "multi-location-calendar",
+      testMatch: /multi-location-calendar\.spec\.ts/,
+      dependencies: ["multi-location"],
+      use: { trace: "off", screenshot: "off" },
+    },
   ],
   webServer: {
     // The suite runs in a fixed order against one installation, so every run

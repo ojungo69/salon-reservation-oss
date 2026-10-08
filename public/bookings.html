@@ -57,6 +57,7 @@
             </div>
             <span class="badge" data-booking-status>確認中</span>
             <dl class="summary-list compact-summary" data-booking-summary>
+              <div data-booking-location-row hidden><dt>場所</dt><dd data-booking-location>—</dd></div>
               <div><dt>日時</dt><dd data-booking-time>—</dd></div>
               <div><dt>担当・設備</dt><dd data-booking-resource>—</dd></div>
               <div><dt>状態</dt><dd data-booking-status-description>—</dd></div>
@@ -68,6 +69,11 @@
             </div>
           </article>
         </template>
+        <nav class="button-row" aria-label="保存した予約のページ" data-booking-pages hidden>
+          <button class="secondary-button" type="button" data-booking-previous>前のページ</button>
+          <output class="helper" data-booking-page-count aria-live="polite"></output>
+          <button class="secondary-button" type="button" data-booking-next>次のページ</button>
+        </nav>
       </section>
 
       <section class="panel management-key-note" aria-labelledby="key-help-title">

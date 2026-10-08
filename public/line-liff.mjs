@@ -3,6 +3,8 @@
 // 置いた一時的な値だけを使います。このアプリは追加パス付き LIFF URL を
 // 発行しないため、liff.state は SDK 初期化前に拒否します。
 
+import { explicitLocation, scopedPath, storageKey } from "./location.js";
+
 const INTENT_STORAGE_KEY = "salon-reservation:line-link-intent:v1";
 
 const statusElement = document.querySelector("[data-line-status]");
@@ -13,10 +15,10 @@ const show = (message, done = false) => {
   if (done) backLink.hidden = false;
 };
 
-const readIntent = () => {
+const readIntent = (locationId) => {
   let raw = null;
   try {
-    raw = sessionStorage.getItem(INTENT_STORAGE_KEY);
+    raw = sessionStorage.getItem(storageKey(INTENT_STORAGE_KEY, locationId));
   } catch {
     return null;
   }
@@ -47,8 +49,8 @@ const applyLocationName = (config) => {
   }
 };
 
-const loadLineConfig = async () => {
-  const configResponse = await fetch("/api/config", {
+const loadLineConfig = async (locationId) => {
+  const configResponse = await fetch(scopedPath("/api/config", locationId), {
     cache: "no-store",
     credentials: "same-origin",
     headers: { accept: "application/json" },
@@ -58,7 +60,11 @@ const loadLineConfig = async () => {
 };
 
 const run = async () => {
-  const intent = readIntent();
+  const locationId = explicitLocation(window.location.search) ?? "default";
+  for (const link of document.querySelectorAll("a[href^='/']")) {
+    link.setAttribute("href", scopedPath(link.getAttribute("href"), locationId));
+  }
+  const intent = readIntent(locationId);
   if (intent === null) {
     show(
       "連携の有効期限が切れたか、手続きの情報が見つかりませんでした。予約管理ページからもう一度お進みください。",
@@ -74,7 +80,7 @@ const run = async () => {
     return;
   }
 
-  const config = await loadLineConfig();
+  const config = await loadLineConfig(locationId);
   if (config === null) {
     show("設定を確認できませんでした。しばらく待ってからお試しください。", true);
     return;
@@ -101,7 +107,7 @@ const run = async () => {
   if (!globalThis.liff.isLoggedIn()) {
     show("LINE のログイン画面へ移動します。");
     // 固定の同一オリジン URL のみ。クエリは引き継ぎません。
-    globalThis.liff.login({ redirectUri: `${window.location.origin}/line.html` });
+    globalThis.liff.login({ redirectUri: window.location.origin + scopedPath("/line.html", locationId) });
     return;
   }
 
@@ -112,7 +118,7 @@ const run = async () => {
   }
 
   show("連携を確認しています。");
-  const response = await fetch("/api/adapters/line/link", {
+  const response = await fetch(scopedPath("/api/adapters/line/link", locationId), {
     method: "POST",
     cache: "no-store",
     credentials: "same-origin",
@@ -127,7 +133,7 @@ const run = async () => {
   }
   const result = { ok: response.ok, status: response.status, body: parsed };
   try {
-    sessionStorage.removeItem(INTENT_STORAGE_KEY);
+    sessionStorage.removeItem(storageKey(INTENT_STORAGE_KEY, locationId));
   } catch {
     // 消せなくても期限切れで無効になります。
   }
