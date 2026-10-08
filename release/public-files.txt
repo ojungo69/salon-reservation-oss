@@ -46,6 +46,7 @@ public/journey.js
 public/line-liff.mjs
 public/line-link.mjs
 public/line.html
+public/location.js
 public/privacy.html
 public/setup.html
 public/styles.css
@@ -82,6 +83,8 @@ tests-browser/customer.spec.ts
 tests-browser/harness.ts
 tests-browser/install.spec.ts
 tests-browser/line.spec.ts
+tests-browser/multi-location-calendar.spec.ts
+tests-browser/multi-location.spec.ts
 tests-browser/owner.spec.ts
 tsconfig.json
 vitest.config.ts
