@@ -1085,17 +1085,21 @@ const startCustomer = async () => {
     setPendingMode();
   };
 
-  const activateLocation = async (nextId, { history = "replace" } = {}) => {
-    if (busy || pending) {
-      if (locationSelect) locationSelect.value = locationId;
-      if (history === false) {
-        setPageLocation(locationId, locations.length > 1, "replaceState", { journeyStep, locationId });
-      }
-      setStatus(status, "未確認の予約結果を先に再確認してください。", "error");
-      return;
-    }
-    const next = locations.find(({ id }) => id === nextId);
-    if (!next) throw new Error("場所を確認できません。リンクを確認してください。");
+  const restoreLocationJourney = async (nextId, epoch) => {
+    const today = jstToday();
+    dateInput.min = today;
+    dateInput.max = addDays(today, config.schedule.horizonDays - 1);
+    dateInput.value = today;
+    pending = readPendingMutation(storageKey(PENDING_CREATE_KEY, nextId));
+    const draft = pending ? null : readDraft(nextId);
+    const selected = pending?.request.serviceIds ?? draft?.serviceIds ?? [];
+    renderServices(selected);
+    if (pending) await resumePendingSubmission();
+    else if (draft) await restoreSavedDraft(draft, selected, today, epoch);
+    else setStep("selection", { history: "replace", focus: false });
+  };
+
+  const resetLocationBooking = (nextId, history) => {
     const epoch = ++locationEpoch;
     ++availabilitySequence;
     locationId = nextId;
@@ -1109,7 +1113,7 @@ const startCustomer = async () => {
     consentInput.checked = false;
     serviceList.replaceChildren();
     resetAvailability();
-    if (history) {
+    if (history !== "none") {
       setPageLocation(
         nextId,
         locations.length > 1,
@@ -1122,6 +1126,21 @@ const startCustomer = async () => {
     $("[data-summary-location-row]").hidden = locations.length === 1;
     $("[data-review-location-row]").hidden = locations.length === 1;
     $("[data-summary-edit='booking-location']").hidden = !locationSelect;
+    return epoch;
+  };
+
+  const activateLocation = async (nextId, { history = "replace" } = {}) => {
+    if (busy || pending) {
+      if (locationSelect) locationSelect.value = locationId;
+      if (history === "none") {
+        setPageLocation(locationId, locations.length > 1, "replaceState", { journeyStep, locationId });
+      }
+      setStatus(status, "未確認の予約結果を先に再確認してください。", "error");
+      return;
+    }
+    const next = locations.find(({ id }) => id === nextId);
+    if (!next) throw new Error("場所を確認できません。リンクを確認してください。");
+    const epoch = resetLocationBooking(nextId, history);
     setStatus(status, `${next.label}の受付内容を確認しています。`);
     try {
       const loaded = await api(scopedPath("/api/config", nextId));
@@ -1131,17 +1150,7 @@ const startCustomer = async () => {
       applyResourceMode();
       applyAvailabilityNotice();
       modeNotice.hidden = config.mode === "live";
-      const today = jstToday();
-      dateInput.min = today;
-      dateInput.max = addDays(today, config.schedule.horizonDays - 1);
-      dateInput.value = today;
-      pending = readPendingMutation(storageKey(PENDING_CREATE_KEY, nextId));
-      const draft = pending ? null : readDraft(nextId);
-      const selected = pending?.request.serviceIds ?? draft?.serviceIds ?? [];
-      renderServices(selected);
-      if (pending) await resumePendingSubmission();
-      else if (draft) await restoreSavedDraft(draft, selected, today, epoch);
-      else setStep("selection", { history: "replace", focus: false });
+      await restoreLocationJourney(nextId, epoch);
       if (epoch !== locationEpoch) return;
       setPendingMode();
       if (config.mode !== "live") {
@@ -1165,7 +1174,7 @@ const startCustomer = async () => {
     locations = await readLocationDirectory();
     const selected = choosePublicLocation(locations, explicit, Boolean(defaultPending));
     if (selected === null) throw new Error("場所を確認できません。リンクを確認してください。");
-    await activateLocation(selected, { history: explicit === null ? "replace" : false });
+    await activateLocation(selected, { history: explicit === null ? "replace" : "none" });
   } catch (error) {
     setStatus(status, error.message, "error");
     form.querySelectorAll("input, select, button").forEach((control) => {
@@ -1234,13 +1243,13 @@ const startCustomer = async () => {
       return;
     }
     if (nextId !== locationId) {
-      void activateLocation(nextId, { history: false }).then(() => {
+      void activateLocation(nextId, { history: "none" }).then(() => {
         if (nextId === locationId) {
-          setStep(event.state?.journeyStep ?? "selection", { history: false });
+          setStep(event.state?.journeyStep ?? "selection", { history: "none" });
         }
       }).catch((error) => setStatus(status, error.message, "error"));
     } else {
-      setStep(event.state?.journeyStep ?? "selection", { history: false });
+      setStep(event.state?.journeyStep ?? "selection", { history: "none" });
     }
   });
 
@@ -1278,7 +1287,7 @@ const startCustomer = async () => {
     updateActions();
     const lookupDate = dateInput.value;
     const lookupLocationId = locationId;
-    let acknowledgement = { needed: false, labels: [] };
+    let acknowledgement;
     try {
       acknowledgement = await lookupDuplicateAcknowledgement(lookupDate, api, readOwnedRecords, locations);
     } finally {
@@ -1610,8 +1619,56 @@ const startBookings = async () => {
     // Each remembered proof is verified separately, even if public config is unavailable.
   }
 
-  const renderProof = async (proof, epoch, replaceTarget = null) => {
+  const renderUnavailableProof = (proof, error, replaceTarget) => {
     const { record, locationId, label } = proof;
+    const card = createElement("article", "booking-card");
+    card.dataset.bookingCard = "";
+    card.dataset.reservationId = record.reservationId;
+    card.dataset.locationId = locationId;
+    card.append(
+      createElement("p", "section-label", locations.length === 1 ? "" : label),
+      createElement("h2", "", "予約情報を確認できませんでした"),
+      createElement("p", "status",
+        error.status === 429
+          ? "照会が集中しています。少し待ってから、この予約をもう一度確認してください。"
+          : "予約情報または管理キーを確認できませんでした。もう一度確認するか、この端末から削除してください。"),
+    );
+    const retry = createElement("button", "secondary-button", "もう一度確認");
+    retry.type = "button";
+    if (locations.length > 1) {
+      retry.setAttribute("aria-label", `${label}の予約 ${record.reservationId}をもう一度確認`);
+    }
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      void renderProof(proof, pageEpoch, card);
+    });
+    if (error.status === 429 && error.retryAfter) {
+      const seconds = Number(error.retryAfter);
+      const at = Number.isFinite(seconds) ? Date.now() + seconds * 1_000 : Date.parse(error.retryAfter);
+      const delay = at - Date.now();
+      if (Number.isFinite(delay) && delay > 0) {
+        retry.disabled = true;
+        setTimeout(() => { if (retry.isConnected) retry.disabled = false; }, delay);
+      }
+    }
+    const remove = createElement("button", "text-button", "この端末から削除");
+    remove.type = "button";
+    if (locations.length > 1) {
+      remove.setAttribute("aria-label", `${label}の予約 ${record.reservationId}をこの端末から削除`);
+    }
+    remove.addEventListener("click", () => {
+      if (!window.confirm("この端末から予約番号と管理キーを削除します。続けますか？")) return;
+      removeRecord(proof);
+    });
+    const actions = createElement("div", "button-row");
+    actions.append(retry, remove);
+    card.append(actions);
+    if (replaceTarget) replaceTarget.replaceWith(card);
+    else list.append(card);
+  };
+
+  const renderProof = async (proof, epoch, replaceTarget = null) => {
+    const { record, locationId } = proof;
     try {
       const booking = await api(
         scopedPath("/api/reservations/" + encodeURIComponent(record.reservationId) + "/status", locationId),
@@ -1624,50 +1681,7 @@ const startBookings = async () => {
       renderCard(proof, booking, replaceTarget);
     } catch (error) {
       if (epoch !== pageEpoch) return;
-      const card = createElement("article", "booking-card");
-      card.dataset.bookingCard = "";
-      card.dataset.reservationId = record.reservationId;
-      card.dataset.locationId = locationId;
-      card.append(
-        createElement("p", "section-label", locations.length === 1 ? "" : label),
-        createElement("h2", "", "予約情報を確認できませんでした"),
-        createElement("p", "status",
-          error.status === 429
-            ? "照会が集中しています。少し待ってから、この予約をもう一度確認してください。"
-            : "予約情報または管理キーを確認できませんでした。もう一度確認するか、この端末から削除してください。"),
-      );
-      const retry = createElement("button", "secondary-button", "もう一度確認");
-      retry.type = "button";
-      if (locations.length > 1) {
-        retry.setAttribute("aria-label", `${label}の予約 ${record.reservationId}をもう一度確認`);
-      }
-      retry.addEventListener("click", () => {
-        retry.disabled = true;
-        void renderProof(proof, pageEpoch, card);
-      });
-      if (error.status === 429 && error.retryAfter) {
-        const seconds = Number(error.retryAfter);
-        const at = Number.isFinite(seconds) ? Date.now() + seconds * 1_000 : Date.parse(error.retryAfter);
-        const delay = at - Date.now();
-        if (Number.isFinite(delay) && delay > 0) {
-          retry.disabled = true;
-          setTimeout(() => { if (retry.isConnected) retry.disabled = false; }, delay);
-        }
-      }
-      const remove = createElement("button", "text-button", "この端末から削除");
-      remove.type = "button";
-      if (locations.length > 1) {
-        remove.setAttribute("aria-label", `${label}の予約 ${record.reservationId}をこの端末から削除`);
-      }
-      remove.addEventListener("click", () => {
-        if (!window.confirm("この端末から予約番号と管理キーを削除します。続けますか？")) return;
-        removeRecord(proof);
-      });
-      const actions = createElement("div", "button-row");
-      actions.append(retry, remove);
-      card.append(actions);
-      if (replaceTarget) replaceTarget.replaceWith(card);
-      else list.append(card);
+      renderUnavailableProof(proof, error, replaceTarget);
     }
   };
 
@@ -1688,6 +1702,7 @@ const startBookings = async () => {
     empty.hidden = true;
     list.hidden = false;
     setStatus(pageStatus, "保存した予約を確認しています。");
+    // Keep proof order and stop issuing lookups as soon as the page changes.
     for (const proof of proofs.slice(currentPage * 16, (currentPage + 1) * 16)) {
       if (epoch !== pageEpoch) return;
       await renderProof(proof, epoch);
@@ -1761,6 +1776,7 @@ const startBookings = async () => {
   // A saved proof selects its own optional LINE capability, independent of the
   // booking page's current location. The module stays unloaded when none apply.
   const lineModes = new Map();
+  // Preserve proof order: the first enabled scope chooses the module URL.
   for (const id of new Set(proofs.map(({ locationId }) => locationId))) {
     try {
       const config = await api(scopedPath("/api/config", id));
@@ -2039,6 +2055,20 @@ const startAdmin = async () => {
     }
   };
 
+  const handleClosureRemovalError = async (error, key, snapshot) => {
+    if (!scopeCurrent(snapshot)) return;
+    if (handleOwnerError(error)) return;
+    if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
+    const hint = await mutationFailureHint(error, {
+      settled: () => !commands.has(key),
+      retryHint: " 同じ操作で結果を再確認できます。",
+      reload: loadSchedule,
+    });
+    if (hint === null || !scopeCurrent(snapshot)) return;
+    setStatus(closureStatus, `${error.message}${hint}`, "error");
+    focusWithoutScroll(closureStatus);
+  };
+
   const removeClosure = async (closure, boardDate, button) => {
     const snapshot = scopeSnapshot();
     if (!scopeCurrent(snapshot)) return;
@@ -2069,17 +2099,7 @@ const startAdmin = async () => {
       );
       focusWithoutScroll(closureStatus);
     } catch (error) {
-      if (!scopeCurrent(snapshot)) return;
-      if (handleOwnerError(error)) return;
-      if ([400, 404, 409, 413].includes(error.status)) commands.delete(key);
-      const hint = await mutationFailureHint(error, {
-        settled: () => !commands.has(key),
-        retryHint: " 同じ操作で結果を再確認できます。",
-        reload: loadSchedule,
-      });
-      if (hint === null || !scopeCurrent(snapshot)) return;
-      setStatus(closureStatus, `${error.message}${hint}`, "error");
-      focusWithoutScroll(closureStatus);
+      await handleClosureRemovalError(error, key, snapshot);
     } finally {
       if (scopeCurrent(snapshot)) button.disabled = false;
     }
@@ -2369,17 +2389,12 @@ const startAdmin = async () => {
     if (locationId) setPageLocation(locationId, publicLocationCount > 1, "replaceState", { locationId });
   };
 
-  const switchOperatorLocation = async (nextId, { history = "replace", force = false } = {}) => {
-    const target = permittedLocations.find(({ id }) => id === nextId);
-    if (!target) {
-      setStatus(authStatus, "この場所を表示できません。許可された場所を選んでください。", "error");
-      return;
-    }
+  const operatorLocationChangeBlocked = (history, force) => {
     if (ownerCreateInFlight || ownerCreatePending || closurePending || commands.size > 0) {
       if (locationSelect) locationSelect.value = locationId ?? "";
-      if (history === false) restoreOperatorUrl();
+      if (history === "none") restoreOperatorUrl();
       setStatus(authStatus, "未確認の操作結果を先に再確認してください。", "error");
-      return;
+      return true;
     }
     if (
       !force && locationId &&
@@ -2388,9 +2403,19 @@ const startAdmin = async () => {
       !window.confirm("入力中の代理予約・休業時間を破棄して、場所を切り替えますか？")
     ) {
       if (locationSelect) locationSelect.value = locationId;
-      if (history === false) restoreOperatorUrl();
+      if (history === "none") restoreOperatorUrl();
+      return true;
+    }
+    return false;
+  };
+
+  const switchOperatorLocation = async (nextId, { history = "replace", force = false } = {}) => {
+    const target = permittedLocations.find(({ id }) => id === nextId);
+    if (!target) {
+      setStatus(authStatus, "この場所を表示できません。許可された場所を選んでください。", "error");
       return;
     }
+    if (operatorLocationChangeBlocked(history, force)) return;
     clearScopeViews();
     locationId = nextId;
     config = null;
@@ -2398,7 +2423,7 @@ const startAdmin = async () => {
     const stored = readPendingMutation(storageKey(OWNER_PENDING_CREATE_KEY, nextId));
     ownerCreatePending = stored?.operation === "owner-create" ? stored : null;
     if (stored && !ownerCreatePending) clearOwnerCreatePending();
-    if (history) {
+    if (history !== "none") {
       setPageLocation(nextId, publicLocationCount > 1,
         history === "push" ? "pushState" : "replaceState", { locationId: nextId });
     }
@@ -2437,8 +2462,8 @@ const startAdmin = async () => {
       restoreOwnerCreatePending();
       setStatus(authStatus, "認証しました。表示中の場所を確認してください。", "success");
     } catch (error) {
-      if (!scopeCurrent(snapshot)) return;
-      if (!handleOwnerError(error)) setStatus(authStatus, error.message, "error");
+      if (!scopeCurrent(snapshot) || handleOwnerError(error)) return;
+      setStatus(authStatus, error.message, "error");
     }
   };
 
@@ -2565,7 +2590,7 @@ const startAdmin = async () => {
         );
         return;
       }
-      await switchOperatorLocation(selected, { history: explicit === null ? "replace" : false, force: true });
+      await switchOperatorLocation(selected, { history: explicit === null ? "replace" : "none", force: true });
     } catch (error) {
       if (ownerToken === token && locationEpoch === authEpoch) showLoggedOut(error.message);
     }
@@ -2595,7 +2620,7 @@ const startAdmin = async () => {
       updateOwnerCreateControls();
       setStatus(authStatus, "この場所を表示できません。許可された場所を選んでください。", "error");
     } else if (selected !== locationId) {
-      void switchOperatorLocation(selected, { history: false });
+      void switchOperatorLocation(selected, { history: "none" });
     }
   });
 
@@ -2765,27 +2790,32 @@ const startAdmin = async () => {
     focusWithoutScroll(closureStatus);
   };
 
+  const collectClosureCommand = () => {
+    if (!closureForm.reportValidity()) return null;
+    const label = closureLabel.value.trim();
+    const length = Array.from(label).length;
+    if (length < 1 || length > 80) {
+      setStatus(closureStatus, "休業理由は1〜80文字で入力してください。", "error");
+      return null;
+    }
+    return {
+      commandId: crypto.randomUUID(),
+      date: closureDate.value,
+      resourceId: closureResource.value === "__all__" ? null : closureResource.value,
+      startTime: closureStart.value,
+      endTime: closureEnd.value,
+      label,
+    };
+  };
+
   closureForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const snapshot = scopeSnapshot();
-    if (!scopeCurrent(snapshot) || (!closurePending && !closureForm.reportValidity())) return;
-    if (
-      !closurePending &&
-      (Array.from(closureLabel.value.trim()).length < 1 ||
-        Array.from(closureLabel.value.trim()).length > 80)
-    ) {
-      setStatus(closureStatus, "休業理由は1〜80文字で入力してください。", "error");
-      return;
-    }
+    if (!scopeCurrent(snapshot)) return;
     if (!closurePending) {
-      closurePending = {
-        commandId: crypto.randomUUID(),
-        date: closureDate.value,
-        resourceId: closureResource.value === "__all__" ? null : closureResource.value,
-        startTime: closureStart.value,
-        endTime: closureEnd.value,
-        label: closureLabel.value.trim(),
-      };
+      const command = collectClosureCommand();
+      if (!command) return;
+      closurePending = command;
     }
     closureFields.disabled = true;
     closureSubmit.disabled = false;
@@ -3377,6 +3407,71 @@ const startSetup = async () => {
     }
   };
 
+  const handleStaffScopeError = async (error, snapshot) => {
+    if (!scopeCurrent(snapshot)) return;
+    staffWritePending = false;
+    if (handleOwnerError(error)) return;
+    if (error.status === 409) await refreshRoster();
+    if (scopeCurrent(snapshot)) setStatus(staffStatus, error.status === 409
+      ? "担当場所が別の画面で更新されました。最新の内容を確認してください。"
+      : error.message, "error");
+  };
+
+  const renderStaffScopeForm = (member, summary) => {
+    if (member.role !== "staff" || locations.length <= 1) return null;
+    const scope = staffScopes.get(member.id) ?? {
+      scopeVersion: 0, locationIds: ["default"],
+    };
+    const granted = scope.locationIds ?? [];
+    const names = granted.map((id) => locations.find((item) => item.id === id)?.label ?? id);
+    summary.textContent += ` / 担当: ${names.join("、") || "なし"}`;
+    const scopeForm = createElement("form", "staff-scope-form");
+    const group = createElement("fieldset", "staff-scope-fields");
+    group.append(createElement("legend", "", "担当する場所"));
+    for (const item of locations) {
+      const label = createElement("label", "staff-scope-option");
+      const input = createElement("input");
+      input.type = "checkbox";
+      input.value = item.id;
+      input.checked = granted.includes(item.id);
+      label.append(input, createElement("span", "", item.label));
+      group.append(label);
+    }
+    const save = createElement("button", "secondary-button", "担当場所を保存する");
+    save.type = "submit";
+    scopeForm.append(group, save);
+    scopeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const snapshot = scopeSnapshot();
+      if (!scopeCurrent(snapshot) || staffBusy) return;
+      const locationIds = $$("input:checked", group).map(({ value }) => value);
+      staffBusy = true;
+      staffWritePending = true;
+      save.disabled = true;
+      setStatus(staffStatus, "担当場所の変更結果を確認しています。");
+      try {
+        const result = await ownerApi(
+          `/api/admin/staff/${encodeURIComponent(member.id)}/locations`,
+          { method: "PUT", body: JSON.stringify({ expectedScopeVersion: scope.scopeVersion, locationIds }) },
+        );
+        if (!scopeCurrent(snapshot)) return;
+        staffWritePending = false;
+        staffScopes.set(member.id, result);
+        await refreshRoster();
+        if (scopeCurrent(snapshot)) setStatus(staffStatus, "担当場所を更新しました。", "success");
+      } catch (error) {
+        await handleStaffScopeError(error, snapshot);
+      } finally {
+        if (scopeCurrent(snapshot)) {
+          staffBusy = false;
+          staffWritePending = false;
+          if (save.isConnected) save.disabled = false;
+        }
+      }
+    });
+    return scopeForm;
+  };
+
   const renderRoster = (
     members,
     emptyNote = "まだ誰も登録されていません。運営者トークンだけがこの設置を操作できます。",
@@ -3402,65 +3497,7 @@ const startSetup = async () => {
         "",
         member.role === "owner" ? "運営者 / 設定と外部連携も変更できる" : "スタッフ / 日々の予約対応",
       );
-      let scopeForm = null;
-      if (member.role === "staff" && locations.length > 1) {
-        const scope = staffScopes.get(member.id) ?? {
-          scopeVersion: 0, locationIds: ["default"],
-        };
-        const granted = scope.locationIds ?? [];
-        const names = granted.map((id) => locations.find((item) => item.id === id)?.label ?? id);
-        summary.textContent += ` / 担当: ${names.join("、") || "なし"}`;
-        scopeForm = createElement("form", "staff-scope-form");
-        const group = createElement("fieldset", "staff-scope-fields");
-        group.append(createElement("legend", "", "担当する場所"));
-        for (const item of locations) {
-          const label = createElement("label", "staff-scope-option");
-          const input = createElement("input");
-          input.type = "checkbox";
-          input.value = item.id;
-          input.checked = granted.includes(item.id);
-          label.append(input, createElement("span", "", item.label));
-          group.append(label);
-        }
-        const save = createElement("button", "secondary-button", "担当場所を保存する");
-        save.type = "submit";
-        scopeForm.append(group, save);
-        scopeForm.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const snapshot = scopeSnapshot();
-          if (!scopeCurrent(snapshot) || staffBusy) return;
-          const locationIds = $$("input:checked", group).map(({ value }) => value);
-          staffBusy = true;
-          staffWritePending = true;
-          save.disabled = true;
-          setStatus(staffStatus, "担当場所の変更結果を確認しています。");
-          try {
-            const result = await ownerApi(
-              `/api/admin/staff/${encodeURIComponent(member.id)}/locations`,
-              { method: "PUT", body: JSON.stringify({ expectedScopeVersion: scope.scopeVersion, locationIds }) },
-            );
-            if (!scopeCurrent(snapshot)) return;
-            staffWritePending = false;
-            staffScopes.set(member.id, result);
-            await refreshRoster();
-            if (scopeCurrent(snapshot)) setStatus(staffStatus, "担当場所を更新しました。", "success");
-          } catch (error) {
-            if (!scopeCurrent(snapshot)) return;
-            staffWritePending = false;
-            if (handleOwnerError(error)) return;
-            if (error.status === 409) await refreshRoster();
-            if (scopeCurrent(snapshot)) setStatus(staffStatus, error.status === 409
-              ? "担当場所が別の画面で更新されました。最新の内容を確認してください。"
-              : error.message, "error");
-          } finally {
-            if (scopeCurrent(snapshot)) {
-              staffBusy = false;
-              staffWritePending = false;
-              if (save.isConnected) save.disabled = false;
-            }
-          }
-        });
-      }
+      const scopeForm = renderStaffScopeForm(member, summary);
       const actions = createElement("div", "detail-actions");
       const action = (label, path, outcome, confirmation = "") => {
         const button = createElement("button", "text-button", label);
@@ -3578,8 +3615,32 @@ const startSetup = async () => {
       : "場所を追加する";
   };
 
+  const restoreSetupStep = (id) => {
+    try {
+      const savedStep = localStorage.getItem(storageKey(SETUP_STEP_KEY, id));
+      setSetupStep(["identity", "schedule", "protection", "review"].includes(savedStep) ? savedStep : "identity");
+    } catch {
+      setSetupStep("identity");
+    }
+  };
+
   const restoreSetupUrl = () => {
     if (locationId) setPageLocation(locationId, locations.length > 1, "replaceState", { locationId });
+  };
+
+  const setupLocationChangeBlocked = (history, force) => {
+    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffBusy) {
+      if (history === "none") restoreSetupUrl();
+      setStatus(locationStatus, "未確認の変更結果を先に再確認してください。", "error");
+      return true;
+    }
+    if (!force && settingsDirty &&
+      !window.confirm("保存していない設定を破棄して、場所を切り替えますか？")) {
+      renderLocations();
+      if (history === "none") restoreSetupUrl();
+      return true;
+    }
+    return false;
   };
 
   const switchSetupLocation = async (nextId, { history = "replace", force = false } = {}) => {
@@ -3588,17 +3649,7 @@ const startSetup = async () => {
       setStatus(locationStatus, "この場所を確認できません。選び直してください。", "error");
       return;
     }
-    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffBusy) {
-      if (history === false) restoreSetupUrl();
-      setStatus(locationStatus, "未確認の変更結果を先に再確認してください。", "error");
-      return;
-    }
-    if (!force && settingsDirty &&
-      !window.confirm("保存していない設定を破棄して、場所を切り替えますか？")) {
-      renderLocations();
-      if (history === false) restoreSetupUrl();
-      return;
-    }
+    if (setupLocationChangeBlocked(history, force)) return;
     ++locationEpoch;
     locationId = nextId;
     setupState = null;
@@ -3616,7 +3667,7 @@ const startSetup = async () => {
     calendarTokenBox.hidden = true;
     calendarPanel.hidden = true;
     setStatus(calendarStatus, "");
-    if (history) {
+    if (history !== "none") {
       setPageLocation(nextId, locations.length > 1,
         history === "push" ? "pushState" : "replaceState", { locationId: nextId });
     }
@@ -3629,12 +3680,7 @@ const startSetup = async () => {
       if (!scopeCurrent(snapshot)) return;
       await loadReceipt();
       if (!scopeCurrent(snapshot)) return;
-      try {
-        const savedStep = localStorage.getItem(storageKey(SETUP_STEP_KEY, nextId));
-        setSetupStep(["identity", "schedule", "protection", "review"].includes(savedStep) ? savedStep : "identity");
-      } catch {
-        setSetupStep("identity");
-      }
+      restoreSetupStep(nextId);
       if (nextId !== "default") await loadCalendarSettings();
       if (!scopeCurrent(snapshot)) return;
       setStatus(locationStatus, `${target.label}の設定を表示しました。`, "success");
@@ -3707,25 +3753,25 @@ const startSetup = async () => {
     setStatus(authStatus, `公開設定を読み込めませんでした。 ${error.message}`, "error");
   }
   showLoggedOut();
-  try {
-    const savedStep = localStorage.getItem(storageKey(SETUP_STEP_KEY, locationId));
-    setSetupStep(["identity", "schedule", "protection", "review"].includes(savedStep) ? savedStep : "identity");
-  } catch {
-    setSetupStep("identity");
-  }
+  restoreSetupStep(locationId);
+
+  const setupReauthenticationBlocked = () => {
+    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffWritePending) {
+      setStatus(authStatus, "未確認の変更結果を再確認してから認証し直してください。", "error");
+      return true;
+    }
+    if ((staffCredentialValue.textContent || calendarToken.textContent) &&
+      !window.confirm("一度だけ表示する認証情報があります。安全に控えてから認証し直しますか？")) return true;
+    if (settingsDirty && !window.confirm("保存していない設定を破棄して認証し直しますか？")) return true;
+    return false;
+  };
 
   authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!authForm.reportValidity()) return;
     const nextToken = tokenInput.value;
     tokenInput.value = "";
-    if (pendingUpdate || pendingLive || pendingLocationCreate || calendarBusy || staffWritePending) {
-      setStatus(authStatus, "未確認の変更結果を再確認してから認証し直してください。", "error");
-      return;
-    }
-    if ((staffCredentialValue.textContent || calendarToken.textContent) &&
-      !window.confirm("一度だけ表示する認証情報があります。安全に控えてから認証し直しますか？")) return;
-    if (settingsDirty && !window.confirm("保存していない設定を破棄して認証し直しますか？")) return;
+    if (setupReauthenticationBlocked()) return;
     // A new session starts with no credential on screen, whoever the last one
     // belonged to.
     setCredential("");
@@ -3751,7 +3797,7 @@ const startSetup = async () => {
         setStatus(authStatus, "この場所を確認できません。編集する場所を選んでください。", "error");
         return;
       }
-      await switchSetupLocation(selected, { history: explicit === null ? "replace" : false, force: true });
+      await switchSetupLocation(selected, { history: explicit === null ? "replace" : "none", force: true });
       if (!ownerToken || locationId !== selected || !setupState) return;
       await refreshRoster();
       if (!ownerToken || locationId !== selected) return;
@@ -3760,21 +3806,50 @@ const startSetup = async () => {
       if (ownerToken === token && locationEpoch === authEpoch) showLoggedOut(error.message);
     }
   });
+  const collectLocationCreateCommand = () => {
+    if (!locationForm.reportValidity()) return null;
+    const id = newLocationId.value.trim();
+    const name = newLocationName.value.trim();
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || id.endsWith("-") ||
+      [...name].length < 1 || [...name].length > 80) {
+      setStatus(locationStatus, "識別子と表示名を確認してください。", "error");
+      return null;
+    }
+    if (settingsDirty && !window.confirm("保存していない設定を破棄して、新しい場所を開きますか？")) return null;
+    return { commandId: crypto.randomUUID(), locationId: id, locationName: name };
+  };
+
+  const handleLocationCreateError = async (error, snapshot, created) => {
+    if (!scopeCurrent(snapshot)) return;
+    if ([400, 409, 413].includes(error.status)) pendingLocationCreate = null;
+    if (error.status === 409) {
+      try {
+        const directory = await ownerApi("/api/admin/locations");
+        if (!scopeCurrent(snapshot)) return;
+        if (validLocationDirectory(directory.locations)) {
+          locations = directory.locations;
+          renderStaffCreateScope();
+        }
+      } catch {
+        // Keep the mutation error; a later reload can refresh the list.
+      }
+    }
+    if (handleOwnerError(error)) return;
+    const retryHint = pendingLocationCreate ? " 同じ内容で結果を再確認できます。" : "";
+    const message = created
+      ? "場所は追加されましたが、一覧を更新できませんでした。再読み込みしてください。"
+      : `${error.message}${retryHint}`;
+    setStatus(locationStatus, message, "error");
+  };
+
   locationForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const snapshot = scopeSnapshot();
     if (!scopeCurrent(snapshot)) return;
     if (!pendingLocationCreate) {
-      if (!locationForm.reportValidity()) return;
-      const id = newLocationId.value.trim();
-      const name = newLocationName.value.trim();
-      if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || id.endsWith("-") ||
-        [...name].length < 1 || [...name].length > 80) {
-        setStatus(locationStatus, "識別子と表示名を確認してください。", "error");
-        return;
-      }
-      if (settingsDirty && !window.confirm("保存していない設定を破棄して、新しい場所を開きますか？")) return;
-      pendingLocationCreate = { commandId: crypto.randomUUID(), locationId: id, locationName: name };
+      const command = collectLocationCreateCommand();
+      if (!command) return;
+      pendingLocationCreate = command;
     }
     renderLocations();
     setStatus(locationStatus, "場所の追加結果を確認しています。");
@@ -3801,29 +3876,25 @@ const startSetup = async () => {
         setStatus(locationStatus, "場所を追加しました。公開予約は設定完了まで無効です。", "success");
       }
     } catch (error) {
-      if (!scopeCurrent(snapshot)) return;
-      if ([400, 409, 413].includes(error.status)) pendingLocationCreate = null;
-      if (error.status === 409) {
-        try {
-          const directory = await ownerApi("/api/admin/locations");
-          if (!scopeCurrent(snapshot)) return;
-          if (validLocationDirectory(directory.locations)) {
-            locations = directory.locations;
-            renderStaffCreateScope();
-          }
-        } catch {
-          // Keep the mutation error; a later reload can refresh the list.
-        }
-      }
-      if (!handleOwnerError(error)) {
-        setStatus(locationStatus, created
-          ? "場所は追加されましたが、一覧を更新できませんでした。再読み込みしてください。"
-          : `${error.message}${pendingLocationCreate ? " 同じ内容で結果を再確認できます。" : ""}`, "error");
-      }
+      await handleLocationCreateError(error, snapshot, created);
     } finally {
       if (scopeCurrent(snapshot)) renderLocations();
     }
   });
+  const handleCalendarSaveError = async (error, snapshot) => {
+    if (!scopeCurrent(snapshot)) return;
+    if (handleOwnerError(error)) return;
+    if (error.status === 409 || error.status === undefined) {
+      calendarToken.textContent = "";
+      calendarTokenBox.hidden = true;
+      await loadCalendarSettings();
+    }
+    if (!scopeCurrent(snapshot)) return;
+    setStatus(calendarStatus, error.status === 409
+      ? "設定が更新されました。最新の内容を確認してください。"
+      : `${error.message} 結果が不明な場合は最新の状態を確認してから操作してください。`, "error");
+  };
+
   calendarForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const snapshot = scopeSnapshot();
@@ -3852,17 +3923,7 @@ const startSetup = async () => {
       renderCalendarSettings(result.settings);
       setStatus(calendarStatus, "カレンダー設定を保存しました。", "success");
     } catch (error) {
-      if (!scopeCurrent(snapshot)) return;
-      if (handleOwnerError(error)) return;
-      if (error.status === 409 || error.status === undefined) {
-        calendarToken.textContent = "";
-        calendarTokenBox.hidden = true;
-        await loadCalendarSettings();
-      }
-      if (!scopeCurrent(snapshot)) return;
-      setStatus(calendarStatus, error.status === 409
-        ? "設定が更新されました。最新の内容を確認してください。"
-        : `${error.message} 結果が不明な場合は最新の状態を確認してから操作してください。`, "error");
+      await handleCalendarSaveError(error, snapshot);
     } finally {
       if (scopeCurrent(snapshot)) {
         calendarBusy = false;
@@ -3944,7 +4005,7 @@ const startSetup = async () => {
       renderLocations(true);
       setStatus(locationStatus, "この場所を確認できません。編集する場所を選んでください。", "error");
     } else if (selected !== locationId) {
-      void switchSetupLocation(selected, { history: false });
+      void switchSetupLocation(selected, { history: "none" });
     }
   });
   logoutButton.addEventListener("click", () => {
@@ -4074,37 +4135,43 @@ const startSetup = async () => {
     setStatus(setupStatus, `${error.message}${pendingLive ? " 同じ操作で結果を再確認できます。" : ""}`, "error");
   };
 
+  const collectSetupSettings = () => {
+    if (!form.reportValidity()) {
+      setStatus(setupStatus, "入力内容を確認してください。", "error");
+      return null;
+    }
+    if (!weekdayInputs.some(({ checked }) => checked)) {
+      setStatus(setupStatus, "受付する曜日を1つ以上選んでください。", "error");
+      return null;
+    }
+    const settings = completeSettings();
+    const boundedTexts = [
+      [settings.locationName, 1, 80],
+      [settings.operatorDisplayName, 1, 120],
+      [settings.operatorContact, 3, 200],
+      [settings.privacyNotice, 1, 500],
+      [settings.termsNotice, 1, 500],
+      [settings.cancellationPolicy, 1, 500],
+      ...settings.services.flatMap(({ label, category }) => [[label, 1, 80], [category ?? "", 0, 60]]),
+      ...settings.resources.map(({ label }) => [label, 1, 80]),
+    ];
+    if (boundedTexts.some(([value, minimum, maximum]) => {
+      const length = Array.from(value).length;
+      return length < minimum || length > maximum;
+    })) {
+      setStatus(setupStatus, "文字数が許容範囲外の項目があります。入力内容を確認してください。", "error");
+      return null;
+    }
+    return settings;
+  };
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const snapshot = scopeSnapshot();
     if (!scopeCurrent(snapshot) || !setupState) return;
-    if (!pendingUpdate && !form.reportValidity()) {
-      setStatus(setupStatus, "入力内容を確認してください。", "error");
-      return;
-    }
-    if (!pendingUpdate && !weekdayInputs.some(({ checked }) => checked)) {
-      setStatus(setupStatus, "受付する曜日を1つ以上選んでください。", "error");
-      return;
-    }
     if (!pendingUpdate) {
-      const settings = completeSettings();
-      const boundedTexts = [
-        [settings.locationName, 1, 80],
-        [settings.operatorDisplayName, 1, 120],
-        [settings.operatorContact, 3, 200],
-        [settings.privacyNotice, 1, 500],
-        [settings.termsNotice, 1, 500],
-        [settings.cancellationPolicy, 1, 500],
-        ...settings.services.flatMap(({ label, category }) => [[label, 1, 80], [category ?? "", 0, 60]]),
-        ...settings.resources.map(({ label }) => [label, 1, 80]),
-      ];
-      if (boundedTexts.some(([value, minimum, maximum]) => {
-        const length = Array.from(value).length;
-        return length < minimum || length > maximum;
-      })) {
-        setStatus(setupStatus, "文字数が許容範囲外の項目があります。入力内容を確認してください。", "error");
-        return;
-      }
+      const settings = collectSetupSettings();
+      if (!settings) return;
       pendingUpdate = {
         commandId: crypto.randomUUID(),
         expectedSettingsVersion: setupState.settingsVersion,
