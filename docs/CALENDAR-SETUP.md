@@ -116,6 +116,13 @@ non-reversible stable event ID. Redirects and caller-supplied provider URLs are 
   remain authoritative and booking remains available. Restore valid credentials and reconcile to
   recover. Named enabled settings are not silently turned off or purged by a credential outage.
 
+For named targets, copy the actual calendar ID from Google settings. The `primary` keyword is an
+[alias for the current user's primary calendar](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert),
+so it cannot establish a distinct named target. The default mode remains compatible with that
+alias, but named Google synchronization requires an actual ID in the shared default configuration.
+A later shared-target conflict blocks named outbound work for retry; it does not disable the mode
+or purge its state. Named ICS does not require Google credentials.
+
 ## Status and bounded reconciliation
 
 Both routes require the existing owner bearer token. Add `?location=<id>` to select a named

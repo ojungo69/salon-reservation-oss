@@ -79,8 +79,11 @@ The original `default` calendar uses the existing environment-managed feed token
 credentials. A named location starts with neither mode enabled. Its setup calendar card can issue a
 feed token and enable the feed independently. For Google synchronization, first bind a distinct
 target calendar ID writable with the installation's existing credential set. It becomes immutable
-after its first binding, even while disabled; another location cannot bind that target. No extra Google
-account or OAuth flow is added. See [calendar setup](CALENDAR-SETUP.md) for the shared credentials.
+after its first binding, even while disabled; another location cannot bind that target. Use the
+actual calendar ID supplied by Google, never the `primary` alias. If the shared default configuration
+uses `primary`, named Google synchronization stays unavailable until the operator separately sets
+the actual default ID; accountless booking and named feeds remain usable. No extra Google account
+or OAuth flow is added. See [calendar setup](CALENDAR-SETUP.md) for the shared credentials.
 
 Named owner API routes are location-sensitive:
 
