@@ -50,8 +50,9 @@ limited request keeps the same uniform 404.
 For a named location, an owner first issues a feed token in the location's setup calendar card or
 with `POST /api/admin/calendar/feed-token?location=<id>` and the current version in its JSON body
 (for example, `{"expectedVersion":0}` on a new location). The response returns `{version,token}`
-once; storage keeps only its digest. Copy the URL directly to the intended calendar client, then
-enable the feed for that location in settings. A lost response requires an explicit rotation after
+once; storage keeps only its digest. Setup displays and copies the token, not a completed URL.
+Use that token and the selected location ID to construct the URL below, subscribe in the intended
+calendar client, then enable the feed for that location in settings. A lost response requires an explicit rotation after
 rereading status. The default token never authorizes a named feed. Named URLs have the form:
 
 ```text

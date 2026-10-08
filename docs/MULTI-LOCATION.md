@@ -94,8 +94,9 @@ Named owner API routes are location-sensitive:
 | `POST /api/admin/calendar/feed-token?location=annex` | `{expectedVersion}`; returns `{version,token}` **once** and stores only a digest. |
 | `POST /api/admin/calendar/reconcile?location=annex` | Existing bounded seven-day cursor body and result, scoped to this location. |
 
-Issue a named feed token before enabling its feed. Copy the one-time token or feed URL directly
-into the intended calendar client; do not put either in logs, tickets, browser storage or
+Issue a named feed token before enabling its feed. The setup card displays and copies only the
+one-time token. Construct the feed URL below from that token and location ID, then subscribe in
+the intended calendar client; do not put either in logs, tickets, browser storage or
 screenshots. A lost token response cannot be read back: get the current version from status and
 rotate explicitly. The named URL is
 `https://<installation-host>/api/adapters/calendar/feed.ics?location=annex&token=<token>`;
@@ -127,7 +128,7 @@ capacity.
   fanout, not account-wide traffic or a free-plan guarantee.
 - At the retained 60-second adapter sweep, a local empty-actor scenario observed 24,138 alarm and
   day RPC requests per adapter/day. LINE and calendar active at all four locations extrapolate
-  **193,104 Durable Object requests/day** before customer, operator or provider work. Cloudflare
+  **193,104 Durable Object requests/day** before customer, operator, provider or named-configuration work. Cloudflare
   currently lists **100,000/day** for the Free plan. The scenario is not live billing or a
   worst-case workload; check current
   [pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) and monitor the
