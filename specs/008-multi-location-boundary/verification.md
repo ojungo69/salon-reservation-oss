@@ -10,18 +10,19 @@ Status: integrated implementation and local acceptance. Publication requires the
 
 ## Combined acceptance
 
-The full combined gate ran at `04a8f97cbcad5e22987a8dc29bed503410c54100`; the current runtime source is identical. The browser writer at `b88b53ec1f0aa6d51b9642c6b15ae6e35f6cb726` has identical `src/`, `public/`, browser tests/configuration, Worker test configuration and bindings; the integration additionally contains release-metadata omission guards and documentation. Documentation-only follow-ups do not change these runtime results.
+The full combined gate ran at `04a8f97cbcad5e22987a8dc29bed503410c54100`; the current runtime source is identical. The initial browser writer at `b88b53ec1f0aa6d51b9642c6b15ae6e35f6cb726` matched the runtime/browser configuration and bindings. Later test-only commits `f219f0a8b67011253ec27d43aea38c411a65422b` and `2d8802fa96d28e72fc4bc809f3563f7267c1ff26` add the rendered recovery and native peer-purge evidence below; the integration additionally contains release-metadata omission guards and documentation. Documentation-only follow-ups do not change these runtime results.
 
 | Check | Command or evidence | Observed result |
 | --- | --- | --- |
 | Full combined gate | `npm run check` | 117 core + 326 Worker tests (six files, 241.38 seconds); strict types, generated types, dry-run build, dependency audit zero vulnerabilities and release audit 92 paths; exit 0 |
-| Real rendered flows, fresh isolated local backend | `npm run test:browser` | 56/56 passed: installation 8, app 37, multi-location 8, private-artifact 3; no skipped cases |
+| Real rendered flows, fresh isolated local backend | `npm run test:browser` | 58/58 passed at `f219f0a`: installation 8, app 37, multi-location 10, private-artifact 3; no skipped cases. The final `808341e` test-only credential-entry/retention follow-up passed all six affected cases after every final change in 16.0 seconds; assertions and collection remain intact. |
+| Native peer-purge follow-up | `npm run test:worker` at `2d8802f` | 326/326 passed across six files in 255.10 seconds; required typecheck and exact-delta review passed |
 | Static security and secret rules | Semgrep OSS 1.178.0, `p/security-audit` and `p/secrets`, `src public scripts`, metrics/auth off | 29 files, zero findings and zero errors; exit 0 |
 | Dependency installation policy | `npm ci --ignore-scripts`, `npm install-scripts ls --json` | Lockfile-matched worktree dependencies; zero vulnerabilities; `allowScripts: []` |
 | Required release boundaries | `test/release-metadata.test.ts` | Eight new omission cases observed literal `actual exit 0` versus `expected exit 1` before the fix; all now refuse the omitted paths |
-| Task verification | Independent manual audit after implementation | FINAL_TASK_AUDIT_PENDING |
+| Task verification | Independent manual audit after implementation | One independent audit at `797e281`: 32 Verified, 5 Weak, 0 Missing; four requested execution gaps and report recording. Original verdict is retained in [the report](verify-tasks-report.md); four execution gaps and report recording are closed in a separate coordinator appendix, without rerunning or rewriting the original audit. |
 
-The rendered suite uses real local application state and fixed provider fixtures. It covers creation/cap/conflicts, same-scope booking/proof return/cancel and uncertain outcomes, paused proof access, unknown scope refusal, staff grants/revocation and stale private responses, scoped LINE SDK intent/abandon and owner calendar token/version/error flows. Native verified-token/finalization/unlink tests complement browser LINE login; no live-provider end-to-end claim is made.
+The rendered suite uses real local application state and fixed provider fixtures. Customer browser commit/replay uses the existing native owner-forwarding fixture for both attempts, preserving its receipt fingerprint. Native public API tests independently prove paused existing-receipt replay and fresh-command refusal; these layers are composed rather than claiming browser execution against live Siteverify. It covers creation/cap/conflicts, same-scope booking/proof return/cancel and uncertain outcomes, paused proof access, unknown scope refusal, staff grants/revocation and stale private responses, scoped LINE SDK intent/abandon and owner calendar token/version/error flows. Native verified-token/finalization/unlink tests complement browser LINE login; no live-provider end-to-end claim is made.
 
 ## Behavioral and adversarial evidence
 
@@ -47,9 +48,9 @@ The provider-retry fixture uses actual registered day objects, SQLite queue/clai
 
 ## Rendered and artifact evidence
 
-Customer widths 320/360/768/1440, operator 320/1440 and setup/calendar 360/1440 were inspected; observed scroll width equals viewport width. Keyboard flows pass. Relevant customer/operator/setup axe checks reported zero violations; dark theme, reduced motion and forced colors were exercised. Private local captures contain only fictional labels and exclude issued capabilities.
+Customer widths 320/360/768/1440, operator 320/1440 and setup/calendar 360/1440 were inspected; observed scroll width equals viewport width. Keyboard flows pass. Relevant customer/operator/setup axe checks reported zero violations; dark theme, reduced motion and forced colors were exercised. Private local captures contain only fictional labels and exclude issued capabilities. Added customer commit/drop/scope recovery, paused-default precedence, forbidden/empty operator scope and same-page closure recovery cases close the audit gaps. Native LINE/Calendar peer-purge checks remove a real A event and sequence while retaining B storage, proof digests, alarms and projections.
 
-A synthetic inert-string trace probe demonstrated that masking a token later does not remove its earlier trace snapshot. Primitive boolean assertions retain the clear-state checks, and capability-bearing projects disable retained traces/screenshots. Discovery assigns all 56 tests exactly once; the issued-credential installation regression now runs in the private-artifact project. Other legacy artifact policies remain unchanged.
+A synthetic inert-string trace probe demonstrated that masking a token later does not remove its earlier trace snapshot. Primitive boolean assertions retain the clear-state checks, and capability-bearing projects disable retained traces/screenshots. Discovery assigns all 58 tests exactly once; the issued-credential installation regression now runs in the private-artifact project. Other legacy artifact policies remain unchanged. A later inert-marker probe also confirmed that fill action logs and password-field failure snapshots can expose values. The final staff test uses one local submit helper with pre-injection actionability checks, constant-source evaluation arguments, the actual submit click and unconditional input clearing in `finally`; the four primitive privacy observations pass without a real-credential failure experiment.
 
 ## Local tool isolation
 

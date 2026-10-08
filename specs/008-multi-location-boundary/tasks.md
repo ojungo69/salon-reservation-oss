@@ -68,7 +68,7 @@
 - [X] T034 I: register actual new source/tests and ADR in `release/public-files.txt`, required release metadata in `scripts/release-audit.mjs`/`test/release-metadata.test.ts`, test invocation in `package.json` if needed and generated types in `worker-configuration.d.ts`; do not add new namespace/binding/dependency.
 - [X] T035 I: run full `npm run check` and the real combined backend/browser suite; record commands/results in `specs/008-multi-location-boundary/verification.md`, compare screenshots to `design/`, include keyboard/dark/reduced-motion/forced-color evidence and no secrets.
 - [X] T036 I: obtain correctness and separate over-implementation reviews plus static security/adversarial scope/privacy/race review; resolve valid findings and rerun affected checks, recording evidence in `specs/008-multi-location-boundary/verification.md`.
-- [ ] T037 I: verify tasks once after implementation and record `specs/008-multi-location-boundary/verify-tasks-report.md`; use the generated verifier when installed, otherwise an independent manual audit with explicit file, wiring, semantic and execution evidence. Check off only evidenced tasks and preserve the separate migration-confirmation boundary.
+- [X] T037 I: verify tasks once after implementation and record `specs/008-multi-location-boundary/verify-tasks-report.md`; use the generated verifier when installed, otherwise an independent manual audit with explicit file, wiring, semantic and execution evidence. Check off only evidenced tasks and preserve the separate migration-confirmation boundary.
 
 ## Dependencies and parallel work
 
