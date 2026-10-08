@@ -6,19 +6,19 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 I: confirm the private evidence gate and accepted decision/selected images in `docs/PORTING.md`, `docs/ADR-0003-MULTI-LOCATION-BOUNDARY.md` and `specs/008-multi-location-boundary/design/selection.md`; do not start migration or runtime work before this gate.
+- [X] T001 I: confirm the private evidence gate and accepted decision/selected images in `docs/PORTING.md`, `docs/ADR-0003-MULTI-LOCATION-BOUNDARY.md` and `specs/008-multi-location-boundary/design/selection.md`; do not start migration or runtime work before this gate.
 
 ## Phase 2: Foundation
 
-- [ ] T002 C: add failing canonical-name/default-byte/nameless-actor cases in `test/location.test.ts`, then implement `src/location.ts` exactly as `contracts/location-rpc.md`: four locations, `[a-z][a-z0-9-]{0,31}` without trailing hyphen, exact legacy-ID fallback only.
+- [X] T002 C: add failing canonical-name/default-byte/nameless-actor cases in `test/location.test.ts`, then implement `src/location.ts` exactly as `contracts/location-rpc.md`: four locations, `[a-z][a-z0-9-]{0,31}` without trailing hyphen, exact legacy-ID fallback only.
 - [ ] T003 H: preserve exact pre-S4 default config/day/receipt/notification fixtures in `test/worker.test.ts`, `test/reservation-day.test.ts`, `test/adapter-delivery.test.ts` and `test/calendar-adapter.test.ts` before routing changes; no schema rewrite or response-field additions.
 
 ## Phase 3: US1 — Configure another salon (P1)
 
 **Independent test**: three additions beside default, independent settings/live, exact replay, fifth/duplicate/concurrent-last-slot refusal.
 
-- [ ] T004 [US1] C: add failing location creation/settings/CAS/read-without-initialization cases in `test/installation-config.test.ts` and `test/location-config.test.ts`.
-- [ ] T005 [US1] C: implement lazy `__location_states`, stable creation receipts and optional trailing location arguments in `src/installation-config.ts`; reuse InstallationState/reducer, 1–80-code-point labels, at most three named rows, new demo/off state.
+- [X] T004 [US1] C: retain the existing pure settings fixtures and add failing location creation/settings/CAS/read-without-initialization cases at the real RPC boundary in `test/location-config.test.ts`.
+- [X] T005 [US1] C: implement lazy `__location_states`, stable creation receipts and optional trailing location arguments in `src/installation-config.ts`; reuse InstallationState/reducer, 1–80-code-point labels, at most three named rows, new demo/off state.
 - [ ] T006 [US1] H: implement public/authenticated directory and owner creation plus scoped config/setup/live/receipt routes in `src/worker.ts`; `{id,label,bookable}` is hostname/readiness-aware and includes paused locations; exact `LOCATION_NOT_FOUND` RPC propagation maps to 404.
 - [ ] T007 [P] [US1] U: implement location creation/list/selection and independent existing setup form in `public/setup.html`, `public/app.js` and `public/styles.css` using `design/operator-reference.png`.
 - [ ] T008 [US1] U: verify rendered creation, maximum/duplicate/conflict, settings and readiness isolation in `tests-browser/install.spec.ts` against the integrated backend.
@@ -37,8 +37,8 @@
 
 **Independent test**: B-only credential discovers/operates B, cannot access A, loses B on next request/restart; old responses never repaint private data.
 
-- [ ] T014 [US3] C: add failing legacy default-only, explicit empty, 0–4 distinct-known-ID, stale version, current-owner recheck and atomic scoped-create cases in `test/staff-roster.test.ts` and root runtime cases in `test/location-config.test.ts`.
-- [ ] T015 [US3] C: implement lazy `__staff_location_scopes`, scope projection/CAS and atomic optional initial grants in `src/installation-config.ts`; owner stays global, old roster JSON/resolveActor return bodies stay exact, omitted resolveActor location means global authentication.
+- [X] T014 [US3] C: retain exact legacy `test/staff-roster.test.ts` fixtures and add failing legacy default-only, explicit empty, 0–4 distinct-known-ID, stale version, current-owner recheck and atomic scoped-create cases at the root RPC boundary in `test/location-config.test.ts`.
+- [X] T015 [US3] C: implement lazy `__staff_location_scopes`, scope projection/CAS and atomic optional initial grants in `src/installation-config.ts`; owner stays global, old roster JSON/resolveActor return bodies stay exact, omitted resolveActor location means global authentication.
 - [ ] T016 [US3] H: implement new scope projection/update routes and total route-to-role/location authorization in `src/worker.ts`; global directory works for B-only staff, wrong-role/location matches invalid credential 401.
 - [ ] T017 [P] [US3] U: add staff scope controls and authenticated scoped operator selector in `public/setup.html`, `public/admin.html`, `public/app.js`; preserve memory-only credentials and invalidate credential/location/request generations for all private responses.
 - [ ] T018 [US3] H: expand the complete endpoint matrix, slow-body/revocation, malformed/duplicate query, unknown-scope and PII non-disclosure tests in `test/worker.test.ts`; explicitly preserve S3 in-flight reservation semantics.
@@ -49,12 +49,12 @@
 **Independent test**: two local fixture actors, local consent, shared webhook retry, separate feed/target, one disabled while other operates, restart-safe earliest work.
 
 - [ ] T020 [US4] H: add failing actor/day/nonce/watermark/dedup/unlink/claim isolation and default-v1/named-v2 byte-stability cases in `test/adapter-delivery.test.ts` and `test/line-adapter.test.ts`.
-- [ ] T021 [US4] C: generalize root LINE lifecycle RPC/storage and shared-realm target projection in `src/installation-config.ts`; keep default lifecycle JSON, lazy named rows, one bounded earliest-due alarm driver; test simultaneous sagas, stalled actor and restart and concurrent different-realm enabling in `test/location-config.test.ts`.
+- [X] T021 [US4] C: generalize root LINE lifecycle RPC/storage and shared-realm target projection in `src/installation-config.ts`; keep default lifecycle JSON, lazy named rows, one bounded earliest-due alarm driver; test simultaneous sagas, stalled actor and restart and concurrent different-realm enabling in `test/location-config.test.ts`.
 - [ ] T022 [US4] H: scope complete LINE actors and all alarm/sequence/sweep accesses in `src/adapter-delivery.ts`; store a bounded public location label in named v2 payload and keep local synchronous consent/claim checks in `src/line-adapter.ts`.
 - [ ] T023 [US4] H: implement global signature-verified bounded webhook fanout and scoped LINE proof/lifecycle/assets/return routing in `src/worker.ts`; partial failure is retryable, default may be disabled, public location never chooses webhook targets.
 - [ ] T024 [P] [US4] U: preserve scope and default compatibility in `public/line-link.mjs`, `public/line-liff.mjs`, `public/line.html` and `public/app.js`, including scoped module gates, intent keys and fixed same-origin returns; retain unsupported liff.state refusal.
-- [ ] T025 [US4] C: add failing named-calendar version/digest-only/immutable-unique-target/enable-readiness cases in `test/installation-config.test.ts` and `test/location-config.test.ts`.
-- [ ] T026 [US4] C: implement root named calendar context/settings/digest RPCs in `src/installation-config.ts`: virtual version0/off, target null then immutable, feed requires digest, no plaintext secrets and no default env mutation.
+- [X] T025 [US4] C: retain existing pure settings fixtures and add failing named-calendar version/digest-only/immutable-unique-target/enable-readiness cases at the root RPC boundary in `test/location-config.test.ts`.
+- [X] T026 [US4] C: implement root named calendar context/settings/digest RPCs in `src/installation-config.ts`: virtual version0/off, target null then immutable, feed requires digest, no plaintext secrets and no default env mutation.
 - [ ] T027 [US4] H: scope calendar actor IDs/day access/feed/reconcile/provider IDs in `src/calendar-adapter.ts`, reuse existing OAuth credential set with named immutable target, fail/rearm on unavailable configuration or required shared credentials, and preserve 60-second timing; add reversed config-response/version-fence, wrong-target/token/retry/retention tests in `test/calendar-adapter.test.ts`.
 - [ ] T028 [US4] H: implement named owner calendar settings/token routes and redacted status in `src/worker.ts`; generate token once/store digest, no OAuth callback, verify role/origin/rate/versions in `test/worker.test.ts`.
 - [ ] T029 [P] [US4] U: implement the small named-only calendar settings/enable/token panel in `public/setup.html`, `public/app.js`, `public/styles.css` against `design/calendar-reference.png`; default remains env-managed, tokens stay memory-only.

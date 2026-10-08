@@ -26,6 +26,10 @@ Results were obtained at the corresponding writer or integration stage. They are
 
 The release-boundary red cases were literal `actual exit 0` versus `expected exit 1` after removing a required manifest path. The audit printed success with 84, 86 or 88 allowlisted files. The fixed audit refuses those omissions. No gate was weakened.
 
+Root authority completion added five LINE lifecycle/scheduling cases, bringing the dedicated root suite to 17. Its final compatibility run passed 17 root + 55 existing delivery + 26 LINE cases (98 total), strict typecheck and release audit. New root behavior is tested through actual RPC/SQLite; unchanged pure settings and roster fixtures were retained rather than duplicating native-storage tests.
+
+An independent fixed-ref source review of the completed location/grant/Calendar slices reported Standards 0 and Spec 0 findings. It excludes the later LINE saga and unintegrated consumers, so it does not complete the final review gate.
+
 ## Local tool isolation
 
 Writer worktrees use their own lockfile-matched dependencies, installed with `npm ci --ignore-scripts`. The canonical checkout's existing dependencies were left unchanged. Node 24.16.0 and npm 12.2.0 were used; the existing supported npm range is 12.x. Installation reported zero vulnerabilities and `npm install-scripts ls --json` returned `allowScripts: []`.
