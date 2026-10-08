@@ -161,9 +161,18 @@ test("reauthentication waits for an in-flight proxy booking to settle", async ({
   }
   await expect(page.locator("#owner-create-result")).toBeVisible();
   await expect(page.locator("#owner-create-status")).toContainText("代理予約を登録しました");
-  await expect(page.locator("#logout-button")).toBeEnabled();
-  await page.click("#logout-button");
-  expect(await page.evaluate(() => document.querySelector("#owner-management-key")?.textContent === "")).toBe(true);
+  const keyLifecycle = await page.evaluate(() => {
+    const key = document.querySelector("#owner-management-key");
+    const logout = document.querySelector("#logout-button") as HTMLButtonElement;
+    const visible = Boolean(key?.textContent);
+    const logoutEnabled = !logout.disabled;
+    if (logoutEnabled) logout.click();
+    const clearedByApp = !key?.textContent;
+    // Preserve the observed result, but keep a regression out of artifacts.
+    if (!clearedByApp && key) key.textContent = "";
+    return { visible, logoutEnabled, clearedByApp };
+  });
+  expect(keyLifecycle).toEqual({ visible: true, logoutEnabled: true, clearedByApp: true });
 });
 
 // One signed-in session checks every viewport: the sign-in burst of four
