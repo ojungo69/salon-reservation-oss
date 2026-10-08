@@ -1,6 +1,6 @@
 # Production-parity roadmap
 
-**Roadmap document version**: 1.1.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-08-26
+**Roadmap document version**: 1.1.1 · **Baseline release**: 0.2.0 · **Updated**: 2026-10-09
 
 This file records **order only**: the stages in which the remaining production-parity work lands.
 Capability *status* has a single authority — [the production-parity target matrix](PARITY.md) — and
@@ -53,12 +53,13 @@ this table — and the README derives its claim from the matrix for the same rea
 | **S2 — Calendar ladder (ICS feed + Google outbound sync)** | Complete | The two unconditional rungs of issue #1's decision: an authenticated outbound ICS subscription feed, then an optional outbound event-synchronization adapter whose **first delivered provider is Google** (the recorded decision names it; the contract stays provider-neutral), with reconciliation visibility. Neither rung affects booking availability. **Bidirectional inbound import is not part of this or any scheduled stage** — see [its target-matrix row](PARITY.md#production-parity-target-matrix) for status and boundary; scheduling it here is a recorded revision of this roadmap | Hard: S0. In-stage: the shared post-commit event delivery foundation, if it does not exist yet — whichever adapter stage starts first builds it (S1 in the recommended order). Recommended: after S1 (priority only) | Feed and Google outbound adapter fixture-tested including duplicate, outage, and reconciliation cases; verified zero availability effect; security review battery for the authenticated feed endpoint and provider-credential handling |
 | **S3 — Staff and role boundary** | Complete | Migration path from the single owner secret; authorization, revocation, offboarding, privacy design; the accountless customer path preserved | Hard: S0. Recommended: after S2 (priority only). In-stage: an authorization/migration/offboarding/privacy design precedes implementation | Design recorded, implementation landed with the security review battery |
 | **S4 — Multi-location boundary** | Not started | Location partitioning, transaction isolation, configuration, operator scoping. Cross-day moves are **not** implied by this stage and no stage schedules them — see [their target-matrix row](PARITY.md#production-parity-target-matrix) | Hard: S0. In-stage: a partition/transaction design precedes implementation | Design recorded, implementation landed with isolation/race evidence and the security review battery for the operator-scoping authorization surface |
-| **S5 — Import and migration** | Not started | Stable mapping from an existing production system, dry run, verification, idempotent resume, backup/rollback, auditability, privacy | Hard: S3 **and** S4 Complete — the schemas and storage paths migration writes into must be implemented and verified, not merely designed | Dry-run, backup/rollback, and privacy evidence; security review battery for external-input parsing and personal-data handling |
+| **S5 — Import and migration** | Not started | Stable mapping from an existing production system, dry run, verification, idempotent resume, backup/rollback, auditability, privacy | Hard: S3 **and** S4 Complete — the schemas and storage paths migration writes into must be implemented and verified, not merely designed. Existing-system data steps also require the specific confirmation in [AGENTS.md](../AGENTS.md#existing-system-data-migration) | Dry-run, backup/rollback, and privacy evidence; security review battery for external-input parsing and personal-data handling |
 
 ## Revision log
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-10-09 | 1.1.1 | Added the explicit confirmation prerequisite for existing-system data migration |
 | 2026-08-26 | 1.1.0 | Added the reuse-first evidence precondition from issue #60; architecture-expanding parity work now requires provenance, test mapping, rights/sanitization evidence, and any semantic ADR before starting, while scoped security fixes remain allowed |
 | 2026-08-16 | 1.0.0 | S3 status → Complete (feature `005-staff-role-boundary`) |
 | 2026-08-13 | 1.0.0 | S2 status → Complete (feature `004-calendar-ladder`) |
