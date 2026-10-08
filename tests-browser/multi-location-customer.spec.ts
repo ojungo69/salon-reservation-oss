@@ -39,7 +39,7 @@ test("a delayed default draft restore cannot overwrite the named booking form", 
   await page.reload();
   await started;
   await page.locator("[data-location-select]").selectOption("salon-b");
-  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page).toHaveURL((url) => /\?location=salon-b$/.test(url.href));
   await expect(page.locator("[data-location-name]").first()).toHaveText("サロン B");
   await expect(page.locator("#service-list input").first()).toBeAttached();
   const lateResponse = page.waitForResponse((response) =>
