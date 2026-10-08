@@ -59,6 +59,48 @@ test("an owner creates and publishes a second fictional location without changin
   expect(afterDuplicate).toBe(2);
 });
 
+test("a failed duplicate-location refresh cannot repaint a newer setup session", async ({ page }) => {
+  await signInSetup(page, "/setup?location=default");
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let directoryReads = 0;
+  await page.route("**/api/admin/locations", async (route) => {
+    if (route.request().method() === "GET" && ++directoryReads === 1) {
+      requested.resolve();
+      await release.promise;
+      await route.abort("failed");
+    } else {
+      await route.continue();
+    }
+  });
+  const duplicate = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/admin/locations" && response.request().method() === "POST");
+  await page.fill("#new-location-id", "salon-b");
+  await page.fill("#new-location-name", "重複の架空サロン");
+  await page.click("[data-location-create-submit]");
+  expect((await duplicate).status()).toBe(409);
+  await requested.promise;
+  try {
+    await page.fill("#setup-owner-token", OWNER_TOKEN);
+    await page.click("#setup-auth-submit");
+    await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+    const status = page.locator("[data-location-status]");
+    await expect(status).toHaveAttribute("data-tone", "success");
+    const newSessionStatus = await status.textContent();
+    const failed = page.waitForEvent("requestfailed", {
+      predicate: (request) => new URL(request.url()).pathname === "/api/admin/locations" && request.method() === "GET",
+    });
+    release.resolve();
+    await failed;
+    await page.evaluate(() => new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(status).toHaveText(newSessionStatus ?? "");
+    await expect(status).toHaveAttribute("data-tone", "success");
+  } finally {
+    release.resolve();
+  }
+});
+
 test("a fifth location is refused and a stale owner form refreshes to the four-location limit", { tag: "@capacity-final" }, async ({ page }) => {
   await signInSetup(page, "/setup?location=default");
   await expect(page.locator("[data-setup-location-count]")).toHaveText("2 / 4");

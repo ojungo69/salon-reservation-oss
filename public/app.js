@@ -3834,6 +3834,7 @@ const startSetup = async () => {
         // Keep the mutation error; a later reload can refresh the list.
       }
     }
+    if (!scopeCurrent(snapshot)) return;
     if (handleOwnerError(error)) return;
     const retryHint = pendingLocationCreate ? " 同じ内容で結果を再確認できます。" : "";
     const message = created
