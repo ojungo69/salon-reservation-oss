@@ -21,7 +21,7 @@
 - [X] T005 [US1] C: implement lazy `__location_states`, stable creation receipts and optional trailing location arguments in `src/installation-config.ts`; reuse InstallationState/reducer, 1–80-code-point labels, at most three named rows, new demo/off state.
 - [ ] T006 [US1] H: implement public/authenticated directory and owner creation plus scoped config/setup/live/receipt routes in `src/worker.ts`; `{id,label,bookable}` is hostname/readiness-aware and includes paused locations; exact `LOCATION_NOT_FOUND` RPC propagation maps to 404.
 - [ ] T007 [P] [US1] U: implement location creation/list/selection and independent existing setup form in `public/setup.html`, `public/app.js` and `public/styles.css` using `design/operator-reference.png`.
-- [ ] T008 [US1] U: verify rendered creation, maximum/duplicate/conflict, settings and readiness isolation in `tests-browser/install.spec.ts` against the integrated backend.
+- [ ] T008 [US1] U: verify rendered creation, maximum/duplicate/conflict, settings and readiness isolation in `tests-browser/multi-location.spec.ts` against the integrated backend, retaining the existing installation suite.
 
 ## Phase 4: US2 — Book and manage the correct salon (P1)
 
@@ -29,9 +29,9 @@
 
 - [ ] T009 [US2] H: add failing location/day races, unknown-address refusal, exact failure/retry/replay and purge-isolation cases in `test/worker.test.ts` and `test/reservation-day.test.ts`.
 - [ ] T010 [US2] H: thread canonical request-local location through existing strict routes/day calls in `src/worker.ts`, retaining old bodies/responses/rate buckets and binding named Siteverify idempotency to location; use shared names in `src/reservation-day.ts` handoff without new persisted day fields.
-- [ ] T011 [P] [US2] U: implement directory-first selection, named-only-live URL preservation, explicit-unknown refusal, legacy pending precedence and suffixed storage keys in `public/app.js`; keep old default v1 record shapes in `public/journey.js`.
+- [ ] T011 [P] [US2] U: implement directory-first selection, named-only-live URL preservation, explicit-unknown refusal, legacy pending precedence and suffixed storage keys in `public/app.js` and shared `public/location.js`; retain old default v1 record shapes from `public/journey.js`.
 - [ ] T012 [US2] U: label/location-bind review/result/proof cards and internal legal/navigation links in `public/index.html`, `public/bookings.html`, `public/privacy.html`, `public/terms.html`, `public/cancellation.html` and `public/app.js`; known-key aggregate is at most four keys and 16 status checks per page, never current-scope proof fallback.
-- [ ] T013 [US2] U: add real booking/return/cancel/uncertain-result/paused-proof/unknown-link/keyboard/width cases in `tests-browser/customer.spec.ts` and preserve default tests; update `tests-browser/harness.ts` forwarding to retain named query scope.
+- [ ] T013 [US2] U: add real booking/return/cancel/uncertain-result/paused-proof/unknown-link/keyboard/width cases in `tests-browser/multi-location.spec.ts` and the existing `tests-browser/customer.spec.ts` selection/keyboard suite; preserve default tests; update `tests-browser/harness.ts` forwarding to retain named query scope.
 
 ## Phase 5: US3 — Limit staff to assigned salons (P1)
 
@@ -42,7 +42,7 @@
 - [ ] T016 [US3] H: implement new scope projection/update routes and total route-to-role/location authorization in `src/worker.ts`; global directory works for B-only staff, wrong-role/location matches invalid credential 401.
 - [ ] T017 [P] [US3] U: add staff scope controls and authenticated scoped operator selector in `public/setup.html`, `public/admin.html`, `public/app.js`; preserve memory-only credentials and invalidate credential/location/request generations for all private responses.
 - [ ] T018 [US3] H: expand the complete endpoint matrix, slow-body/revocation, malformed/duplicate query, unknown-scope and PII non-disclosure tests in `test/worker.test.ts`; explicitly preserve S3 in-flight reservation semantics.
-- [ ] T019 [US3] U: prove B-only sign-in, grant removal, empty grants, wrong explicit scope, late old-location responses and proxy/closure pending recovery in `tests-browser/install.spec.ts` and `tests-browser/owner.spec.ts`.
+- [ ] T019 [US3] U: prove B-only sign-in, grant removal, empty grants, wrong explicit scope, late old-location responses and proxy/closure pending recovery in `tests-browser/multi-location.spec.ts`, retaining existing `tests-browser/install.spec.ts` and `tests-browser/owner.spec.ts` coverage.
 
 ## Phase 6: US4 — Enable optional integrations per salon (P2)
 
@@ -55,11 +55,11 @@
 - [ ] T024 [P] [US4] U: preserve scope and default compatibility in `public/line-link.mjs`, `public/line-liff.mjs`, `public/line.html` and `public/app.js`, including scoped module gates, intent keys and fixed same-origin returns; retain unsupported liff.state refusal.
 - [X] T025 [US4] C: retain existing pure settings fixtures and add failing named-calendar version/digest-only/immutable-unique-target/enable-readiness cases at the root RPC boundary in `test/location-config.test.ts`.
 - [X] T026 [US4] C: implement root named calendar context/settings/digest RPCs in `src/installation-config.ts`: virtual version0/off, target null then immutable, feed requires digest, no plaintext secrets and no default env mutation.
-- [ ] T027 [US4] H: scope calendar actor IDs/day access/feed/reconcile/provider IDs in `src/calendar-adapter.ts`, reuse existing OAuth credential set with named immutable target, fail/rearm on unavailable configuration or required shared credentials, and preserve 60-second timing; add reversed config-response/version-fence, wrong-target/token/retry/retention tests in `test/calendar-adapter.test.ts`.
+- [ ] T027 [US4] H: scope calendar actor IDs/day access/feed/reconcile/provider IDs in `src/calendar-adapter.ts`, reuse existing OAuth credential set with named immutable target, fail/rearm on unavailable configuration or required shared credentials, and preserve 60-second timing; add reversed config-response/version/activation-epoch fences, wrong-target/token/retry/retention tests in `test/calendar-adapter.test.ts`.
 - [ ] T028 [US4] H: implement named owner calendar settings/token routes and redacted status in `src/worker.ts`; generate token once/store digest, no OAuth callback, verify role/origin/rate/versions in `test/worker.test.ts`.
 - [ ] T029 [P] [US4] U: implement the small named-only calendar settings/enable/token panel in `public/setup.html`, `public/app.js`, `public/styles.css` against `design/calendar-reference.png`; default remains env-managed, tokens stay memory-only.
-- [ ] T030 [US4] U: prove scoped LINE login/link/unlink and owner calendar setup/token/version/error flows in `tests-browser/line.spec.ts` and `tests-browser/install.spec.ts` with provider fixtures and real backend state.
-- [ ] T031 [US4] H: verify actual alarm name/restart, earliest root saga wake-up, full supported drain backlog, lost handoff, configuration outage, retry/claim/disable/retention and cross-location purge boundaries in `test/adapter-delivery.test.ts`, `test/calendar-adapter.test.ts` and `test/reservation-day.test.ts`; do not change sweep cadence in S4.
+- [ ] T030 [US4] U/H: prove scoped LINE login/intent/abandon with real local state in `tests-browser/multi-location.spec.ts`, preserving `tests-browser/line.spec.ts`; compose this with native verified-token/finalization/unlink fixtures in `test/line-adapter.test.ts`. Prove owner calendar setup/token/version/error flows in `tests-browser/multi-location-calendar.spec.ts`; use provider fixtures and disclose the absence of live-provider verification.
+- [ ] T031 [US4] H: verify actual alarm name/restart, earliest root saga wake-up, full supported per-day outbox backlog with bounded more/pending continuation, lost handoff, configuration outage, retry/claim/disable/retention and cross-location purge boundaries in `test/adapter-delivery.test.ts`, `test/calendar-adapter.test.ts` and `test/reservation-day.test.ts`; do not change sweep cadence in S4.
 
 ## Phase 7: Integration and evidence
 
