@@ -419,6 +419,26 @@ test("named LIFF login keeps the fixed return location and rejects callback stat
 test("a staff member assigned only to the named location cannot see default, and revocation clears private data", async ({ page }) => {
   test.setTimeout(120_000);
   let credential = "";
+  const signInStaff = async (): Promise<void> => {
+    const input = page.locator("#owner-token");
+    await expect(input).toBeVisible();
+    await expect(input).toBeEnabled();
+    // Playwright fill() includes its value in action timeout logs.
+    try {
+      await page.evaluate((value) => {
+        const input = document.querySelector("#owner-token");
+        if (!(input instanceof HTMLInputElement)) throw new Error("Authentication input is missing");
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, credential);
+      await page.click("#auth-form button[type=submit]");
+    } finally {
+      await page.evaluate(() => {
+        const input = document.querySelector("#owner-token");
+        if (input instanceof HTMLInputElement) input.value = "";
+      });
+    }
+  };
   await page.route("**/api/admin/staff", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const response = await route.fetch({
@@ -452,8 +472,7 @@ test("a staff member assigned only to the named location cannot see default, and
 
   await page.goto("/admin");
   await expect(page.locator("#owner-token")).toBeEnabled();
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("認証しました");
   await expect(page).toHaveURL(/\?location=salon-b$/);
   await expect(page.locator("[data-operator-location-anchor]")).toContainText("サロン B");
@@ -523,8 +542,7 @@ test("a staff member assigned only to the named location cannot see default, and
   expect(seeded).toBe(true);
 
   await page.goto("/admin");
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("認証しました");
   await expect(page).toHaveURL(/\?location=salon-b$/);
   await expect(page.locator("#owner-create-status")).toContainText("B_PROXY_PRIVATE");
@@ -542,8 +560,7 @@ test("a staff member assigned only to the named location cannot see default, and
     return { visible, clearedByApp };
   });
   expect(keyLifecycle).toEqual({ visible: true, clearedByApp: true });
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("認証しました");
   expect(posted.length).toBe(2);
   expect(JSON.stringify(posted[0]) === JSON.stringify(posted[1])).toBe(true);
@@ -564,8 +581,7 @@ test("a staff member assigned only to the named location cannot see default, and
     }
   });
   await page.goto("/admin?location=default");
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("この場所を表示できません。許可された場所を選んでください");
   await expect(page).toHaveURL(/\?location=default$/);
   await expect(page.locator("#owner-customer-name")).toBeEmpty();
@@ -616,8 +632,7 @@ test("a staff member assigned only to the named location cannot see default, and
   });
   await expect(page).toHaveURL(/\?location=salon-b$/);
   await expect(page.locator("#auth-status")).toContainText("未確認の操作結果を先に再確認");
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("未確認の操作結果を再確認してから認証し直して");
   await expect(page.locator("#closure-submit")).toHaveText("未確認の登録結果を再確認する");
   expect(closurePosts.length).toBe(1);
@@ -657,8 +672,7 @@ test("a staff member assigned only to the named location cannot see default, and
   });
   const beforeEmptySignIn = privateRequests.length;
   await page.goto("/admin");
-  await page.fill("#owner-token", credential);
-  await page.click("#auth-form button[type=submit]");
+  await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("担当できる場所がありません。運営者に確認してください");
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.locator("[data-operator-location-anchor]")).toContainText("担当できる場所がありません");
@@ -670,6 +684,11 @@ test("a staff member assigned only to the named location cannot see default, and
   await expect(page.locator("[data-reservation-list]")).not.toContainText("架空 利用者 B");
   await expect(page.locator("[data-detail-customer]")).toHaveText("—");
   expect(privateRequests.length).toBe(beforeEmptySignIn);
+  const pendingRetained = await page.evaluate(() => ({
+    hasA: sessionStorage.getItem("salon-reservation:pending-owner-create:v1") !== null,
+    hasB: sessionStorage.getItem("salon-reservation:pending-owner-create:v1:location:salon-b") !== null,
+  }));
+  expect(pendingRetained).toEqual({ hasA: true, hasB: true });
 });
 
 test("a late default schedule cannot repaint the named operator board", async ({ page }) => {
