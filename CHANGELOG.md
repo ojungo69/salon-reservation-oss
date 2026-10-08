@@ -11,6 +11,12 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
 
 ### Added
 
+- Multi-location operation for up to four salons in one installation: named locations start in
+  demo with optional integrations off; owners configure each location, assign staff scopes, and
+  customers keep booking and management actions with the location they chose. Named calendar feeds
+  and Google targets are independent, while LINE uses one shared provider realm with per-booking
+  consent. The existing default location and its saved proof/API formats remain compatible. See
+  [the operator guide](docs/MULTI-LOCATION.md) for limits, setup and the current Free-plan caveat.
 - Quality-led, inspection-first production-porting governance: an ADR, a public-safe implementation-provenance and
   migration-readiness matrix backed by a private evidence ledger, and a pull-request declaration
   that prevents production-parity work from silently adding another independent implementation.

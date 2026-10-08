@@ -74,8 +74,8 @@ Cloudflare's documentation on
 and [Workers rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
 A compatible backout removes only the LINE routes and customer- or
-operator-facing surfaces. The adapter must show `disabled` in
-`/api/admin/line/status` before that build is deployed. Disabled means the
+operator-facing surfaces. Every location's adapter must show `disabled` in its
+scoped `/api/admin/line/status` before that build is deployed. Disabled means its
 reservation-linked personal and event rows have been purged; bounded ledger
 and webhook-dedup TTL records may still have alarms, so the retained class must
 continue servicing them until they drain.
@@ -87,9 +87,11 @@ the [Durable Object class lifecycle guide](https://developers.cloudflare.com/dur
 
 ## Backing out a release with the calendar adapter
 
-`CalendarAdapter` follows the same forward-backout boundary. First remove the two optional calendar
-secrets, confirm feed access and new provider calls stop, and wait for
-`/api/admin/calendar/status` to report `disabled`. Then publish a forward build that removes any
+`CalendarAdapter` follows the same forward-backout boundary. Disable named modes through each
+location's owner settings while shared credentials still permit cleanup, then remove the optional
+`default` calendar secrets. Confirm feed access and new provider calls stop, then wait for each scoped
+`/api/admin/calendar/status` to report `disabled`. Removing the shared Google credential alone is
+an outage for named modes, not their disable command. Publish a forward build that removes any
 calendar routes or UI-facing disclosure but retains the `CalendarAdapter` implementation, Worker
 export, binding, and live `exports` entry while any namespace data or alarm can remain.
 
@@ -98,6 +100,17 @@ destructive deleted-class tombstone. Day outbox columns are additive and nullabl
 rows; a forward backout leaves them in place. External calendar copies are not rolled back with
 Worker code: cached feed events and Google events on an old or inaccessible target require the
 operator cleanup described in [calendar setup](CALENDAR-SETUP.md).
+
+## Backing out a multi-location release
+
+The `default` object names and serialized records remain compatible, but named locations have
+their own settings, staff grants, day and adapter actor names. A pre-S4 Worker cannot read or
+service that retained work. Use a forward compatible release that keeps location readers, root
+side tables, actor naming, class exports/bindings and alarms while any named data can remain.
+Pause fresh acceptance per location if required; retained bookings, management proofs, adapter
+cleanup and retention still need their original scope. A Worker-code rollback does not migrate,
+restore or delete location data. See [location operations](MULTI-LOCATION.md#limits-recovery-and-cost)
+and [Cloudflare recovery](CLOUDFLARE.md#retention-export-recovery-rollback-and-deletion).
 
 ## Scope of `release:audit` and `release:audit:public`
 

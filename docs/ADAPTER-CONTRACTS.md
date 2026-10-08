@@ -2,7 +2,7 @@
 
 This document defines the obligations between the reservation core and every optional external
 adapter, for the four seams issue #1 names: identity, notifications, calendar synchronization, and
-audit/event delivery. It is the contract a future adapter implementation is reviewed against.
+audit/event delivery. It is the contract existing and future adapter implementations are reviewed against.
 Capability *status* lives in [the parity matrices](PARITY.md); delivery *order* lives in
 [the roadmap](ROADMAP.md); this file holds only obligations.
 
@@ -12,13 +12,15 @@ These hold for every adapter, in addition to each seam's table below.
 
 1. **Provider-neutral core.** The booking path works with zero external services. No adapter is
    required for any customer or operator task the implemented matrix records.
-2. **Disabled by default, invisible until configured.** An adapter activates only through explicit
-   configuration. While unconfigured it leaves no customer-facing or booking-path trace: no
-   customer UI element, no stored external identifier, no booking-path dependency, no outbound
-   request. The operator's setup and diagnostics surfaces may show the adapter as available and
+2. **Disabled by default, invisible until configured.** A new location's adapter activates only
+   through explicit configuration. While unconfigured it leaves no customer-facing trace or
+   booking-path dependency: no customer UI element, stored external identifier or outbound request.
+   The operator's setup and diagnostics surfaces may show the adapter as available and
    disabled — that is how it gets configured at all.
 3. **One Worker.** Adapters ship as configuration-gated modules inside the single Worker — never as
-   separate deployables — so the Free-plan budget and the five-minute deploy story survive.
+   separate deployables. This constrains deployment shape, not account-wide quota or Free-plan fit;
+   four fully integrated locations can exceed the Free request allowance. See
+   [Cloudflare operations](CLOUDFLARE.md#free-plan-fit).
 4. **Post-commit events only.** Adapters consume explicit events emitted after a reservation
    state change has committed — the constitution's invariant, unweakened. Every projection or
    delivery of reservation state therefore derives only from committed state, and an uncommitted
@@ -39,7 +41,9 @@ These hold for every adapter, in addition to each seam's table below.
    never touches an accepted reservation.
 
 Each seam's table states, per dimension, what the core guarantees, what the adapter must guarantee,
-and what the operator sees.
+and what the operator sees. S4 instantiates complete LINE/calendar actors per location with one
+shared provider realm/credential set; see [location operations](MULTI-LOCATION.md) and
+[the S4 adapter contract](../specs/008-multi-location-boundary/contracts/adapters.md).
 
 ## Identity
 
@@ -50,7 +54,7 @@ never a requirement for booking.
 | Dimension | Core guarantee | Adapter obligation | Operator-visible outcome |
 |---|---|---|---|
 | Configuration gating | Booking and booking management never require identity; unconfigured means no login UI and no stored external subject | Render no sign-in surface and store no external identifier until a provider is explicitly configured | Setup shows the identity adapter as off by default with its provider unconfigured |
-| Event and trigger model | Identity participates at session boundaries (login, account link), never inside the reservation transaction; the core exposes where a verified subject may attach to a customer-held proof | Verify every assertion server-side (token or signature verification against the provider) before trusting a subject; treat client-supplied identity as untrusted input | Linked/unlinked state is inspectable per installation, not per customer, in diagnostics |
+| Event and trigger model | Identity participates at session boundaries (login, account link), never inside the reservation transaction; the core exposes where a verified subject may attach to a customer-held proof | Verify every assertion server-side (token or signature verification against the provider) before trusting a subject; treat client-supplied identity as untrusted input | Linked/unlinked state is inspectable per location in aggregate diagnostics, without exposing subjects |
 | Failure semantics | Provider outage leaves the accountless path fully working; no booking is rejected for identity reasons | Degrade to the accountless flow with a clear message when login or linking fails; never hold the journey hostage to a provider | A failing provider shows as adapter degradation, while bookings continue to arrive |
 | Idempotency | Link state is single-valued per proof: re-linking the same subject is a no-op, not a duplicate | Make login callbacks and link requests replay-safe; a repeated callback must not create a second link or overwrite a different subject silently | Duplicate link attempts appear as one link, with conflicts surfaced instead of absorbed |
 | Retry and terminal-failure visibility | Login flows are interactive: the user retries; the core requires no background queue for identity | Bound any automatic retry (for example token refresh) and surface terminal link failures in-flow to the user and in diagnostics to the operator | Terminal link failures are countable in diagnostics rather than silently swallowed |
@@ -66,15 +70,16 @@ never a requirement for booking.
 | Failure semantics | Delivery failure has no effect on reservation state; each event's delivery fails independently | Isolate failures per event and per channel; a dead channel must not stall other channels or events | A failed notification never implies a failed booking; the schedule view remains authoritative |
 | Idempotency | The event stream may deliver an event more than once | Deduplicate per event × recipient × channel so a redelivered event never double-notifies a customer | Duplicate suppression is verifiable in the delivery record, not dependent on luck |
 | Retry and terminal-failure visibility | The core defines terminal failure as an operator-attention condition, not a silent drop | Retry with bounded backoff; after the bound, park the notification as terminally failed and surface it | Terminally failed notifications appear in the operator's attention surface with reason and time |
-| Privacy and data minimization | Events carry references and the minimum facts, not full customer records | Send only what the message needs (time, service label, state); store channel addresses only while the channel is configured and the customer is linked to it | The privacy notice can enumerate exactly what leaves the installation per channel |
+| Privacy and data minimization | Events carry references and the minimum facts, not full customer records | Send only what the message needs (time, service label, state and a validated public location label for named messages); store channel addresses only while the channel is configured and that booking is linked to it | The privacy notice can enumerate exactly what leaves the installation per channel |
 | Observability | Adapter health belongs in operator diagnostics | Expose per-channel health, pending/failed counts, and the last terminal failures | Operator can answer "are notifications working?" from the diagnostics surface alone |
 
 ## Calendar synchronization
 
 Issue #1's recorded decision (2026-08-11) ladders this seam into three modes, contracted separately:
 
-- **Mode 1 — ICS subscription feed**: one authenticated outbound read endpoint serving committed
-  reservations as a calendar feed. No OAuth, no provider account.
+- **Mode 1 — ICS subscription feed**: one authenticated outbound read route serving committed
+  reservations for the selected location. Each named location has its own capability. No OAuth or
+  provider account is needed for the feed.
 - **Mode 2 — outbound event synchronization**: reservation create/update/cancel mirrored to an
   external calendar as event create/update/delete.
 - **Mode 3 — inbound availability authority**: external busy time projected into blocked slots.
@@ -108,12 +113,9 @@ source of truth. This seam adds optional *external* delivery of the committed ev
 | Privacy and data minimization | The event stream contains references and facts, not secrets | Apply a payload allowlist with redaction: an external sink receives only allowlisted fields. Secrets are unconditionally excluded — no configuration can allowlist them. Full contact records are never deliverable; at most, individual minimal fields may be allowlisted, each tied to a stated purpose and reflected in the privacy notice | The privacy notice can enumerate exactly which fields leave the installation, and secrets are provably not among them |
 | Observability | Adapter health belongs in operator diagnostics | Expose checkpoint position, delivery lag, failure counts, and gap warnings | Operator can answer "is the audit trail flowing?" from diagnostics alone |
 
-## Staging of code-level contracts
+## Code-level contracts
 
-This document is the semantic contract. Event names, payload schemas, TypeScript types, queue
-mechanics, and concrete retry counts are deliberately **not** fixed here: they land with the first
-consumer — whichever adapter stage is implemented first (the LINE adapter, stage S1, in the
-roadmap's recommended order) builds the shared post-commit event delivery foundation the later
-seams reuse — so the contract is proven by an implementation rather than speculated ahead of one. Until then, a change to this document is a documentation
-change reviewed against issue #1 and the constitution; after the first consumer lands, a change
-here is a compatibility decision.
+This document holds semantic obligations. The implemented LINE/calendar event names, payloads,
+types, queue mechanics and retry counts live in source and tests. S4 location addressing and
+recovery details live in its linked contracts above. Changes to delivered adapter behavior are
+compatibility decisions; describing mode 3 here does not make it a scheduled or implemented mode.
