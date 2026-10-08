@@ -92,6 +92,8 @@ const REQUIRED = new Set([
   "test/release-metadata.test.ts",
   "tests-browser/multi-location.spec.ts",
   "tests-browser/multi-location-calendar.spec.ts",
+  "tests-browser/multi-location-customer.spec.ts",
+  "tests-browser/multi-location-operator.spec.ts",
   "test/reservation-day.test.ts",
   "test/worker.test.ts",
   "wrangler.jsonc",

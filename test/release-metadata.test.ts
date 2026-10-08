@@ -77,6 +77,8 @@ for (const required of [
   "public/location.js",
   "tests-browser/multi-location.spec.ts",
   "tests-browser/multi-location-calendar.spec.ts",
+  "tests-browser/multi-location-customer.spec.ts",
+  "tests-browser/multi-location-operator.spec.ts",
 ]) {
   test(`refuses an omitted required public file: ${required}`, { skip: !POSIX }, () => {
     const { tree, audit } = createFixture();
