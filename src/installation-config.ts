@@ -1,6 +1,7 @@
 import type { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 
 import { ADAPTER } from "./adapter-constants.ts";
+import { DEFAULT_LOCATION_ID, MAX_LOCATIONS, parseLocationId } from "./location.ts";
 
 const directNodeRuntime =
   typeof navigator !== "undefined" && navigator.userAgent.startsWith("Node.js/");
@@ -113,6 +114,14 @@ export interface InstallationState {
   createdAt: string;
   updatedAt: string;
 }
+
+export type LocationSummary = { id: string; label: string; bookable: boolean };
+export type LocationCreateResult =
+  | { ok: true; location: { id: string; label: string }; replayed: boolean }
+  | {
+      ok: false;
+      code: "BAD_REQUEST" | "UNAUTHORIZED" | "LOCATION_EXISTS" | "LOCATION_LIMIT_REACHED" | "IDEMPOTENCY_CONFLICT";
+    };
 
 export interface ReadinessRuntime {
   ownerSecretPresent: boolean;
@@ -1843,7 +1852,16 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     this.#readStoredState();
   }
 
-  #readStoredState(): { state: InstallationState; stateJson: string } {
+  #readStoredState(locationId = DEFAULT_LOCATION_ID): { state: InstallationState; stateJson: string } {
+    if (parseLocationId(locationId) === null) throw new Error("LOCATION_NOT_FOUND");
+    if (locationId !== DEFAULT_LOCATION_ID) {
+      if (!this.#tableExists("__location_states")) throw new Error("LOCATION_NOT_FOUND");
+      const row = this.ctx.storage.sql.exec<{ state_json: string }>(
+        "SELECT state_json FROM __location_states WHERE location_id = ?", locationId,
+      ).toArray()[0];
+      if (row === undefined) throw new Error("LOCATION_NOT_FOUND");
+      return this.#parseStateRow(row.state_json);
+    }
     const rows = this.ctx.storage.sql
       .exec<{ singleton: number; state_json: string }>(
         "SELECT singleton, state_json FROM installation_state",
@@ -1853,19 +1871,106 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     if (rows.length !== 1 || row?.singleton !== 1 || typeof row.state_json !== "string") {
       return corruptStorage();
     }
+    return this.#parseStateRow(row.state_json);
+  }
+
+  #parseStateRow(stateJson: string): { state: InstallationState; stateJson: string } {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(row.state_json);
+      parsed = JSON.parse(stateJson);
     } catch {
       return corruptStorage();
     }
     const state = parseInstallationState(parsed);
-    if (JSON.stringify(state) !== row.state_json) return corruptStorage();
-    return { state, stateJson: row.state_json };
+    if (JSON.stringify(state) !== stateJson) return corruptStorage();
+    return { state, stateJson };
   }
 
-  getState(): InstallationState {
-    return clone(this.#readStoredState().state);
+  getState(locationId = DEFAULT_LOCATION_ID): InstallationState {
+    return clone(this.#readStoredState(locationId).state);
+  }
+
+  #locationIds(): string[] {
+    if (!this.#tableExists("__location_states")) return [DEFAULT_LOCATION_ID];
+    const rows = this.ctx.storage.sql.exec<{ location_id: string }>(
+      "SELECT location_id FROM __location_states ORDER BY location_id",
+    ).toArray();
+    if (rows.length >= MAX_LOCATIONS || rows.some(({ location_id }) =>
+      parseLocationId(location_id) === null || location_id === DEFAULT_LOCATION_ID)) {
+      return corruptStorage();
+    }
+    return [DEFAULT_LOCATION_ID, ...rows.map(({ location_id }) => location_id)];
+  }
+
+  #ownerAuthorized(actorId: unknown): boolean {
+    return actorId === null ||
+      (typeof actorId === "string" && UUID.test(actorId) &&
+        (this.#readRoster()?.roster.members.some(({ id, active, role }) =>
+          id === actorId && active && role === "owner") ?? false));
+  }
+
+  listLocations(runtime: ReadinessRuntime): LocationSummary[] {
+    const safeRuntime = parseRpcRuntime(runtime);
+    return this.#locationIds().map((id) => {
+      const { state } = this.#readStoredState(id);
+      const settings = activeVersion(state).settings;
+      return {
+        id,
+        label: settings.locationName,
+        bookable: state.mode === "live" && evaluateInstallationReadiness(settings, {
+          ...safeRuntime, ownerAuthenticated: safeRuntime.ownerSecretPresent,
+        }).ready,
+      };
+    });
+  }
+
+  async createLocation(input: unknown, actorId: unknown): Promise<LocationCreateResult> {
+    if (!isRecord(input) || !hasExactKeys(input, ["commandId", "locationId", "locationName"]) ||
+      typeof input.commandId !== "string" || !UUID.test(input.commandId) ||
+      typeof input.locationId !== "string" || parseLocationId(input.locationId) === null || input.locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    const locationId = input.locationId;
+    const commandId = input.commandId;
+    let label: string;
+    try { label = boundedString(input.locationName, "locationName", 1, 80); }
+    catch { return { ok: false, code: "BAD_REQUEST" }; }
+    const fingerprint = await sha256Hex(canonicalJson({ locationId, label }));
+    return this.ctx.storage.transactionSync((): LocationCreateResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      const ids = this.#locationIds();
+      const sql = this.ctx.storage.sql;
+      if (this.#tableExists("__location_states")) {
+        const receipt = sql.exec<{ creation_fingerprint: string; creation_response_json: string }>(
+          "SELECT creation_fingerprint, creation_response_json FROM __location_states WHERE creation_command_id = ?",
+          commandId,
+        ).toArray()[0];
+        if (receipt !== undefined) {
+          if (receipt.creation_fingerprint !== fingerprint) return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+          const location: unknown = JSON.parse(receipt.creation_response_json);
+          if (!isRecord(location) || !hasExactKeys(location, ["id", "label"]) ||
+            location.id !== locationId || typeof location.label !== "string" ||
+            !isStoredDisplayName(location.label)) return corruptStorage();
+          return { ok: true, location: { id: locationId, label: location.label }, replayed: true };
+        }
+      }
+      if (ids.includes(locationId)) return { ok: false, code: "LOCATION_EXISTS" };
+      if (ids.length >= MAX_LOCATIONS) return { ok: false, code: "LOCATION_LIMIT_REACHED" };
+      const state = createDefaultInstallationState(new Date().toISOString());
+      activeVersion(state).settings.locationName = label;
+      const location = { id: locationId, label };
+      sql.exec(`CREATE TABLE IF NOT EXISTS __location_states (
+        location_id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        creation_command_id TEXT NOT NULL UNIQUE,
+        creation_fingerprint TEXT NOT NULL,
+        creation_response_json TEXT NOT NULL
+      )`);
+      sql.exec("INSERT INTO __location_states VALUES (?, ?, ?, ?, ?)",
+        locationId, storedStateJson(state), commandId, fingerprint, JSON.stringify(location));
+      return { ok: true, location, replayed: false };
+    });
   }
 
   /**
@@ -1887,14 +1992,19 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
 
-  #readLineLifecycle(): LineLifecycle | null {
-    if (!this.#tableExists("__line_lifecycle")) return null;
-    const rows = this.ctx.storage.sql
+  #readLineLifecycle(locationId = DEFAULT_LOCATION_ID): LineLifecycle | null {
+    const isDefault = locationId === DEFAULT_LOCATION_ID;
+    if (!this.#tableExists(isDefault ? "__line_lifecycle" : "__location_line_lifecycle")) return null;
+    const rows = isDefault ? this.ctx.storage.sql
       .exec<{ singleton: number; lifecycle_json: string }>(
         "SELECT singleton, lifecycle_json FROM __line_lifecycle",
       )
-      .toArray();
+      .toArray() : this.ctx.storage.sql.exec<{ singleton: number; lifecycle_json: string }>(
+        "SELECT 1 AS singleton, lifecycle_json FROM __location_line_lifecycle WHERE location_id = ?",
+        locationId,
+      ).toArray();
     const row = rows[0];
+    if (!isDefault && rows.length === 0) return null;
     if (rows.length !== 1 || row?.singleton !== 1) {
       return corruptStorage();
     }
@@ -2088,9 +2198,9 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * projection with a freshly minted descriptor lease. The lease bounds how
    * long the projection may be trusted by a day-side event commit.
    */
-  getContext(): { state: InstallationState; line?: LineContext } {
-    const state = clone(this.#readStoredState().state);
-    const lifecycle = this.#readLineLifecycle();
+  getContext(locationId = DEFAULT_LOCATION_ID): { state: InstallationState; line?: LineContext } {
+    const state = clone(this.#readStoredState(locationId).state);
+    const lifecycle = this.#readLineLifecycle(locationId);
     if (lifecycle === null) return { state };
     const issuedAt = Date.now();
     const line: LineContext = {
@@ -2409,12 +2519,13 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeCommand(
     input: unknown,
     runtime: ReadinessRuntime,
+    locationId = DEFAULT_LOCATION_ID,
   ): Promise<InstallationCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const now = new Date().toISOString();
 
     while (true) {
-      const stored = this.#readStoredState();
+      const stored = this.#readStoredState(locationId);
       const result = await executeInstallationCommand(stored.state, input, {
         ...safeRuntime,
         now,
@@ -2423,20 +2534,23 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
       const nextStateJson = storedStateJson(result.state);
       if (nextStateJson === stored.stateJson) return result;
-      const write = this.ctx.storage.sql.exec(
+      const write = locationId === DEFAULT_LOCATION_ID ? this.ctx.storage.sql.exec(
         `UPDATE installation_state SET state_json = ?
          WHERE singleton = 1 AND state_json = ?`,
         nextStateJson,
         stored.stateJson,
+      ) : this.ctx.storage.sql.exec(
+        "UPDATE __location_states SET state_json = ? WHERE location_id = ? AND state_json = ?",
+        nextStateJson, locationId, stored.stateJson,
       );
       if (write.rowsWritten === 1) return result;
       if (write.rowsWritten !== 0) throw new Error("Invalid installation CAS result");
     }
   }
 
-  async installationReceipt(runtime: ReadinessRuntime): Promise<InstallationReceipt> {
+  async installationReceipt(runtime: ReadinessRuntime, locationId = DEFAULT_LOCATION_ID): Promise<InstallationReceipt> {
     const safeRuntime = parseRpcRuntime(runtime);
-    return createInstallationReceipt(this.#readStoredState().state, {
+    return createInstallationReceipt(this.#readStoredState(locationId).state, {
       ...safeRuntime,
       applicationVersion: APPLICATION_VERSION,
       now: new Date().toISOString(),

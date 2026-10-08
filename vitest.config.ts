@@ -26,6 +26,7 @@ export default defineConfig({
     include: [
       "test/reservation-day.test.ts",
       "test/worker.test.ts",
+      "test/location-config.test.ts",
       "test/adapter-delivery.test.ts",
       "test/line-adapter.test.ts",
       "test/calendar-adapter.test.ts",
