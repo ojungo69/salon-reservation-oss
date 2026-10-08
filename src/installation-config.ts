@@ -123,6 +123,25 @@ export type LocationCreateResult =
       code: "BAD_REQUEST" | "UNAUTHORIZED" | "LOCATION_EXISTS" | "LOCATION_LIMIT_REACHED" | "IDEMPOTENCY_CONFLICT";
     };
 
+export type NamedCalendarContext = {
+  version: number;
+  googleEnabled: boolean;
+  calendarId: string | null;
+  feedEnabled: boolean;
+  feedTokenDigest: string | null;
+};
+export type CalendarSettingsResult =
+  | { ok: true; context: NamedCalendarContext }
+  | {
+      ok: false;
+      code: "BAD_REQUEST" | "UNAUTHORIZED" | "VERSION_CONFLICT" | "LOCATION_NOT_FOUND" |
+        "CALENDAR_TARGET_CONFLICT" | "CALENDAR_TARGET_IMMUTABLE" | "CALENDAR_NOT_CONFIGURED";
+    };
+
+const isCalendarTargetId = (value: unknown): value is string =>
+  typeof value === "string" && value.length >= 1 && value.length <= 1024 &&
+  value.trim() === value && value.toLowerCase() !== "primary" && !/[\u0000-\u001f\u007f]/.test(value);
+
 export interface ReadinessRuntime {
   ownerSecretPresent: boolean;
   ownerAuthenticated: boolean;
@@ -1918,6 +1937,119 @@ export class InstallationConfig extends DurableObjectBase<Env> {
           id === actorId && active && role === "owner") ?? false));
   }
 
+  #readCalendarContext(locationId: string): NamedCalendarContext {
+    const row = this.#tableExists("__location_calendar_settings")
+      ? this.ctx.storage.sql.exec<{
+        version: number; google_enabled: number; calendar_id: string | null;
+        feed_enabled: number; feed_token_digest: string | null;
+      }>("SELECT version, google_enabled, calendar_id, feed_enabled, feed_token_digest FROM __location_calendar_settings WHERE location_id = ?", locationId).toArray()[0]
+      : undefined;
+    if (row === undefined) {
+      return { version: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
+    }
+    if (!Number.isSafeInteger(row.version) || row.version < 1 ||
+      (row.google_enabled !== 0 && row.google_enabled !== 1) ||
+      (row.feed_enabled !== 0 && row.feed_enabled !== 1) ||
+      (row.calendar_id !== null && !isCalendarTargetId(row.calendar_id)) ||
+      (row.feed_token_digest !== null && (typeof row.feed_token_digest !== "string" || !SHA256_HEX.test(row.feed_token_digest))) ||
+      (row.google_enabled === 1 && row.calendar_id === null) ||
+      (row.feed_enabled === 1 && row.feed_token_digest === null)) return corruptStorage();
+    return { version: row.version, googleEnabled: row.google_enabled === 1, calendarId: row.calendar_id,
+      feedEnabled: row.feed_enabled === 1, feedTokenDigest: row.feed_token_digest };
+  }
+
+  getCalendarContext(locationId: string): NamedCalendarContext {
+    if (locationId === DEFAULT_LOCATION_ID) throw new Error("BAD_REQUEST");
+    if (parseLocationId(locationId) === null || !this.#locationIds().includes(locationId)) {
+      throw new Error("LOCATION_NOT_FOUND");
+    }
+    return this.#readCalendarContext(locationId);
+  }
+
+  #writeCalendarContext(locationId: string, previousVersion: number, context: NamedCalendarContext): boolean {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS __location_calendar_settings (
+      location_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      google_enabled INTEGER NOT NULL,
+      calendar_id TEXT UNIQUE,
+      feed_enabled INTEGER NOT NULL,
+      feed_token_digest TEXT
+    )`);
+    const rows = sql.exec<{ location_id: string }>(`INSERT INTO __location_calendar_settings VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(location_id) DO UPDATE SET version = excluded.version,
+        google_enabled = excluded.google_enabled, calendar_id = excluded.calendar_id,
+        feed_enabled = excluded.feed_enabled, feed_token_digest = excluded.feed_token_digest
+      WHERE version = ? RETURNING location_id`, locationId, context.version, context.googleEnabled ? 1 : 0,
+      context.calendarId, context.feedEnabled ? 1 : 0, context.feedTokenDigest, previousVersion).toArray();
+    if (rows.length > 1) throw new Error("Invalid calendar CAS result");
+    return rows.length === 1;
+  }
+
+  async setCalendarSettings(input: unknown, actorId: unknown, locationId: string): Promise<CalendarSettingsResult> {
+    if (!isRecord(input) || !hasExactKeys(input, ["expectedVersion", "googleEnabled", "calendarId", "feedEnabled"]) ||
+      typeof input.expectedVersion !== "number" || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 ||
+      typeof input.googleEnabled !== "boolean" || typeof input.feedEnabled !== "boolean" ||
+      (input.calendarId !== null && !isCalendarTargetId(input.calendarId)) ||
+      parseLocationId(locationId) === null || locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    // Keep the pure settings module importable in Node; this provider parser
+    // lives beside its Workers-only adapter and is needed only by this RPC.
+    const { parseGoogleCredentials } = await import("./calendar-adapter.ts");
+    const credentials = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
+    const { expectedVersion, googleEnabled, feedEnabled, calendarId } = input;
+    return this.ctx.storage.transactionSync((): CalendarSettingsResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      if (!this.#locationIds().includes(locationId)) return { ok: false, code: "LOCATION_NOT_FOUND" };
+      const current = this.#readCalendarContext(locationId);
+      if (expectedVersion !== current.version || !Number.isSafeInteger(current.version + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      if (current.calendarId !== null && calendarId !== current.calendarId) {
+        return { ok: false, code: "CALENDAR_TARGET_IMMUTABLE" };
+      }
+      if ((feedEnabled && current.feedTokenDigest === null) || (googleEnabled && (calendarId === null || credentials === null))) {
+        return { ok: false, code: "CALENDAR_NOT_CONFIGURED" };
+      }
+      if (googleEnabled && credentials?.calendarId.toLowerCase() === "primary") {
+        return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
+      }
+      if (calendarId !== null) {
+        const duplicate = this.#tableExists("__location_calendar_settings") && this.ctx.storage.sql.exec(
+          "SELECT location_id FROM __location_calendar_settings WHERE calendar_id = ? AND location_id != ?", calendarId, locationId,
+        ).toArray().length > 0;
+        if (credentials?.calendarId === calendarId || duplicate) return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
+      }
+      const context: NamedCalendarContext = { ...current, version: current.version + 1, googleEnabled, calendarId, feedEnabled };
+      return this.#writeCalendarContext(locationId, current.version, context)
+        ? { ok: true, context } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
+  setCalendarFeedDigest(input: unknown, actorId: unknown, locationId: string): CalendarSettingsResult {
+    if (!isRecord(input) || !hasExactKeys(input, ["expectedVersion", "feedTokenDigest"]) ||
+      typeof input.expectedVersion !== "number" || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 ||
+      typeof input.feedTokenDigest !== "string" || !SHA256_HEX.test(input.feedTokenDigest) ||
+      parseLocationId(locationId) === null || locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    const feedTokenDigest = input.feedTokenDigest;
+    return this.ctx.storage.transactionSync((): CalendarSettingsResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      if (!this.#locationIds().includes(locationId)) return { ok: false, code: "LOCATION_NOT_FOUND" };
+      const current = this.#readCalendarContext(locationId);
+      if (input.expectedVersion !== current.version || !Number.isSafeInteger(current.version + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      const context = { ...current, version: current.version + 1, feedTokenDigest };
+      return this.#writeCalendarContext(locationId, current.version, context)
+        ? { ok: true, context } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
   listLocations(runtime: ReadinessRuntime, actorId?: string | null): LocationSummary[] {
     const safeRuntime = parseRpcRuntime(runtime);
     let allowed: string[] | null = null;
@@ -2128,7 +2260,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   setStaffLocationScope(input: unknown, actorId: unknown): StaffScopeResult {
     if (!isRecord(input) || !hasExactKeys(input, ["staffId", "expectedScopeVersion", "locationIds"]) ||
       typeof input.staffId !== "string" || !UUID.test(input.staffId) ||
-      !Number.isSafeInteger(input.expectedScopeVersion) || (input.expectedScopeVersion as number) < 0 ||
+      typeof input.expectedScopeVersion !== "number" || !Number.isSafeInteger(input.expectedScopeVersion) || input.expectedScopeVersion < 0 ||
       (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
       return { ok: false, code: "BAD_REQUEST" };
     }

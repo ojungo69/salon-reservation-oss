@@ -150,4 +150,66 @@ describe("location configuration authority", () => {
     await runInDurableObject(config(), (_instance, state) => { state.storage.sql.exec("DROP TRIGGER fail_new_scope"); });
     expect((await config().executeRosterCommand(input, null, ["salon-b"])).ok).toBe(true);
   });
+  it("keeps named calendars off until configured and stores independent versioned feed digests", async () => {
+    const original = await config().getState();
+    await create("salon-b");
+    const off = { version: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
+    expect(await config().getCalendarContext("salon-b")).toEqual(off);
+    expect(await tables()).toEqual(["__location_states"]);
+    expect(await config().setCalendarSettings({ expectedVersion: 0, googleEnabled: false, calendarId: null, feedEnabled: true }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_NOT_CONFIGURED" });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "d".repeat(64) }, null, "salon-b")).toEqual({ ok: true, context: { ...off, version: 1, feedTokenDigest: "d".repeat(64) } });
+    const desired = { expectedVersion: 1, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: true };
+    expect(await config().setCalendarSettings(desired, null, "salon-b")).toEqual({ ok: true, context: { version: 2, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: true, feedTokenDigest: "d".repeat(64) } });
+    expect(await config().setCalendarSettings(desired, null, "salon-b")).toEqual({ ok: false, code: "VERSION_CONFLICT" });
+    expect(await config().setCalendarSettings({ ...desired, expectedVersion: 2, googleEnabled: false, calendarId: "changed-calendar@example.invalid" }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_TARGET_IMMUTABLE" });
+    expect((await config().setCalendarFeedDigest({ expectedVersion: 2, feedTokenDigest: "e".repeat(64) }, null, "salon-b")).ok).toBe(true);
+    expect((await config().getCalendarContext("salon-b")).version).toBe(3);
+    expect(await config().getState()).toEqual(original);
+  });
+  it("isolates named calendar owners, feed versions and immutable target claims", async () => {
+    await create("salon-b");
+    await create("salon-c", "サロン C");
+    const staff = await addStaff("staff");
+    const settings = { expectedVersion: 0, googleEnabled: true, calendarId: "shared-target@example.invalid", feedEnabled: false };
+    expect(await config().setCalendarSettings(settings, staff.id, "salon-b")).toEqual({ ok: false, code: "UNAUTHORIZED" });
+    expect(await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "f".repeat(64) }, staff.id, "salon-b")).toEqual({ ok: false, code: "UNAUTHORIZED" });
+    expect(await config().setCalendarSettings({ ...settings, calendarId: "fixture+calendar@example.invalid" }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_TARGET_CONFLICT" });
+    const claims = await Promise.all([config().setCalendarSettings(settings, null, "salon-b"), config().setCalendarSettings(settings, null, "salon-c")]);
+    expect(claims.filter(({ ok }) => ok)).toHaveLength(1);
+    expect(claims.filter(({ ok }) => !ok)).toEqual([{ ok: false, code: "CALENDAR_TARGET_CONFLICT" }]);
+    const beforeC = await config().getCalendarContext("salon-c");
+    const beforeB = await config().getCalendarContext("salon-b");
+    expect((await config().setCalendarFeedDigest({ expectedVersion: beforeB.version, feedTokenDigest: "f".repeat(64) }, null, "salon-b")).ok).toBe(true);
+    expect(await config().getCalendarContext("salon-c")).toEqual(beforeC);
+    expect(await config().setCalendarSettings(settings, null, "default")).toEqual({ ok: false, code: "BAD_REQUEST" });
+    expect(await config().setCalendarSettings(settings, null, "missing")).toEqual({ ok: false, code: "LOCATION_NOT_FOUND" });
+  });
+
+  it("refuses missing Google credentials without converting retained named settings into off", async () => {
+    await create("salon-b");
+    const settings = { expectedVersion: 0, googleEnabled: true, calendarId: "named-calendar@example.invalid", feedEnabled: false };
+    expect((await config().setCalendarSettings(settings, null, "salon-b")).ok).toBe(true);
+    const before = await config().getCalendarContext("salon-b");
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, GOOGLE_CALENDAR_CREDENTIALS: undefined } });
+    });
+    expect(await config().setCalendarSettings({ ...settings, expectedVersion: 1 }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_NOT_CONFIGURED" });
+    expect(await config().getCalendarContext("salon-b")).toEqual(before);
+  });
+  it("rejects primary aliases while allowing an independent named feed", async () => {
+    await create("salon-b");
+    const settings = { expectedVersion: 0, googleEnabled: true, calendarId: "primary", feedEnabled: false };
+    expect(await config().setCalendarSettings(settings, null, "salon-b")).toEqual({ ok: false, code: "BAD_REQUEST" });
+    expect(await config().setCalendarSettings({ ...settings, calendarId: "PRIMARY" }, null, "salon-b")).toEqual({ ok: false, code: "BAD_REQUEST" });
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      const credentials = JSON.parse(bindings.GOOGLE_CALENDAR_CREDENTIALS);
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, GOOGLE_CALENDAR_CREDENTIALS: JSON.stringify({ ...credentials, calendarId: "primary" }) } });
+    });
+    expect(await config().setCalendarSettings({ ...settings, calendarId: "named-calendar@example.invalid" }, null, "salon-b")).toEqual({ ok: false, code: "CALENDAR_TARGET_CONFLICT" });
+    await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "e".repeat(64) }, null, "salon-b");
+    expect((await config().setCalendarSettings({ expectedVersion: 1, googleEnabled: false, calendarId: null, feedEnabled: true }, null, "salon-b")).ok).toBe(true);
+    expect((await config().getCalendarContext("salon-b")).feedEnabled).toBe(true);
+  });
 });
