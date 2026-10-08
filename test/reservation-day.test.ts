@@ -1357,7 +1357,7 @@ describe("S2 calendar outbox substrate", () => {
     });
 
   it.each([["line", 288, 9], ["calendar", 384, 12]] as const)(
-    "S4 drains the conservative %s daily envelope of %i rows in %i bounded pages", async (consumer, count, rounds) => {
+    "S4 drains the conservative %s daily envelope of %i rows in %i bounded pages and isolates location purge", async (consumer, count, rounds) => {
       const root = env.INSTALLATION_CONFIG.getByName("installation");
       expect(await root.createLocation({ commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東" }, null))
         .toMatchObject({ ok: true });
@@ -1370,7 +1370,8 @@ describe("S2 calendar outbox substrate", () => {
       const lease = { consumer, generation: epoch, phase: "active" as const,
         leaseIssuedAt: Date.now(), leaseNotAfter: Date.now() + 30_000 };
       const config = { ...day, ...(consumer === "line" ? { adapter: lease } : { calendarAdapter: lease }) };
-      for (const stub of [nativeDay, peer]) await runInDurableObject(stub, async (instance, state) => {
+      const reservationIds: string[] = [];
+      for (const stub of [nativeDay, peer]) reservationIds.push(await runInDurableObject(stub, async (instance, state) => {
         const holder = instance as unknown as { env: Env };
         const original = holder.env;
         holder.env = Object.assign(Object.create(original), { ADAPTER_DELIVERY: undefined, CALENDAR_ADAPTER: undefined });
@@ -1391,8 +1392,9 @@ describe("S2 calendar outbox substrate", () => {
               'approve', '09:00', '10:00', '架空カット', 'approved', ?, ? FROM rows`,
           count, consumer, epoch, day.date, new Date(Date.now()).toISOString(), day.purgeAt);
           state.storage.sql.exec("UPDATE __adapter_meta SET event_seq = ? WHERE consumer = ? AND generation = ?", count, consumer, epoch);
+          return created.reservationId;
         } finally { holder.env = original; }
-      });
+      }));
       let received = 0;
       for (let round = 0; round < rounds; round += 1) {
         const batch = await nativeDay.drainOutbox({ consumer, limit: 32 });
@@ -1408,6 +1410,51 @@ describe("S2 calendar outbox substrate", () => {
       expect((await peer.drainOutbox({ consumer, limit: 32 })).events).toHaveLength(32);
       expect(await runInDurableObject(peer, (_instance, state) =>
         state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM __adapter_outbox WHERE consumer = ?", consumer).one().n)).toBe(count);
+
+      const peerSnapshot = () => runInDurableObject(peer, async (_instance, state) => ({
+        alarm: await state.storage.getAlarm(),
+        outbox: state.storage.sql.exec("SELECT * FROM __adapter_outbox ORDER BY consumer, generation, seq").toArray(),
+        adapterMeta: state.storage.sql.exec("SELECT * FROM __adapter_meta ORDER BY consumer, generation").toArray(),
+        partition: state.storage.sql.exec("SELECT * FROM partition_meta ORDER BY singleton").toArray(),
+        core: state.storage.sql.exec("SELECT * FROM core_state ORDER BY singleton").toArray(),
+        bookings: state.storage.sql.exec("SELECT * FROM booking_details ORDER BY reservation_id").toArray(),
+      }));
+      const peerBefore = await peerSnapshot();
+      const peerDrainBefore = JSON.stringify(await peer.drainOutbox({ consumer, limit: 32 }));
+      const peerBookingsBefore = await peer.listOwner(day);
+      expect(peerBookingsBefore).toMatchObject({ ok: true, reservations: [
+        { status: consumer === "line" ? "approved" : "pending" },
+      ] });
+      expect(await peer.readEventSequence({ consumer, generation: epoch })).toEqual({ eventSeq: count });
+
+      expect(await runInDurableObject(nativeDay, async (instance) => {
+        const holder = instance as unknown as { env: Env };
+        const original = holder.env;
+        holder.env = Object.assign(Object.create(original), { ADAPTER_DELIVERY: undefined, CALENDAR_ADAPTER: undefined });
+        try {
+          return await instance.transitionOwner(config, {
+            commandId: crypto.randomUUID(), date: day.date,
+            reservationId: reservationIds[0]!, action: "cancel",
+          }, TEST_ACTOR);
+        } finally { holder.env = original; }
+      })).toMatchObject({ ok: true, status: "cancelled" });
+      expect(await nativeDay.drainOutbox({ consumer, limit: 32 })).toMatchObject({
+        events: [{ reservationId: reservationIds[0], generation: epoch, seq: count + 1, type: "cancel" }],
+        more: false,
+      });
+      expect(await nativeDay.readEventSequence({ consumer, generation: epoch })).toEqual({ eventSeq: count + 1 });
+
+      expect(await nativeDay.purgeConsumer({ consumer, throughGeneration: epoch }))
+        .toEqual({ ok: true, removed: 1, dropped: true });
+      expect(await nativeDay.drainOutbox({ consumer, limit: 32 })).toEqual({ events: [], more: false });
+      expect(await nativeDay.readEventSequence({ consumer, generation: epoch })).toEqual({ eventSeq: 0 });
+      expect(await runInDurableObject(nativeDay, (_instance, state) => state.storage.sql.exec(
+        "SELECT name FROM sqlite_master WHERE name IN ('__adapter_outbox', '__adapter_meta')",
+      ).toArray())).toEqual([]);
+      expect(await peerSnapshot()).toEqual(peerBefore);
+      expect(JSON.stringify(await peer.drainOutbox({ consumer, limit: 32 }))).toBe(peerDrainBefore);
+      expect(await peer.readEventSequence({ consumer, generation: epoch })).toEqual({ eventSeq: count });
+      expect(await peer.listOwner(day)).toEqual(peerBookingsBefore);
     },
   );
 
