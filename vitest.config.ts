@@ -31,12 +31,12 @@ export default defineConfig({
       "test/line-adapter.test.ts",
       "test/calendar-adapter.test.ts",
     ],
-    // Wall clock, and these five files run concurrently, so the budget has to
+    // Wall clock, and these Worker suites run concurrently, so the budget has to
     // survive the contention that buys the parallelism. The most expensive
     // test — the calendar adapter walking its whole retry ladder and then
     // recovering an expired send claim — costs 2.7s alone, 11.8s inside its
     // own suite on an idle 32-core machine, and more than 20s on a 4-core
-    // runner with the other four suites alongside it. At 20s that was a
+    // runner with the other suites alongside it. At 20s that was a
     // coin flip nobody had noticed losing yet.
     //
     // This is not the hang detector; the job's own 25-minute limit is. It is

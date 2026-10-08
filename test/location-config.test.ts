@@ -1,7 +1,8 @@
-import { env, reset, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { env, reset, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { InstallationConfig } from "../src/installation-config.ts";
+import { identifiers, SUITE_NOW } from "./line-helpers.ts";
 
 const config = () => env.INSTALLATION_CONFIG.getByName("installation") as DurableObjectStub<InstallationConfig>;
 const runtime = {
@@ -18,7 +19,20 @@ const create = (locationId: string, locationName = "サロン B") =>
 const tables = () => runInDurableObject(config(), (_instance, state) =>
   state.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '__*' ORDER BY name").toArray().map(({ name }) => name));
 
-afterEach(async () => { await reset(); });
+const protect = async (locationId = "default") => {
+  const state = await config().getState(locationId);
+  const current = state.settingsVersions.find(({ version }) => version === state.activeSettingsVersion);
+  if (current === undefined) throw new Error("fixture settings missing");
+  const result = await config().executeCommand({ type: "settings.update", commandId: crypto.randomUUID(), expectedSettingsVersion: state.activeSettingsVersion,
+    settings: { ...current.settings, allowedHostname: runtime.hostname, turnstileSiteKey: "browser-test-site-key-0000000000000000" } }, runtime, locationId);
+  if (!result.ok) throw new Error("fixture protection failed");
+};
+
+const line = (locationId: string, operation: "line.enable" | "line.disable", expectedLifecycleVersion: number, realm = identifiers) =>
+  config().executeLineCommand({ operation, commandId: crypto.randomUUID(), expectedLifecycleVersion,
+    ...(operation === "line.disable" ? {} : { identifiers: realm }) }, runtime, locationId);
+
+afterEach(async () => { vi.useRealTimers(); await reset(); });
 
 const addStaff = async (role: "owner" | "staff", digest = "a".repeat(64)) => {
   const result = await config().executeRosterCommand({ operation: "staff.create", displayName: "担当者", role, credentialDigest: digest, dryRun: false }, null);
@@ -211,5 +225,152 @@ describe("location configuration authority", () => {
     await config().setCalendarFeedDigest({ expectedVersion: 0, feedTokenDigest: "e".repeat(64) }, null, "salon-b");
     expect((await config().setCalendarSettings({ expectedVersion: 1, googleEnabled: false, calendarId: null, feedEnabled: true }, null, "salon-b")).ok).toBe(true);
     expect((await config().getCalendarContext("salon-b")).feedEnabled).toBe(true);
+  });
+  it("enables only the selected location LINE actor and preserves the default state and capability", async () => {
+    const original = await config().getContext();
+    await create("salon-b");
+    await protect("salon-b");
+    expect(await line("salon-b", "line.enable", 0)).toMatchObject({ ok: true, lifecycleVersion: 1 });
+    expect(await config().lineAdapterStatus("salon-b")).toMatchObject({ phase: "active", active: { ...identifiers, generation: 1 } });
+    expect(await config().lineAdapterStatus()).toMatchObject({ phase: "disabled", lifecycleVersion: 0 });
+    expect(await config().getContext()).toEqual(original);
+    expect((await config().getContext("salon-b")).line).toMatchObject({ phase: "active", generation: 1 });
+    expect(await config().getLineWebhookTargets()).toEqual(["salon-b"]);
+    expect(await env.ADAPTER_DELIVERY.getByName("location:salon-b").readMeta()).toMatchObject({ state: "active", generation: 1 });
+  });
+  it("fences concurrent enabling realms before either actor becomes active, then recovers after restart", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SUITE_NOW);
+    await create("salon-b"); await create("salon-c");
+    await protect("salon-b"); await protect("salon-c");
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: {
+        getByName: (name: string) => {
+          const stub = env.ADAPTER_DELIVERY.getByName(name);
+          return { readMeta: () => stub.readMeta(), activate: async () => ({ ok: false, code: "STALE_GENERATION" }) };
+        },
+      } } });
+    });
+    const outcomes = await Promise.all([
+      line("salon-b", "line.enable", 0),
+      line("salon-c", "line.enable", 0, { ...identifiers, messagingChannelId: "9876543211" }),
+    ]);
+    expect(outcomes.filter(({ ok }) => ok)).toHaveLength(1);
+    expect(outcomes.filter(({ ok }) => !ok)).toEqual([{ ok: false, code: "PHASE_CONFLICT" }]);
+    const winner = outcomes[0].ok ? "salon-b" : "salon-c";
+    expect((await config().lineAdapterStatus(winner)).phase).toBe("activating");
+    expect(await config().getLineWebhookTargets()).toEqual([]);
+    await expect(runInDurableObject(config(), (_instance, state) => state.abort("line coordinator restart"))).rejects.toThrow("line coordinator restart");
+    await runDurableObjectAlarm(config());
+    expect((await config().lineAdapterStatus(winner)).phase).toBe("active");
+    expect(await config().getLineWebhookTargets()).toEqual([winner]);
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("does not hold the alarm scheduling lane while a different location actor is stalled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SUITE_NOW);
+    await create("salon-b"); await create("salon-c");
+    await protect("salon-b"); await protect("salon-c");
+    const blocked = Promise.withResolvers<null>();
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: {
+        getByName: (name: string) => {
+          const stub = env.ADAPTER_DELIVERY.getByName(name);
+          return name === "location:salon-b"
+            ? { readMeta: () => blocked.promise, activate: (input: Parameters<typeof stub.activate>[0]) => stub.activate(input) }
+            : stub;
+        },
+      } } });
+    });
+    let firstSettled = false;
+    const first = (async () => { const result = await line("salon-b", "line.enable", 0); firstSettled = true; return result; })();
+    await expect.poll(async () => (await config().lineAdapterStatus("salon-b")).phase).toBe("activating");
+    try {
+      expect((await line("salon-c", "line.enable", 0)).ok).toBe(true);
+      expect((await config().lineAdapterStatus("salon-c")).phase).toBe("active");
+      expect(firstSettled).toBe(false);
+    } finally {
+      blocked.resolve(null);
+      await first;
+    }
+    expect((await config().lineAdapterStatus("salon-b")).phase).toBe("active");
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("recovers its scheduling queue after a failed prearm without accepting the command", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SUITE_NOW);
+    await create("salon-b");
+    await runInDurableObject(config(), (_instance, state) => {
+      const original = state.storage.setAlarm.bind(state.storage);
+      let fail = true;
+      Object.defineProperty(state.storage, "setAlarm", { configurable: true, value: async (...args: Parameters<typeof original>) => {
+        if (fail) { fail = false; throw new Error("alarm fixture failure"); }
+        return original(...args);
+      } });
+    });
+    const command = { operation: "line.settings", commandId: crypto.randomUUID(), expectedLifecycleVersion: 0, identifiers };
+    await expect((async () => await config().executeLineCommand(command, runtime, "salon-b"))()).rejects.toThrow("alarm fixture failure");
+    expect((await config().lineAdapterStatus("salon-b")).lifecycleVersion).toBe(0);
+    expect(await tables()).toEqual(["__location_states"]);
+    expect((await config().executeLineCommand(command, runtime, "salon-b")).ok).toBe(true);
+    expect((await config().executeLineCommand(command, runtime, "salon-b")).replayed).toBe(true);
+    expect(await line("salon-b", "line.disable", 1)).toEqual({ ok: false, code: "PHASE_CONFLICT" });
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+    await runInDurableObject(config(), (_instance, state) => { Reflect.deleteProperty(state.storage, "setAlarm"); });
+  });
+  it("preserves an earlier recovery alarm and draining webhook target while a peer is enabling", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SUITE_NOW);
+    await create("salon-b"); await create("salon-c");
+    await protect("salon-b"); await protect("salon-c");
+    await line("salon-b", "line.enable", 0);
+    const stop = Promise.withResolvers<void>();
+    const start = Promise.withResolvers<null>();
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: {
+        getByName: (name: string) => {
+          const stub = env.ADAPTER_DELIVERY.getByName(name);
+          if (name === "location:salon-b") return { beginDisable: async () => { await stop.promise; throw new Error("disable fixture unavailable"); } };
+          return { readMeta: () => start.promise, activate: (input: Parameters<typeof stub.activate>[0]) => stub.activate(input) };
+        },
+      } } });
+    });
+    const stopping = (async () => await line("salon-b", "line.disable", 1))();
+    await expect.poll(async () => (await config().lineAdapterStatus("salon-b")).phase).toBe("deactivating");
+    const starting = (async () => await line("salon-c", "line.enable", 0))();
+    await expect.poll(async () => (await config().lineAdapterStatus("salon-c")).phase).toBe("activating");
+    try {
+      const early = await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm());
+      expect(early).toBe(SUITE_NOW + 5_000);
+      stop.resolve();
+      expect((await stopping).ok).toBe(true);
+      expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBe(early);
+      expect(await env.ADAPTER_DELIVERY.getByName("location:salon-b").readMeta()).toMatchObject({ state: "active" });
+      expect(await config().getLineWebhookTargets()).toEqual(["salon-b"]);
+    } finally {
+      stop.resolve(); start.resolve(null);
+      await stopping; await starting;
+    }
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: env.ADAPTER_DELIVERY } });
+    });
+    vi.setSystemTime(SUITE_NOW + 5_000);
+    await runDurableObjectAlarm(config());
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBe(SUITE_NOW + 65_000);
+    vi.setSystemTime(SUITE_NOW + 65_000);
+    await runInDurableObject(env.ADAPTER_DELIVERY.getByName("location:salon-b"), (_instance, state) => {
+      state.storage.sql.exec("UPDATE meta SET purge_completed_at = ? WHERE singleton = 1", Date.now());
+    });
+    await runDurableObjectAlarm(config());
+    expect((await config().lineAdapterStatus("salon-b")).phase).toBe("disabled");
+    expect((await config().lineAdapterStatus("salon-c")).phase).toBe("active");
+    expect(await config().getLineWebhookTargets()).toEqual(["salon-c"]);
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
   });
 });

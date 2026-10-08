@@ -1,7 +1,7 @@
 import type { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 
-import { ADAPTER } from "./adapter-constants.ts";
-import { DEFAULT_LOCATION_ID, MAX_LOCATIONS, parseLocationId } from "./location.ts";
+import { ADAPTER, withDeadline } from "./adapter-constants.ts";
+import { DEFAULT_LOCATION_ID, MAX_LOCATIONS, adapterObjectName, parseLocationId } from "./location.ts";
 
 const directNodeRuntime =
   typeof navigator !== "undefined" && navigator.userAgent.startsWith("Node.js/");
@@ -1842,6 +1842,25 @@ const parseRpcRuntime = (value: unknown): ReadinessRuntime => {
 };
 
 export class InstallationConfig extends DurableObjectBase<Env> {
+  #lineAlarmTail: Promise<void> = Promise.resolve();
+  #lineCommandsInFlight = 0;
+
+  // One native alarm: serialize only its read/min/write, never adapter RPCs.
+  #updateLineAlarm(dueAt: number | null): Promise<void> {
+    const update = this.#lineAlarmTail.then(async () => {
+      if (dueAt !== null) {
+        const current = await this.ctx.storage.getAlarm();
+        if (current === null || current > dueAt) await this.ctx.storage.setAlarm(dueAt);
+        return;
+      }
+      if (this.#lineCommandsInFlight !== 0 || this.#locationIds().some((id) =>
+        this.#readLineLifecycle(id)?.operation != null)) return;
+      await this.ctx.storage.deleteAlarm();
+    });
+    this.#lineAlarmTail = update.catch(() => undefined);
+    return update;
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -2168,7 +2187,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   // First write creates the table — the lifecycle appears only on operator
   // commands, never on reads.
-  #writeLineLifecycle(lifecycle: LineLifecycle): void {
+  #writeLineLifecycle(lifecycle: LineLifecycle, locationId = DEFAULT_LOCATION_ID): void {
+    const lifecycleJson = JSON.stringify(parseLineLifecycle(lifecycle));
+    if (locationId !== DEFAULT_LOCATION_ID) {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS __location_line_lifecycle (
+        location_id TEXT PRIMARY KEY,
+        lifecycle_json TEXT NOT NULL
+      )`);
+      this.ctx.storage.sql.exec(`INSERT INTO __location_line_lifecycle VALUES (?, ?)
+        ON CONFLICT(location_id) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
+        locationId, lifecycleJson);
+      return;
+    }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS __line_lifecycle (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -2178,7 +2208,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO __line_lifecycle (singleton, lifecycle_json) VALUES (1, ?)
        ON CONFLICT(singleton) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
-      JSON.stringify(parseLineLifecycle(lifecycle)),
+      lifecycleJson,
     );
   }
 
@@ -2456,8 +2486,27 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return { state, line };
   }
 
+  getLineWebhookTargets(): string[] {
+    return this.#locationIds().filter((id) => {
+      const lifecycle = this.#readLineLifecycle(id);
+      return lifecycle?.active !== null && lifecycle?.active !== undefined &&
+        (lifecycle.phase === "active" || lifecycle.phase === "deactivating");
+    });
+  }
+
+  #lineRealmAvailable(identifiers: LineIdentifiers, locationId: string): boolean {
+    return this.#locationIds().every((id) => {
+      if (id === locationId) return true;
+      const lifecycle = this.#readLineLifecycle(id);
+      const held = [lifecycle?.active, lifecycle?.operation?.kind === "enable" ? lifecycle.operation.identifiers : null];
+      return held.every((realm) => realm === null || realm === undefined ||
+        (realm.liffId === identifiers.liffId && realm.loginChannelId === identifiers.loginChannelId &&
+          realm.messagingChannelId === identifiers.messagingChannelId));
+    });
+  }
+
   /** Owner setup surface: draft and lifecycle facts (never the secret). */
-  lineAdapterStatus(): {
+  lineAdapterStatus(locationId = DEFAULT_LOCATION_ID): {
     phase: LineLifecyclePhase;
     lifecycleVersion: number;
     draft: LineIdentifiers | null;
@@ -2465,7 +2514,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operationInFlight: boolean;
     highWaterCopy: number;
   } {
-    const lifecycle = this.#readLineLifecycle();
+    this.#readStoredState(locationId);
+    const lifecycle = this.#readLineLifecycle(locationId);
     if (lifecycle === null) {
       return {
         phase: "disabled",
@@ -2496,6 +2546,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     lifecycle: LineLifecycle,
     safeRuntime: ReadinessRuntime,
     now: string,
+    locationId: string,
   ): LineLifecycle | { ok: false; code: "PHASE_CONFLICT" | "SECRET_MISSING" | "ORIGIN_UNCONFIGURED" } {
     if (command.operation === "line.settings") {
       if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
@@ -2512,8 +2563,9 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
         return { ok: false, code: "PHASE_CONFLICT" };
       }
+      if (!this.#lineRealmAvailable(command.identifiers, locationId)) return { ok: false, code: "PHASE_CONFLICT" };
       if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
-      const settings = activeVersion(this.#readStoredState().state).settings;
+      const settings = activeVersion(this.#readStoredState(locationId).state).settings;
       if (!protectionReady(settings, safeRuntime)) {
         return { ok: false, code: "ORIGIN_UNCONFIGURED" };
       }
@@ -2554,64 +2606,72 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeLineCommand(
     input: unknown,
     runtime: ReadinessRuntime,
+    locationId = DEFAULT_LOCATION_ID,
   ): Promise<LineCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const command = parseLineCommand(input);
     if (command === null) return { ok: false, code: "BAD_REQUEST" };
+    this.#readStoredState(locationId);
     const fingerprint = await lineCommandFingerprint(command);
     const now = new Date().toISOString();
 
-    // Pre-armed before the accepting commit: if this invocation dies between
-    // the commit and the saga driver below, the coordinator alarm still wakes
-    // and re-drives the stored operation to completion. A spurious wake-up
-    // with no operation is a no-op.
-    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
+    this.#lineCommandsInFlight += 1;
+    try {
+      // Pre-armed before the accepting commit: if this invocation dies between
+      // the commit and the saga driver below, the coordinator alarm still wakes
+      // and re-drives the stored operation to completion. A spurious wake-up
+      // with no operation is a no-op.
+      await this.#updateLineAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
 
-    const result = this.ctx.storage.transactionSync((): LineCommandResult => {
-      const lifecycle = this.#readLineLifecycle() ?? defaultLineLifecycle(now);
+      const result = this.ctx.storage.transactionSync((): LineCommandResult => {
+        const lifecycle = this.#readLineLifecycle(locationId) ?? defaultLineLifecycle(now);
 
-      const receipt = lifecycle.receipts.find(
-        ({ commandId }) => commandId === command.commandId,
-      );
-      if (receipt !== undefined) {
-        if (receipt.fingerprint !== fingerprint) {
-          return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+        const receipt = lifecycle.receipts.find(
+          ({ commandId }) => commandId === command.commandId,
+        );
+        if (receipt !== undefined) {
+          if (receipt.fingerprint !== fingerprint) {
+            return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+          }
+          const stored = JSON.parse(receipt.responseJson) as LineCommandOutcome;
+          return { ...stored, replayed: true };
         }
-        const stored = JSON.parse(receipt.responseJson) as LineCommandOutcome;
-        return { ...stored, replayed: true };
-      }
-      if (command.expectedLifecycleVersion !== lifecycle.lifecycleVersion) {
-        return { ok: false, code: "VERSION_CONFLICT" };
-      }
+        if (command.expectedLifecycleVersion !== lifecycle.lifecycleVersion) {
+          return { ok: false, code: "VERSION_CONFLICT" };
+        }
 
-      const next = this.#nextLineLifecycle(command, lifecycle, safeRuntime, now);
-      if ("code" in next) return next;
+        const next = this.#nextLineLifecycle(command, lifecycle, safeRuntime, now, locationId);
+        if ("code" in next) return next;
 
-      const outcome: LineCommandOutcome = {
-        ok: true,
-        phase: next.phase,
-        lifecycleVersion: next.lifecycleVersion,
-        replayed: false,
-      };
-      const cutoff = Date.now() - ADAPTER.RECEIPT_TTL_S * 1000;
-      next.receipts = [
-        ...lifecycle.receipts.filter(
-          ({ createdAt }) => Date.parse(createdAt) >= cutoff,
-        ),
-        {
-          commandId: command.commandId,
-          operation: command.operation,
-          fingerprint,
-          responseJson: JSON.stringify(outcome),
-          createdAt: now,
-        },
-      ].slice(-ADAPTER.RECEIPT_CAP);
-      this.#writeLineLifecycle(next);
-      return outcome;
-    });
+        const outcome: LineCommandOutcome = {
+          ok: true,
+          phase: next.phase,
+          lifecycleVersion: next.lifecycleVersion,
+          replayed: false,
+        };
+        const cutoff = Date.now() - ADAPTER.RECEIPT_TTL_S * 1000;
+        next.receipts = [
+          ...lifecycle.receipts.filter(
+            ({ createdAt }) => Date.parse(createdAt) >= cutoff,
+          ),
+          {
+            commandId: command.commandId,
+            operation: command.operation,
+            fingerprint,
+            responseJson: JSON.stringify(outcome),
+            createdAt: now,
+          },
+        ].slice(-ADAPTER.RECEIPT_CAP);
+        this.#writeLineLifecycle(next, locationId);
+        return outcome;
+      });
 
-    if (result.ok && !result.replayed) await this.#driveLineSaga();
-    return result;
+      if (result.ok && !result.replayed) await this.#driveLineSaga(locationId);
+      return result;
+    } finally {
+      this.#lineCommandsInFlight -= 1;
+      await this.#updateLineAlarm(null);
+    }
   }
 
   // Single-coordinator saga driver: idempotent, re-entrant, alarm re-driven.
@@ -2621,20 +2681,21 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<"done" | "retry"> {
     if (operation.identifiers === null) throw new Error("corrupt enable operation");
-    const meta = await authority.readMeta();
+    const meta = await withDeadline(authority.readMeta(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     const generation = (meta?.highWater ?? 0) + 1;
-    const activated = await authority.activate({
+    const activated = await withDeadline<Awaited<ReturnType<typeof authority.activate>>>(authority.activate({
       operationId: operation.operationId,
       generation,
       snapshot: {
         messagingChannelId: (operation.identifiers as LineIdentifiers).messagingChannelId,
       },
-    });
+    }), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (!activated.ok) return "retry";
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
@@ -2647,7 +2708,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         operation: null,
         highWaterCopy: activated.meta.highWater,
         updatedAt: now,
-      });
+      }, locationId);
     });
     return "done";
   }
@@ -2656,20 +2717,21 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<void> {
-    await authority.beginDisable();
+    await withDeadline(authority.beginDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     const finalPassAt = Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
     // Pre-arm before recording the step so a crash between the two can
     // only re-run the idempotent beginDisable, never lose the wake-up.
-    await this.ctx.storage.setAlarm(finalPassAt);
+    await this.#updateLineAlarm(finalPassAt);
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
         operation: { ...operation, step: "final-wait", finalPassAt },
         updatedAt: now,
-      });
+      }, locationId);
     });
   }
 
@@ -2677,9 +2739,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<void> {
     if (operation.finalPassAt === null || Date.now() < operation.finalPassAt) {
-      await this.ctx.storage.setAlarm(
+      await this.#updateLineAlarm(
         operation.finalPassAt ?? Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000,
       );
       return;
@@ -2687,18 +2750,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     // The idempotent beginDisable re-call reports purge progress; the
     // authority refuses completion until a post-lease full purge pass
     // finished, so keep polling until it flips to disabled.
-    const progress = await authority.beginDisable();
+    const progress = await withDeadline(authority.beginDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (!progress.purgeComplete) {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.#updateLineAlarm(Date.now() + 60_000);
       return;
     }
-    const completed = await authority.completeDisable();
+    const completed = await withDeadline(authority.completeDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (completed.meta.state !== "disabled") {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.#updateLineAlarm(Date.now() + 60_000);
       return;
     }
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
@@ -2709,45 +2772,44 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         draft: null,
         operation: null,
         updatedAt: now,
-      });
+      }, locationId);
     });
   }
 
-  async #driveLineSaga(): Promise<void> {
+  async #driveLineSaga(locationId = DEFAULT_LOCATION_ID): Promise<void> {
     for (let step = 0; step < 4; step += 1) {
-      const lifecycle = this.#readLineLifecycle();
+      const lifecycle = this.#readLineLifecycle(locationId);
       const operation = lifecycle?.operation ?? null;
       if (lifecycle === null || operation === null) return;
-      const authority = this.env.ADAPTER_DELIVERY.getByName("installation");
+      const authority = this.env.ADAPTER_DELIVERY.getByName(adapterObjectName(locationId));
       const now = new Date().toISOString();
       try {
         if (operation.kind === "enable") {
-          if ((await this.#driveEnableSaga(operation, authority, now)) === "retry") continue;
+          if ((await this.#driveEnableSaga(operation, authority, now, locationId)) === "retry") continue;
           return;
         }
         if (operation.step === "begin-disable") {
-          await this.#driveBeginDisableStep(operation, authority, now);
+          await this.#driveBeginDisableStep(operation, authority, now, locationId);
           return;
         }
         if (operation.step === "final-wait") {
-          await this.#driveFinalWaitStep(operation, authority, now);
+          await this.#driveFinalWaitStep(operation, authority, now, locationId);
           return;
         }
         return;
       } catch {
         // Adapter RPC failed; leave the operation recorded and let the alarm
         // re-drive it.
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        await this.#updateLineAlarm(Date.now() + 60_000);
         return;
       }
     }
-    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
+    await this.#updateLineAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
   }
 
   override async alarm(): Promise<void> {
-    await this.#driveLineSaga();
-    // No re-arm when idle: with no operation in flight this object keeps no
-    // pending alarm (the same disarm invariant the delivery object holds).
+    for (const locationId of this.#locationIds()) await this.#driveLineSaga(locationId);
+    await this.#updateLineAlarm(null);
   }
 
   async executeCommand(
