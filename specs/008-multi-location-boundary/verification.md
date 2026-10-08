@@ -20,13 +20,17 @@ Results were obtained at the corresponding writer or integration stage. They are
 | Named calendar version/digest/unique immutable target/readiness/current-owner boundary | Four named-calendar cases, making 12 root runtime cases in total, plus existing pure settings/type checks passed |
 | Location/day routing and create recovery | Two fifty-way races, eight exact-value rollback/retry cases and handoff checks passed in the HTTP writer; combined regression remains pending |
 | Initial customer selector and named-only URL | Two stubbed browser cases failed before the UI change and then passed; these are controller evidence, not real-backend acceptance |
-| Public location/storage/proof helpers | 18 pure journey cases passed in the UI writer; combined acceptance remains pending |
-| Required release documents/source/test paths | Five omission regressions first failed because audit incorrectly succeeded, then passed after the required-path fix |
-| Core command registration and release audit | 108 core cases passed at the first metadata stage; later additions require the final combined run. Current release audit passed with 89 allowlisted paths |
+| Public location/storage/proof helpers | 19 pure journey cases passed in the UI writer; combined acceptance remains pending |
+| Required release documents/source/test paths | Eight omission regressions first failed because audit incorrectly succeeded, then passed after the required-path fix |
+| Core command registration and release audit | 108 core cases passed at the first metadata stage; later additions require the final combined run. Current release audit passed with 92 allowlisted paths |
 
 The release-boundary red cases were literal `actual exit 0` versus `expected exit 1` after removing a required manifest path. The audit printed success with 84, 86 or 88 allowlisted files. The fixed audit refuses those omissions. No gate was weakened.
 
 Root authority completion added five LINE lifecycle/scheduling cases, bringing the dedicated root suite to 17. Its final compatibility run passed 17 root + 55 existing delivery + 26 LINE cases (98 total), strict typecheck and release audit. New root behavior is tested through actual RPC/SQLite; unchanged pure settings and roster fixtures were retained rather than duplicating native-storage tests.
+
+The backend milestone passed all six Worker files (293 tests), strict typechecking and diff checking before integration. The UI milestone adds real multi-location browser flows while preserving the 42 legacy cases; discovery initially found 51 cases. Later security regressions are still being integrated and tested. Discovery is not a passing browser result.
+
+Independent fixed-ref reviews found four P2 runtime issues: unknown named-calendar intent could create an undrainable recovery row; reauthentication retained old private UI while awaiting the directory; a remembered result used mutable location scope; and delayed draft restoration could continue after a location switch. The backend and UI writers are addressing these with regressions. The Standards review also requested partial-webhook-failure/retry coverage. These findings remain open here until the fixes and exact-head follow-up reviews pass.
 
 An independent fixed-ref source review of the completed location/grant/Calendar slices reported Standards 0 and Spec 0 findings. It excludes the later LINE saga and unintegrated consumers, so it does not complete the final review gate.
 
