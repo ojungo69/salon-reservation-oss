@@ -2026,6 +2026,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     const { parseGoogleCredentials } = await import("./calendar-adapter.ts");
     const credentials = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
     const { expectedVersion, googleEnabled, feedEnabled, calendarId } = input;
+    const googleNotConfigured = googleEnabled && (calendarId === null || credentials === null);
+    const googleTargetIsPrimary = googleEnabled && credentials?.calendarId.toLowerCase() === "primary";
     return this.ctx.storage.transactionSync((): CalendarSettingsResult => {
       if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
       if (!this.#locationIds().includes(locationId)) return { ok: false, code: "LOCATION_NOT_FOUND" };
@@ -2036,10 +2038,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       if (current.calendarId !== null && calendarId !== current.calendarId) {
         return { ok: false, code: "CALENDAR_TARGET_IMMUTABLE" };
       }
-      if ((feedEnabled && current.feedTokenDigest === null) || (googleEnabled && (calendarId === null || credentials === null))) {
+      if ((feedEnabled && current.feedTokenDigest === null) || googleNotConfigured) {
         return { ok: false, code: "CALENDAR_NOT_CONFIGURED" };
       }
-      if (googleEnabled && credentials?.calendarId.toLowerCase() === "primary") {
+      if (googleTargetIsPrimary) {
         return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
       }
       if (calendarId !== null) {
@@ -2256,7 +2258,11 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     }
     const known = this.#locationIds();
     if (new Set(ids).size !== ids.length || ids.some((id) => !known.includes(id))) return null;
-    return ids.sort();
+    return ids.sort((left, right) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    });
   }
 
   #readStaffScope(member: StaffMember): StaffLocationScope {
@@ -2818,7 +2824,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   }
 
   override async alarm(): Promise<void> {
-    for (const locationId of this.#locationIds()) await this.#driveLineSaga(locationId);
+    await Promise.all(this.#locationIds().map((locationId) => this.#driveLineSaga(locationId)));
     await this.#updateLineAlarm(null);
   }
 

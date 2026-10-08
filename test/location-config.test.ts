@@ -322,6 +322,46 @@ describe("location configuration authority", () => {
     expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
     await runInDurableObject(config(), (_instance, state) => { Reflect.deleteProperty(state.storage, "setAlarm"); });
   });
+  it("recovers a peer from the shared alarm while another location actor is stalled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SUITE_NOW);
+    await create("salon-b"); await create("salon-c");
+    await protect("salon-b"); await protect("salon-c");
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: {
+        getByName: (name: string) => {
+          const stub = env.ADAPTER_DELIVERY.getByName(name);
+          return { readMeta: () => stub.readMeta(), activate: async () => ({ ok: false, code: "STALE_GENERATION" }) };
+        },
+      } } });
+    });
+    expect((await line("salon-b", "line.enable", 0)).ok).toBe(true);
+    expect((await line("salon-c", "line.enable", 0)).ok).toBe(true);
+    const blocked = Promise.withResolvers<null>();
+    await runInDurableObject(config(), (instance) => {
+      const bindings = Reflect.get(instance, "env");
+      Object.defineProperty(instance, "env", { configurable: true, value: { ...bindings, ADAPTER_DELIVERY: {
+        getByName: (name: string) => {
+          const stub = env.ADAPTER_DELIVERY.getByName(name);
+          return name === "location:salon-b"
+            ? { readMeta: () => blocked.promise, activate: (input: Parameters<typeof stub.activate>[0]) => stub.activate(input) }
+            : stub;
+        },
+      } } });
+    });
+    vi.setSystemTime(SUITE_NOW + 5_000);
+    const alarm = runDurableObjectAlarm(config());
+    try {
+      await expect.poll(async () => (await config().lineAdapterStatus("salon-c")).phase).toBe("active");
+      expect((await config().lineAdapterStatus("salon-b")).phase).toBe("activating");
+    } finally {
+      blocked.resolve(null);
+      await alarm;
+    }
+    expect((await config().lineAdapterStatus("salon-b")).phase).toBe("active");
+    expect(await runInDurableObject(config(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
   it("preserves an earlier recovery alarm and draining webhook target while a peer is enabling", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(SUITE_NOW);
