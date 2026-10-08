@@ -141,7 +141,7 @@ export type CalendarSettingsResult =
 
 const isCalendarTargetId = (value: unknown): value is string =>
   typeof value === "string" && value.length >= 1 && value.length <= 1024 &&
-  value.trim() === value && value.toLowerCase() !== "primary" && !/[\u0000-\u001f\u007f]/.test(value);
+  value.trim() === value && value.toLowerCase() !== "primary" && !CONTROL.test(value);
 
 export interface ReadinessRuntime {
   ownerSecretPresent: boolean;
@@ -1906,7 +1906,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       if (!this.#tableExists("__location_states")) throw new Error("LOCATION_NOT_FOUND");
       const row = this.ctx.storage.sql.exec<{ state_json: string }>(
         "SELECT state_json FROM __location_states WHERE location_id = ?", locationId,
-      ).toArray()[0];
+      ).toArray().at(0);
       if (row === undefined) throw new Error("LOCATION_NOT_FOUND");
       return this.#parseStateRow(row.state_json);
     }
@@ -2123,7 +2123,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         const receipt = sql.exec<{ creation_fingerprint: string; creation_response_json: string }>(
           "SELECT creation_fingerprint, creation_response_json FROM __location_states WHERE creation_command_id = ?",
           commandId,
-        ).toArray()[0];
+        ).toArray().at(0);
         if (receipt !== undefined) {
           if (receipt.creation_fingerprint !== fingerprint) return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
           const location: unknown = JSON.parse(receipt.creation_response_json);
