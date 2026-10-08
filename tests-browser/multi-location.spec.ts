@@ -190,7 +190,9 @@ for (const locationId of ["salon-b", "default"]) {
       await expect(page.locator("#booking-date")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
       await expect(page.locator("#customer-name")).toBeEmpty();
       await expect(page.locator("body")).not.toContainText(customerName);
-      expect(posted.length).toBe(1);
+      // Keep captured commands out of matcher failure diagnostics.
+      const pendingRequestCount = posted.length;
+      expect(pendingRequestCount).toBe(1);
       expect(await page.evaluate((key) => sessionStorage.getItem(key) !== null, pendingKey)).toBe(true);
       if (locationId === "default") {
         await signInSetup(ownerPage, "/setup?location=default");
@@ -204,21 +206,29 @@ for (const locationId of ["salon-b", "default"]) {
       }
 
       await page.goto(locationId === "default" ? "/" : "/?location=salon-b");
-      await expect(page).toHaveURL(new RegExp(`\\?location=${locationId}$`));
+      await expect(page).toHaveURL((url) => url.pathname === "/" &&
+        url.searchParams.getAll("location").length === 1 && url.searchParams.get("location") === locationId);
       await expect(page.locator("#booking-submit")).toHaveText("未確認の予約結果を再確認する");
       await expect(page.locator("[data-review-name]")).toHaveText(customerName);
       await page.click("#booking-submit");
       await expect(page.locator("#booking-result")).toBeVisible();
       await expect(page.locator("[data-booking-result-status]")).toContainText("同じ申請の受付結果を確認しました");
-      expect(posted.length).toBe(2);
       expect(posted.every(({ location }) => location === locationId)).toBe(true);
       const commands = posted.map(({ body }) => {
         const { turnstileToken, replayOnly, ...command } = body;
         return JSON.stringify(command);
       });
-      expect(commands[0] === commands[1]).toBe(true);
-      expect(posted[0]?.body.replayOnly === false && posted[1]?.body.replayOnly === true).toBe(true);
-      expect(posted[1]?.body.turnstileToken === "").toBe(true);
+      const replayEvidence = {
+        requestCount: posted.length,
+        sameCommand: commands[0] === commands[1],
+        initialCreate: posted[0]?.body.replayOnly === false,
+        receiptOnlyRetry: posted[1]?.body.replayOnly === true,
+        emptyTurnstile: posted[1]?.body.turnstileToken === "",
+      };
+      expect(replayEvidence).toEqual({
+        requestCount: 2, sameCommand: true, initialCreate: true,
+        receiptOnlyRetry: true, emptyTurnstile: true,
+      });
       expect(replayStatus).toBe(201);
       expect(committedId !== "" && committedId === replayedId).toBe(true);
       expect(await page.evaluate((key) => sessionStorage.getItem(key) === null, pendingKey)).toBe(true);
@@ -562,8 +572,11 @@ test("a staff member assigned only to the named location cannot see default, and
   expect(keyLifecycle).toEqual({ visible: true, clearedByApp: true });
   await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("認証しました");
-  expect(posted.length).toBe(2);
-  expect(JSON.stringify(posted[0]) === JSON.stringify(posted[1])).toBe(true);
+  const proxyReplayEvidence = {
+    requestCount: posted.length,
+    sameCommand: JSON.stringify(posted[0]) === JSON.stringify(posted[1]),
+  };
+  expect(proxyReplayEvidence).toEqual({ requestCount: 2, sameCommand: true });
   await page.click("#schedule-view-day");
   await page.fill("#admin-date", targetDate);
   await page.locator("#admin-date").blur();
@@ -591,7 +604,7 @@ test("a staff member assigned only to the named location cannot see default, and
   await expect(page.locator("body")).not.toContainText("B_PROXY_PRIVATE");
   await expect(page.locator("[data-operator-location] option[value='default']")).toHaveCount(0);
   await expect(page.locator("[data-operator-location]")).toHaveValue("");
-  expect(privateRequests.length).toBe(0);
+  expect(privateRequests).toHaveLength(0);
   await page.locator("[data-operator-location]").selectOption("salon-b");
   await expect(page).toHaveURL(/\?location=salon-b$/);
   await expect(page.locator("#auth-status")).toContainText("認証しました");
@@ -635,11 +648,15 @@ test("a staff member assigned only to the named location cannot see default, and
   await signInStaff();
   await expect(page.locator("#auth-status")).toContainText("未確認の操作結果を再確認してから認証し直して");
   await expect(page.locator("#closure-submit")).toHaveText("未確認の登録結果を再確認する");
-  expect(closurePosts.length).toBe(1);
+  const pendingClosureRequestCount = closurePosts.length;
+  expect(pendingClosureRequestCount).toBe(1);
   await page.click("#closure-submit");
   await expect(page.locator("[data-closure-status]")).toContainText("登録しました");
-  expect(closurePosts.length).toBe(2);
-  expect(closurePosts[0]?.body === closurePosts[1]?.body).toBe(true);
+  const closureReplayEvidence = {
+    requestCount: closurePosts.length,
+    sameCommand: closurePosts[0]?.body === closurePosts[1]?.body,
+  };
+  expect(closureReplayEvidence).toEqual({ requestCount: 2, sameCommand: true });
   expect(closurePosts.every(({ location }) => location === "salon-b")).toBe(true);
   await page.fill("#admin-date", closureDate);
   await page.locator("#admin-date").blur();
@@ -683,7 +700,7 @@ test("a staff member assigned only to the named location cannot see default, and
   await expect(page.locator("body")).not.toContainText("EMPTY_SCOPE_PRIVATE");
   await expect(page.locator("[data-reservation-list]")).not.toContainText("架空 利用者 B");
   await expect(page.locator("[data-detail-customer]")).toHaveText("—");
-  expect(privateRequests.length).toBe(beforeEmptySignIn);
+  expect(privateRequests).toHaveLength(beforeEmptySignIn);
   const pendingRetained = await page.evaluate(() => ({
     hasA: sessionStorage.getItem("salon-reservation:pending-owner-create:v1") !== null,
     hasB: sessionStorage.getItem("salon-reservation:pending-owner-create:v1:location:salon-b") !== null,
