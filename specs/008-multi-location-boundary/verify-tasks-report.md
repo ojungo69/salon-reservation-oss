@@ -138,3 +138,16 @@ Coordinator closure: all four execution gaps and report recording are complete w
 | `s4-ui-coverage-full-browser.log` | `a989497598b0c7efb481b2080847684e897e9051fe8076d132d74909d5841c71` |
 | `s4-ui-safe-credential-final-focused.log` | `de6317408a3b6aa7490fa87825a3097b076bea379a7074b03436ca466f7c6a4c` |
 | `s4-ui-safe-credential-privacy-proof.log` | `b8ac55cc182ec881e10e2f88d110f1bcc21054694aac67fbe17140940d2d0b90` |
+
+
+## Coordinator source-quality acceptance
+
+After the recorded one audit, public analysis and fresh exact-ref reviews led to bounded source-quality fixes and two further regression cases. The original audit above was not rerun or rewritten. Final local acceptance at `ad2eed8b8e2abf94042e668fa0b1c9b934ebcf90` passes `npm run check` (120 core, 327 Worker/six files, strict/generated types, dry-run, audit zero and release 94 paths), the complete 59-case real browser suite, and static security/secrets rules over 29 files with zero findings/errors.
+
+Root `e7bbb273` includes the blocked-actor alarm peer-progress red/green case; Worker/delivery `19e3af1` retains all-target strict ACK and tests four malformed fulfilled replies as 503. Browser `4fca308` closes the inherited stale-409 error with a native reauthentication regression. Path helper `97f55da` rejects authority and double-slash normalization attacks while retaining valid default bytes. Fresh independent source reviews accompany these changes.
+
+The scoped browser tests now live in `multi-location.spec.ts` (bootstrap/capacity), `multi-location-customer.spec.ts` (customer/LINE) and `multi-location-operator.spec.ts` (staff/schedule/proofs). Project dependencies retain original order and artifact protections. The original 58 cases and assertions remain; the new stale-error case makes 59. New test paths are release-required with red/green omission checks. This path mapping supplements the immutable audit's original file/line references.
+
+Current-head hosted quality/review checks and verified-main publication remain release gates. Existing-system migration and live provider/account/deployment operations remain excluded.
+
+The final customer URL assertions use equivalent predicates to avoid proof-bearing body snapshots in matcher failures. An installed-tool inert-marker check confirms RegExp retention true and predicate retention false; this is test-diagnostic hardening after the full local run, with unchanged matching conditions and a complete current-head CI rerun required.

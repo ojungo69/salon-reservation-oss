@@ -16,6 +16,8 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+// URL predicates keep failure diagnostics from retaining rendered booking proofs.
+
 test("a delayed default draft restore cannot overwrite the named booking form", async ({ page }) => {
   await page.goto("/?location=default");
   await expect(page.locator("#booking-date")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);

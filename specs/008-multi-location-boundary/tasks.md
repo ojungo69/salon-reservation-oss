@@ -31,7 +31,7 @@
 - [X] T010 [US2] H: thread canonical request-local location through existing strict routes/day calls in `src/worker.ts`, retaining old bodies/responses/rate buckets and binding named Siteverify idempotency to location; use shared names in `src/reservation-day.ts` handoff without new persisted day fields.
 - [X] T011 [P] [US2] U: implement directory-first selection, named-only-live URL preservation, explicit-unknown refusal, legacy pending precedence and suffixed storage keys in `public/app.js` and shared `public/location.js`; retain old default v1 record shapes from `public/journey.js`.
 - [X] T012 [US2] U: label/location-bind review/result/proof cards and internal legal/navigation links in `public/index.html`, `public/bookings.html`, `public/privacy.html`, `public/terms.html`, `public/cancellation.html` and `public/app.js`; known-key aggregate is at most four keys and 16 status checks per page, never current-scope proof fallback.
-- [X] T013 [US2] U: add real booking/return/cancel/uncertain-result/paused-proof/unknown-link/keyboard/width cases in `tests-browser/multi-location.spec.ts` and the existing `tests-browser/customer.spec.ts` selection/keyboard suite; preserve default tests; update `tests-browser/harness.ts` forwarding to retain named query scope.
+- [X] T013 [US2] U: add real booking/return/cancel/uncertain-result/paused-proof/unknown-link/keyboard/width cases in `tests-browser/multi-location-customer.spec.ts`, `tests-browser/multi-location-operator.spec.ts` and the existing `tests-browser/customer.spec.ts` selection/keyboard suite; preserve default tests; update `tests-browser/harness.ts` forwarding to retain named query scope.
 
 ## Phase 5: US3 — Limit staff to assigned salons (P1)
 
@@ -42,7 +42,7 @@
 - [X] T016 [US3] H: implement new scope projection/update routes and total route-to-role/location authorization in `src/worker.ts`; global directory works for B-only staff, wrong-role/location matches invalid credential 401.
 - [X] T017 [P] [US3] U: add staff scope controls and authenticated scoped operator selector in `public/setup.html`, `public/admin.html`, `public/app.js`; preserve memory-only credentials and invalidate credential/location/request generations for all private responses.
 - [X] T018 [US3] H: expand the complete endpoint matrix, slow-body/revocation, malformed/duplicate query, unknown-scope and PII non-disclosure tests in `test/worker.test.ts`; explicitly preserve S3 in-flight reservation semantics.
-- [X] T019 [US3] U: prove B-only sign-in, grant removal, empty grants, wrong explicit scope, late old-location responses and proxy/closure pending recovery in `tests-browser/multi-location.spec.ts`, retaining existing `tests-browser/install.spec.ts` and `tests-browser/owner.spec.ts` coverage.
+- [X] T019 [US3] U: prove B-only sign-in, grant removal, empty grants, wrong explicit scope, late old-location responses and proxy/closure pending recovery in `tests-browser/multi-location-operator.spec.ts`, retaining existing `tests-browser/install.spec.ts` and `tests-browser/owner.spec.ts` coverage.
 
 ## Phase 6: US4 — Enable optional integrations per salon (P2)
 
