@@ -137,8 +137,8 @@ for (const kind of ["commit", "tag"] as const) {
   });
 }
 
-for (const required of ["AGENTS.md", ".github/pull_request_template.md"]) {
-  test(`public candidates retain maintainer instructions: ${required}`, { skip: !POSIX }, () => {
+for (const required of ["AGENTS.md", ".github/pull_request_template.md", "test/release-metadata.test.ts"]) {
+  test(`public candidates retain required files: ${required}`, { skip: !POSIX }, () => {
     const { tree, git, audit } = createFixture();
     try {
       const baseline = audit("--public-tree");
@@ -151,6 +151,96 @@ for (const required of ["AGENTS.md", ".github/pull_request_template.md"]) {
       const result = audit("--public-tree");
       assert.equal(result.status, 1, result.output);
       assert.ok(result.output.includes(`required public path is missing: ${required}`), result.output);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const kind of ["commit", "tag"] as const) {
+  test(`refuses private ${kind} metadata hidden by a replacement object`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+      if (kind === "tag") {
+        git("-c", "tag.gpgsign=false", "tag", "-a", "private-tag", "-m", marker);
+        git("-c", "tag.gpgsign=false", "tag", "-a", "clean-tag", "-m", "public release");
+        git("replace", "refs/tags/private-tag", "refs/tags/clean-tag");
+        assert.equal(git("cat-file", "tag", "refs/tags/private-tag").includes(marker), false);
+      } else {
+        const base = git("rev-parse", "HEAD").trim();
+        const cleanTree = git("rev-parse", "HEAD^{tree}").trim();
+        git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", marker);
+        const clean = git("commit-tree", cleanTree, "-p", base, "-m", "public replacement").trim();
+        git("replace", "HEAD", clean);
+        assert.equal(git("log", "--all", "--format=%B").includes(marker), false);
+      }
+      const result = audit();
+      assert.equal(result.status, 1, result.output);
+      assert.match(result.output, /private porting ledger marker found in (commit messages|annotated tag metadata)/);
+      assert.equal(result.output.toUpperCase().includes(marker), false, "must not echo private metadata");
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const kind of ["blob", "tree"] as const) {
+  for (const ref of ["annotated", "nested", "lightweight"] as const) {
+    test(`refuses a ${kind} outside commit history via ${ref} tag`, { skip: !POSIX }, () => {
+      const { tree, git, audit } = createFixture();
+      try {
+        const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+        const path = "unpublished-evidence.txt";
+        writeFileSync(join(tree, path), `${marker}\n`);
+        git("add", path);
+        const target = git(...(kind === "blob" ? ["rev-parse", `:${path}`] : ["write-tree"])).trim();
+        git("reset", "--", path);
+        rmSync(join(tree, path));
+        if (ref === "lightweight") git("tag", "retained", target);
+        else {
+          git("-c", "tag.gpgsign=false", "tag", "-a", "retained", target, "-m", "public release");
+          if (ref === "nested") {
+            git("-c", "tag.gpgsign=false", "tag", "-a", "outer", "retained", "-m", "public wrapper");
+            git("tag", "-d", "retained");
+          }
+        }
+        const result = audit();
+        assert.equal(result.status, 1, result.output);
+        assert.match(result.output, /non-commit tag target|cannot enumerate tag refs for metadata audit/);
+        assert.equal(result.output.toUpperCase().includes(marker), false, "must not echo object contents");
+      } finally {
+        rmSync(tree, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const kind of ["marker", "path"] as const) {
+  test(`refuses a private ${kind} added and removed only by merges`, { skip: !POSIX }, () => {
+    const { tree, git, audit } = createFixture();
+    try {
+      const marker = ["PRIVATE", "PORTING", "EVIDENCE: DO NOT PUBLISH"].join("-");
+      const base = git("rev-parse", "HEAD").trim();
+      const cleanTree = git("rev-parse", "HEAD^{tree}").trim();
+      const path = kind === "path" ? "docs/PRIVATE_PORTING_LEDGER.md" : "merge-evidence.txt";
+      writeFileSync(join(tree, path), kind === "path" ? "fictional evidence\n" : `${marker}\n`);
+      git("add", path);
+      const privateTree = git("write-tree").trim();
+      git("reset", "--", path);
+      rmSync(join(tree, path));
+      const side = git("commit-tree", cleanTree, "-p", base, "-m", "first side").trim();
+      const added = git("commit-tree", privateTree, "-p", base, "-p", side, "-m", "merge addition").trim();
+      const later = git("commit-tree", privateTree, "-p", added, "-m", "second side").trim();
+      // A clean first parent makes default path history prune the entire merged side.
+      const firstParent = kind === "path" ? base : added;
+      const removed = git("commit-tree", cleanTree, "-p", firstParent, "-p", later, "-m", "merge removal").trim();
+      git("update-ref", "refs/heads/main", removed);
+      assert.equal(git("status", "--porcelain"), "", "only reachable merge history carries evidence");
+      const result = audit();
+      assert.equal(result.status, 1, result.output);
+      assert.ok(result.output.includes(`private porting ledger ${kind} found in public history`), result.output);
+      assert.equal(result.output.toUpperCase().includes(marker), false, "must not echo historical content");
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }

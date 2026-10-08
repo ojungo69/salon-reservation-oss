@@ -82,6 +82,7 @@ const REQUIRED = new Set([
   "test/installation-config.test.ts",
   "test/calendar-adapter.test.ts",
   "test/journey.test.ts",
+  "test/release-metadata.test.ts",
   "test/reservation-day.test.ts",
   "test/worker.test.ts",
   "wrangler.jsonc",
@@ -549,7 +550,7 @@ const resolveGit = () => {
 };
 
 const gitRaw = (args) =>
-  execFileSync(resolveGit(), ["-C", ROOT, ...args], {
+  execFileSync(resolveGit(), ["--no-replace-objects", "-C", ROOT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -603,11 +604,12 @@ const auditPrivatePortingLedger = () => {
       markerInIndex = false;
     }
     pathInHistory =
-      git(["log", "--all", "--format=%H", "--", `:(icase)${PRIVATE_LEDGER_PATH}`]) !== "";
+      git(["log", "--all", "--full-history", "--format=%H", "--", `:(icase)${PRIVATE_LEDGER_PATH}`]) !== "";
     markerInHistory =
       git([
         "log",
         "--all",
+        "-m",
         "--format=%H",
         "--text",
         "--regexp-ignore-case",
@@ -641,17 +643,18 @@ const auditPrivatePortingLedger = () => {
 // Only tag objects can contain tag metadata. Stream refs and retain unique tag
 // roots only; neither unrelated refs nor blobs should hit a subprocess buffer.
 // Follow nested tag targets so deleting an inner ref cannot hide its metadata.
+// Reject blob/tree refs: commit-history scans cannot inspect their contents.
 const readAnnotatedTagRoots = async () => {
   const child = spawn(
     resolveGit(),
-    ["-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
+    ["--no-replace-objects", "-C", ROOT, "for-each-ref", "--format=%(objecttype) %(objectname)"],
     { stdio: ["ignore", "pipe", "ignore"] },
   );
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const roots = new Set();
   let invalid = false;
   lines.on("line", (line) => {
-    const ref = /^(blob|tree|commit|tag) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line);
+    const ref = /^(commit|tag) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line);
     if (ref === null) invalid = true;
     else if (ref[1] === "tag") roots.add(ref[2]);
   });
@@ -695,6 +698,7 @@ const auditAnnotatedTagMetadata = async () => {
     const target = /^object ([0-9a-f]{40,64})\ntype (blob|tree|commit|tag)\n/.exec(metadata);
     if (target === null) fail("invalid tag target metadata");
     if (target[2] === "tag") pending.push(target[1]);
+    else if (target[2] !== "commit") fail("non-commit tag target is not allowed");
   }
 };
 
@@ -723,7 +727,7 @@ const auditPublicTree = (paths, denylist) => {
   }
   const metadata = git(["show", "-s", "--format=%an%n%ae%n%cn%n%ce%n%B", "HEAD"]);
   scanText("commit metadata", metadata, denylist);
-  execFileSync(resolveGit(), ["-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
+  execFileSync(resolveGit(), ["--no-replace-objects", "-C", ROOT, "fsck", "--full", "--no-reflogs", "--no-dangling"], {
     stdio: ["ignore", "ignore", "pipe"],
   });
 };

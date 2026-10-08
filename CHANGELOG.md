@@ -86,6 +86,10 @@ Every published version resolves to an immutable Git tag and a GitHub Release. S
   Both pages explain the JavaScript requirement when scripting is unavailable.
 - Failing rendered-page runs retain hidden Playwright trace and screenshot files.
 - Public release candidates must include the maintainer instructions and PR declaration template.
+- Release auditing inspects original Git objects and merge diffs, rejects blob/tree refs and tag
+  targets outside commit history, and requires its metadata regression suite in public candidates.
+- Development dependencies use patched Sharp, Undici, and source-map-js versions while retaining
+  the existing Workers test harness and runtime.
 
 ## [0.2.0] - 2026-08-10
 
