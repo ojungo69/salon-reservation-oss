@@ -1763,6 +1763,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         const meta = this.#readMeta();
         if (
           meta?.state === "active" &&
+          meta.generation === row.generation &&
           meta.googleConfigured &&
           meta.modeFingerprint === credentialFingerprint
         ) {

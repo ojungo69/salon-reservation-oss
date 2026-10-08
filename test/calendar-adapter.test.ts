@@ -484,6 +484,50 @@ describe("calendar projection and feed authority", () => {
     });
   });
 
+  it("S4 ignores an old Google configuration failure after a newer activation starts", async () => {
+    const fixture = await namedFixture("studio-east", null, true);
+    const descriptor = await fixture.authority.descriptor();
+    if (descriptor === null) throw new Error("named fixture activation failed");
+    const date = suiteDate(1);
+    expect(await env.RESERVATION_DAYS.getByName(`location:studio-east:${date}`).createPublic(
+      { ...lineDay, date, calendarAdapter: descriptor }, createInput(date),
+    )).toMatchObject({ ok: true });
+    await fixture.authority.pokeDay({ date });
+    const settled = await runInDurableObject(fixture.authority, async (instance, state) => {
+      const root = (instance as unknown as { env: Env }).env.INSTALLATION_CONFIG.getByName("installation");
+      let writes = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        if (String(input) === "https://oauth2.googleapis.com/token") return mockGoogleAuthSuccess();
+        writes += 1;
+        // Complete an already-started old provider request only after the root
+        // and local actor have advanced to the new activation generation.
+        expect(await root.setCalendarSettings({ expectedVersion: fixture.version,
+          googleEnabled: false, calendarId: fixture.calendarId, feedEnabled: false }, null, "studio-east"))
+          .toMatchObject({ ok: true });
+        expect(await root.setCalendarSettings({ expectedVersion: fixture.version + 1,
+          googleEnabled: true, calendarId: fixture.calendarId, feedEnabled: false }, null, "studio-east"))
+          .toMatchObject({ ok: true });
+        await instance.descriptor();
+        return Response.json({ error: { errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+      });
+      await instance.alarm();
+      return { writes, meta: state.storage.sql.exec("SELECT generation, google_blocked_fingerprint FROM meta").one(),
+        mutation: state.storage.sql.exec("SELECT generation, status FROM google_mutations").one() };
+    });
+    expect(settled).toEqual({ writes: 1,
+      meta: { generation: fixture.version + 2, google_blocked_fingerprint: null },
+      mutation: { generation: fixture.version + 2, status: "queued" } });
+    let retried = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "https://oauth2.googleapis.com/token") return mockGoogleAuthSuccess();
+      retried += 1;
+      return new Response(null, { status: 204 });
+    });
+    await runDurableObjectAlarm(fixture.authority);
+    expect(retried).toBe(1);
+    expect(await fixture.authority.diagnostics()).toMatchObject({ pendingCount: 0 });
+  });
+
   it("S4 retries a cold disable if persisting its cleanup alarm fails", async () => {
     const fixture = await namedFixture("studio-east", null, true);
     expect(await fixture.root.setCalendarSettings({ expectedVersion: fixture.version,
