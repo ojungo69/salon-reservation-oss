@@ -27,6 +27,12 @@ No current row is labeled `Generalized`. Behavioral similarity or reuse of patte
 
 [ADR0002](ADR-0002-CREATE-STORAGE-AUTHORITY.md) records the current authority and maps independently authored recovery checks to a pinned, publicly licensed application reference. It verifies failed-create exact-value rollback, identical retry, and stable replay for the existing bounded product. It does not establish application migration readiness, cross-location customer identity, measured backend superiority, or copied implementation provenance. Historical rights assessments of unpublished material remain separate and unchanged.
 
+## Planned S4 extension
+
+[ADR0003](ADR-0003-MULTI-LOCATION-BOUNDARY.md) selects a bounded four-location extension of the existing public implementation: independent location/day booking authority, scoped operators and per-location optional adapters. This is an accepted design, not delivered capability. Current affected runtime provenance remains **Reimplemented**; no source, tests, fixtures or DDL were copied. The public relational reference informs isolation, catalog ownership and missing-scope tests.
+
+The coordinating evidence owner maintains the required source/test mapping, rights/sanitization record and current public projection separately. Implementation acceptance still requires exact default compatibility, location races/recovery, scoped authorization, provider isolation, rendered browser evidence and standing security/review gates. Migration readiness remains **Blocked**; no mapper, data conversion or existing-system migration has been started or authorized by this design.
+
 ## How to read the table
 
 ### Current disposition

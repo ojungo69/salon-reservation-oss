@@ -115,7 +115,7 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 
 | Capability | Production task it serves | Status | Current evidence / remaining gap | Roadmap stage / exclusion boundary |
 |---|---|---|---|---|
-| Multiple locations | One installation serves several salons | Planned | Requires the partition/transaction design recorded as an S4 prerequisite | Stage S4 |
+| Multiple locations | One installation serves several salons | Planned | Accepted bounded design in [ADR0003](ADR-0003-MULTI-LOCATION-BOUNDARY.md); implementation, isolation/race, scoped authorization, adapter and browser evidence pending | Stage S4 |
 | Cross-day moves | The operator moves a booking to another day | Deliberately excluded | Needs its own transaction design; not implied by multi-location | [Exclusions](#deliberate-exclusions): cross-day moves |
 | Import/migration from an existing system | A production installation moves its data in | Planned | Hard-depends on S3/S4 schemas existing first | Stage S5 |
 
