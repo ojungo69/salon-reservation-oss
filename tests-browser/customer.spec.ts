@@ -343,7 +343,7 @@ test("the loading booking page has no automated accessibility violations", async
     const configRequest = page.waitForRequest("**/api/config");
     await page.goto("/", { waitUntil: "commit" });
     await configRequest;
-    await expect(page.locator("#turnstile-widget")).toBeVisible();
+    await expect(page.getByRole("group", { name: "自動送信防止の確認" })).toBeVisible();
     await expectNoAxeViolations(page);
   } finally {
     releaseConfig();
