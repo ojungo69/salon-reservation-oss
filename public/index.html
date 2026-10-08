@@ -260,7 +260,10 @@
               <div><dt>同意する文書版</dt><dd data-consent-version>読込後に表示されます</dd></div>
             </dl>
 
-            <div id="turnstile-widget" class="turnstile-box" role="group" aria-label="自動送信防止の確認"></div>
+            <fieldset class="turnstile-box">
+              <legend class="visually-hidden">自動送信防止の確認</legend>
+              <div id="turnstile-widget"></div>
+            </fieldset>
             <div class="action-bar">
               <button class="text-button" type="button" data-journey-back="details">連絡先の入力に戻る</button>
               <div class="action-stack">
