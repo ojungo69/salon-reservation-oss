@@ -36,8 +36,14 @@ export const storageKey = (base, locationId) => {
 
 export const scopedPath = (path, locationId) => {
   if (!validId(locationId)) throw new TypeError("Invalid location");
-  if (!path.startsWith("/") || path.startsWith("//")) throw new TypeError("Expected same-origin path");
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\") || /[\t\r\n]/.test(path)) {
+    throw new TypeError("Expected same-origin path");
+  }
   const url = new URL(path, "https://scope.invalid");
+  // Dot-segment normalization can expose a network-path prefix.
+  if (url.origin !== "https://scope.invalid" || url.pathname.startsWith("//")) {
+    throw new TypeError("Expected same-origin path");
+  }
   if (url.searchParams.has("location")) throw new TypeError("Location already specified");
   if (locationId === "default") return path;
   url.searchParams.set("location", locationId);

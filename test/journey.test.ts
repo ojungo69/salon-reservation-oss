@@ -95,6 +95,22 @@ test("named location URLs and storage never alter the legacy default bytes", () 
   assert.throws(() => scopedPath("/api/config?location=default", "salon-b"));
 });
 
+test("location paths reject authority and double-slash normalization for every scope", () => {
+  const scopedPath = location("scopedPath");
+  const unsafe = [
+    String.raw`/\attacker.invalid/path`, String.raw`/\scope.invalid/path`,
+    "/\t/attacker.invalid/path", "/\n/attacker.invalid/path", "/\r/attacker.invalid/path",
+    "/.//attacker.invalid/path", "/a/..//attacker.invalid/path", "/%2e//attacker.invalid/path",
+  ];
+  for (const locationId of ["default", "salon-b"]) {
+    for (const path of unsafe) {
+      assert.throws(() => scopedPath(path, locationId), TypeError, `${locationId}: ${JSON.stringify(path)}`);
+    }
+  }
+  assert.equal(scopedPath("/bookings?value=%5C#proof", "default"), "/bookings?value=%5C#proof");
+  assert.equal(scopedPath("/bookings?value=%5C#proof", "salon-b"), "/bookings?value=%5C&location=salon-b#proof");
+});
+
 test("location bootstrap prefers explicit scope and legacy pending without cross-location fallback", () => {
   const choosePublicLocation = location("choosePublicLocation");
   const chooseOperatorLocation = location("chooseOperatorLocation");
