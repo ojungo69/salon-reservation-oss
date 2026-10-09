@@ -2,6 +2,16 @@
 
 Thank you for improving Salon Reservation OSS.
 
+For the Japanese local-demo and first-install steps, start with [README.md](README.md#ローカルで試す). The sections below are development references.
+
+## Independent OSS contributions
+
+Develop this repository as a standalone product. An OSS contribution does not require an existing production installation to adopt it or transfer data. Import/migration is optional and outside the current delivery scope.
+
+Use public requirements, source and tests for ordinary independently authored work. Mark the PR provenance declaration not applicable. Actual implementation/test imports and changes to assessed provenance follow [ADR0001](docs/ADR-0001-REUSE-FIRST-PORTING.md) and [PORTING.md](docs/PORTING.md); the maintainer handles private rights evidence without exposing it publicly. Architecture changes still need an ADR, applicable regression evidence and security review.
+
+Documentation and development requests do not authorize live deployment or production changes. Existing-system data steps require specific prior confirmation under [AGENTS.md](AGENTS.md#existing-system-data-migration).
+
 ## Before changing code
 
 1. Use the Node.js version in [`.nvmrc`](.nvmrc) and npm 12. See

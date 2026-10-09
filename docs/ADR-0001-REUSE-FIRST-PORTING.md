@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-08-26
-- **Revised**: 2026-09-12, by the maintainer's explicit development direction
+- **Revised**: 2026-10-09, by the maintainer's independent OSS direction
 - **Decision owner**: Project maintainer
 - **Related**: issue #60, issue #1, [capability parity](PARITY.md), [public provenance](PORTING.md)
 
@@ -12,9 +12,15 @@ Capability parity does not show how an implementation was produced. A public pro
 
 The project needs one public-safe rule for future parity work and one private evidence record for exact source coordinates. It must preserve the provider-neutral, self-hostable core and must not publish installation data, credentials, identifiers, branding, operational details, or private history.
 
+## Independent OSS scope
+
+This repository develops a standalone reservation product. Its releases do not require an existing installation to adopt its code, change production, or transfer data. Existing-system import/migration is an optional future project, outside the current delivery scope.
+
+This revision supersedes the broad production-parity contribution gate from 2026-09-12. Independently authored features and documentation use public requirements, source and tests. They do not require access to a private implementation or porting ledger. The provenance gate below applies when a contribution imports existing implementation/tests or changes an already assessed provenance record. Historical rights assessments and publication-boundary checks remain in force.
+
 ## Decision
 
-The objective is a better reservation product, not a maximum reuse percentage. Evaluate the production-tested implementation first as evidence, not as an architecture that must be retained. For each capability:
+Select implementation by correctness, usability, accessibility, operability, maintainability and measured cost. Consult proven public implementation and regression evidence where relevant. When assessing an actual port:
 
 1. Reuse or generalize production-tested implementation and tests when this provides the best supported outcome and publication rights, public safety, and compatibility are confirmed.
 2. Reimplement when the replacement demonstrably improves correctness, usability, accessibility, operability, maintainability, or measured performance/cost, or when reuse is unsafe, legally unavailable, or technically incompatible. Carry forward the important behavioral tests even when the implementation changes.
@@ -46,7 +52,7 @@ Release audit enforces the ledger boundary across the Git-visible working tree, 
 
 ## Contribution gate
 
-Every pull request that implements or alters a production-parity capability must:
+A pull request that imports existing implementation/tests or changes an assessed provenance record must:
 
 1. select exactly one disposition for each capability;
 2. update the private ledger with exact source/test mapping and an evidence owner;
@@ -55,7 +61,7 @@ Every pull request that implements or alters a production-parity capability must
 5. document the outcome comparison and equivalent-evidence gaps for a reimplementation; and
 6. link an ADR when storage, transaction authority, identity, or delivery semantics change.
 
-Non-parity changes use the explicit not-applicable path.
+Ordinary independently authored OSS changes use the explicit not-applicable path. They still need public tests, security review where applicable, license/publication checks and an ADR when architecture semantics change.
 
 ## Review-to-merge loop
 
@@ -75,13 +81,13 @@ Use fictional data and neutral branding only. Do not send private screens or cus
 
 ## Pause boundary
 
-Architecture-expanding parity work is blocked until its ledger row, disposition, mapped tests, and required ADR exist. Security fixes and work required to complete the porting audit may proceed, but still record their disposition and remain inside their stated scope. Bounded comparison experiments may proceed with fictional data and explicit acceptance questions; they are not production migrations and must not become an indefinite documentation-only substitute for delivery.
+Actual porting work is blocked until its ledger row, disposition, mapped tests, and required ADR exist. Independently authored OSS extensions do not inherit that private-ledger prerequisite. Security fixes inside that porting scope and work required to complete its audit may proceed, but still record their disposition. Independently authored security fixes use the ordinary public-evidence path. Bounded comparison experiments may proceed with fictional data and explicit acceptance questions; they are not production migrations and must not become an indefinite documentation-only substitute for delivery.
 
 This decision does not select the canonical storage model. Compare the relational production model, the current day-partitioned model, and a hybrid only if representative requirements justify it. Use multi-location, cross-day, migration, backup/restore, querying, observability, cost, and concurrency evidence. Neither D1 nor Durable Objects wins by default. Select one canonical transaction authority for the first production-capable slice rather than committing to permanent parallel backends.
 
 ## Canonical-core direction
 
-The desired end state is one provider-neutral public core consumed or tracked by installation-specific deployments. Branding, credentials, customer data, deployment identifiers, and installation-only operations stay outside that core. Equivalent booking rules must not remain independently maintained in two repositories after an accepted porting slice.
+This repository maintains its own provider-neutral public core. Other installations may adopt it through a separately authorized integration project; synchronization or cutover is not an OSS release requirement. Branding, credentials, customer data, deployment identifiers, and installation-only operations stay outside the public core. An accepted porting project records its own canonical source and maintenance ownership without imposing adoption on unrelated installations.
 
 ## Required evidence by disposition
 
@@ -126,7 +132,7 @@ The desired end state is one provider-neutral public core consumed or tracked by
 
 ### Costs
 
-- Maintainers must update a private ledger and public projection together.
+- Actual porting and changes to assessed provenance update the private ledger and public projection together. Ordinary OSS contributions do not require the private ledger.
 - Current independent implementations are labeled honestly even when their behavior is useful and well tested.
 - Some parity work pauses while rights, source mapping, or architecture evidence is incomplete.
 - Visual selection and current-head review add explicit gates before implementation and merge.

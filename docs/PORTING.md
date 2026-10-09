@@ -8,6 +8,12 @@
 
 The governing rule is [ADR 0001](ADR-0001-REUSE-FIRST-PORTING.md): inspect production-tested implementation, schema, tests, and operational invariants as evidence first, then select reuse, generalization, or replacement by the best supported outcome. Record the comparison and equivalent-or-better behavioral evidence for replacements. Neither existing architecture nor work already invested is a reason to retain an inferior component.
 
+## Independent development and optional migration
+
+This is a historical provenance and migration assessment, not the definition of OSS completion. Ordinary independently authored development does not require a private ledger or migration evidence. The private-ledger gate applies to actual ports and changes to the assessed records below, under ADR0001's 2026-10-09 revision.
+
+Migration readiness describes a possible future transfer only. A Blocked or Not assessed migration row does not prevent a standalone OSS release. S5 is optional and outside the current delivery scope. No mapper or transfer is claimed, and any real-data step still requires specific prior confirmation.
+
 ## Current assessed provenance
 
 | Capability ID | Capability | Current disposition | Evidence class | Preferred future method | Migration readiness | Next gate |
@@ -71,9 +77,9 @@ If a conclusion cannot be supported without disclosing private material, the pub
 
 ## Contribution rule
 
-Every pull request that implements or alters a production-parity capability must select exactly one disposition, update the private ledger, name reused or mapped tests, confirm sanitization, document a reimplementation reason when applicable, and link an ADR when storage, transaction, identity, or delivery semantics change.
+A pull request that imports existing implementation/tests or changes an assessed provenance record must select exactly one disposition, update the private ledger, name reused or mapped tests, confirm sanitization, document a reimplementation reason when applicable, and link an ADR when storage, transaction, identity, or delivery semantics change. Independently authored OSS work uses the not-applicable path and public evidence; it does not require private-ledger access.
 
-Architecture-expanding parity work without that evidence remains blocked. Security fixes and work required to complete the porting audit may proceed within scope and still record their disposition.
+Actual porting without that evidence remains blocked. Security fixes within that porting scope and work required to complete its audit may proceed and still record their disposition. Independently authored security fixes use public evidence.
 
 ## Updating this document
 

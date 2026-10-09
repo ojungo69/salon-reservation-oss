@@ -1,12 +1,23 @@
 # Development instructions
 
-Read `docs/ADR-0001-REUSE-FIRST-PORTING.md`, `docs/PORTING.md`, `docs/PARITY.md`,
-`docs/ROADMAP.md`, and `CONTRIBUTING.md` before changing this project.
+Read `docs/ROADMAP.md` and `CONTRIBUTING.md` before changing this project. Check
+`docs/PARITY.md` for capability claims. Before importing existing implementation or tests,
+or changing an assessed provenance record, read `docs/ADR-0001-REUSE-FIRST-PORTING.md`
+and `docs/PORTING.md`.
+
+## Independent OSS direction — 2026-10-09
+
+Develop this repository as a standalone reservation product. Existing installations do not
+have to adopt its code, transfer data, or change production for an OSS release to be complete.
+S5 is an optional future import/migration project, outside the current delivery scope.
+Ordinary independently authored OSS work uses public requirements, source and tests; it does
+not require access to a private porting ledger. Actual porting and changes to historical
+provenance still follow ADR0001 and preserve publication-rights evidence.
 
 ## Maintainer direction — 2026-09-12
 
 Build the best supported reservation product, not the largest copy of an existing system.
-Inspect proven implementation and regression evidence first. Reuse/generalize where beneficial;
+Inspect proven public implementation and regression evidence where relevant. Reuse/generalize where beneficial;
 replace a component when the comparison supports a better result. Preserve important behavioral
 tests even when replacing code. Existing design and progress are not reasons to keep an inferior
 choice. Neither the production storage model nor the current OSS storage model is preselected.
@@ -42,6 +53,7 @@ Do not bypass repository protections, rewrite published history, or weaken tests
 Keep changes independently reviewable and reversible. A bounded comparison experiment may use
 fictional data; it must not silently become a production migration. Do not deploy, purchase
 services, mutate live accounts, or delete production data without specific authorization.
+Documentation and development requests do not authorize production changes or live deployment.
 Run `npm run check` and the browser suite required by the changed behavior and standing gates.
 Report the exact verification performed and blockers; never claim work continues after the session.
 
