@@ -1,86 +1,92 @@
-# Optional calendar setup
+<a id="optional-calendar-setup"></a>
+# カレンダーへの予約表示を設定する
 
-Calendar integration is disabled for each new location. It never participates in availability
-decisions and adds no customer-facing control. The existing `default` location uses optional Worker
-secrets; named locations use owner controls in [the multi-location guide](MULTI-LOCATION.md).
-Either mode can be enabled independently:
+カレンダー連携は任意で、新しい場所では無効です。まず [Cloudflare の導入](CLOUDFLARE.md)を完了してください。
+予定を見るだけなら、最初に iCalendar の購読フィードを使います。
+Google Calendar へ予定を直接書き込みたい場合だけ、後半の OAuth 設定を追加します。
+どちらも空き枠の判定には使わず、顧客画面に追加の操作は出しません。
 
-- an authenticated iCalendar subscription (`CALENDAR_FEED_TOKEN` for `default`, an owner-issued
-  capability for each named location);
-- outbound Google Calendar synchronization (one shared `GOOGLE_CALENDAR_CREDENTIALS` set and a
-  distinct, immutable target ID for each named location).
+次の 2 つは独立して有効にできます。
 
-No Cloudflare or Google account is needed for development or CI. The repository's Durable Object,
-iCalendar, OAuth, retry, and browser checks run locally with fictional fixtures and mocked fixed
-endpoints. Do not create a temporary account merely to run the test suite.
+- iCalendar の認証付き購読。`default` は `CALENDAR_FEED_TOKEN`、名前付きの場所は運営者が発行した購読トークンを使います。
+- Google Calendar への一方向同期。`GOOGLE_CALENDAR_CREDENTIALS` は共通で、名前付きの場所はそれぞれ別の変更できない送信先 ID を使います。
 
-## Default-location iCalendar subscription
+以下の外部操作は、自分の導入先で実施する手順です。開発や CI に Cloudflare・Google アカウントは不要です。
+Durable Objects、iCalendar、OAuth、再試行、ブラウザーの検証は、架空の fixture と固定 endpoint の mock でローカル実行します。
+テストのためだけに外部アカウントを作らないでください。
 
-Generate a dedicated 32-byte base64url capability. Do not reuse `OWNER_TOKEN`:
+<a id="default-location-icalendar-subscription"></a>
+## default の予約を iCalendar で購読する
 
-```bash
-openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
-```
+1. `OWNER_TOKEN` とは別に、32 バイトの乱数から base64url の購読トークンを生成します。
+   出力を記録・共有しない自分の端末なら、次の例を使えます。
 
-The result must be exactly 43 base64url characters. Enter it interactively so it is not committed
-to source:
+   ```sh
+   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+   ```
 
-```bash
-npx wrangler secret put CALENDAR_FEED_TOKEN
-```
+   結果はちょうど 43 文字です。パスワードマネージャーに保存してください。
+2. 自分の Worker のダッシュボードの Secret 欄に `CALENDAR_FEED_TOKEN` として入力します。
+   CLI を使う場合は、自分の公開ソースのディレクトリで、`my-salon-reservations` を実際の Worker 名に置き換えて対話入力します。
 
-After an authorized deployment, subscribe a calendar client to:
+   ```sh
+   npx wrangler secret put CALENDAR_FEED_TOKEN --name my-salon-reservations
+   ```
 
-```text
-https://<installation-host>/api/adapters/calendar/feed.ics?token=<43-character-token>
-```
+3. 許可された自分の導入先へ Secret が反映されたら、カレンダーアプリの URL 購読に次の値を登録します。
 
-This unscoped URL is the original `default` feed. It is a read capability for reservation
-start/end, service label, tentative/confirmed state,
-stable opaque event UID, and event creation timestamp. Keep it out of source control, tickets,
-messages, screenshots, referrers, access analytics, and command output. To rotate it, put a newly
-generated value under the same secret name. The old URL returns the same 404 as every inactive or
-invalid request immediately after the new binding is active. Calendar clients may cache prior
-event bytes even though the feed response is `private, no-store`; remove the old subscription where
-necessary. The feed uses the existing public rate limiter before calendar storage work, and a
-limited request keeps the same uniform 404.
+   ```text
+   https://<自分のホスト名>/api/adapters/calendar/feed.ics?token=<43文字の購読トークン>
+   ```
 
-## Named-location feed and target controls
+`location` のない URL は `default` 専用です。トークンを知る人は、予約の開始・終了、サービス名、仮予約・確定の状態、
+安定した不透明な event UID、イベントの作成日時を読めます。
+完成した URL も秘密として扱い、Git、Issue、メッセージ、スクリーンショット、referrer、アクセス解析、コマンド出力に残さないでください。
 
-For a named location, an owner first issues a feed token in the location's setup calendar card or
-with `POST /api/admin/calendar/feed-token?location=<id>` and the current version in its JSON body
-(for example, `{"expectedVersion":0}` on a new location). The response returns `{version,token}`
-once; storage keeps only its digest. Setup displays and copies the token, not a completed URL.
-Use that token and the selected location ID to construct the URL below, subscribe in the intended
-calendar client, then enable the feed for that location in settings. A lost response requires an explicit rotation after
-rereading status. The default token never authorizes a named feed. Named URLs have the form:
+更新する場合は、新しい値を同じ Secret 名で登録します。新しい binding が有効になった時点で旧 URL は無効になり、
+無効・停止中のリクエストと同じ 404 を返します。応答は `private, no-store` ですが、カレンダーアプリに以前の予定が残る場合があります。
+必要なら旧購読を削除してください。フィードは storage 処理の前に公開 API の rate limit を適用し、制限された場合も同じ 404 を返します。
 
-```text
-https://<installation-host>/api/adapters/calendar/feed.ics?location=<id>&token=<one-time-token>
-```
+<a id="named-location-feed-and-target-controls"></a>
+## 名前付きの場所の購読と送信先を設定する
 
-The owner can use `PUT /api/admin/calendar/settings?location=<id>` with
-`{expectedVersion,googleEnabled,calendarId,feedEnabled}`. Bind a distinct Google calendar target
-writable by the existing credential set before enabling Google. Once a named target is bound it
-cannot change in S4, including while the mode is disabled. This avoids redirecting queued writes
-or deletes to a new calendar. Named status reports a sanitized settings version and booleans, not
-the token, digest or credentials. See [the operator guide](MULTI-LOCATION.md#optional-calendar-per-location)
-for the complete sequence and error behavior.
+1. `/setup.html` で運営者として認証し、対象の場所を選びます。
+2. 「カレンダー連携」の「購読トークンを発行・再発行する」を押します。
+   トークンは発行時だけ表示します。保存してください。storage には digest だけを保存します。
+3. そのトークンと場所 ID で次の URL を組み立て、目的のカレンダーアプリで購読します。
+   設定画面がコピーするのはトークンで、完成した URL ではありません。
 
-## Google outbound synchronization
+   ```text
+   https://<自分のホスト名>/api/adapters/calendar/feed.ics?location=<id>&token=<発行した購読トークン>
+   ```
 
-This adapter writes events but never lists, imports, watches, or uses free/busy data. Provision one
-Google OAuth refresh token outside the application:
+4. 同じ場所の「この場所の予約予定の購読フィードを有効にする」を選択し、設定を保存します。
+   `default` のトークンでは名前付きのフィードを読めません。
+5. Google 同期も使う場合は、共通認証情報で書き込める、その場所専用のカレンダー ID を指定してから有効にします。
+   **一度登録した名前付きの送信先は、無効の間も変更できません。**
+   待機中の書き込みや削除が別カレンダーへ向かうことを防ぐためです。
 
-1. In an operator-controlled Google Cloud project, enable the Google Calendar API and configure the
-   OAuth consent screen for the intended operator account.
-2. Create an OAuth client. Request only
-   `https://www.googleapis.com/auth/calendar.events`, request offline access, and complete consent
-   as the account that owns or can write the target calendar. If the consent configuration is in
-   testing mode, include that account as a permitted test user and review Google's current refresh
-   token restrictions before relying on it.
-3. Record the returned client ID, client secret, refresh token, and **default** target calendar ID
-   in this exact JSON shape, with no additional keys:
+API では `POST /api/admin/calendar/feed-token?location=<id>` に現在の version を送ります。
+新規の例は `{"expectedVersion":0}` です。応答の `{version,token}` は 1 回だけ返ります。
+応答を失った場合は status を読み直して明示的に再発行します。
+設定 API は `PUT /api/admin/calendar/settings?location=<id>` で、本文は `{expectedVersion,googleEnabled,calendarId,feedEnabled}` です。
+名前付き status は設定 version と許可された項目を返し、トークン、digest、認証情報は返しません。
+詳細な順序とエラーは[場所ごとの操作ガイド](MULTI-LOCATION.md#optional-calendar-per-location)を参照してください。
+
+<a id="google-outbound-synchronization"></a>
+## 必要な場合だけ Google への一方向同期を追加する
+
+このアダプターは予定を書き込むだけです。予定の一覧取得、取り込み、watch、free/busy による空き枠判定は行いません。
+Google の refresh token はアプリの外で運営者が用意します。本アプリに OAuth 認可や token 発行の画面はありません。
+
+1. 自分の Google Cloud プロジェクトで Google Calendar API を有効にし、対象の運営者アカウント向けに OAuth 同意画面を設定します。
+2. OAuth client を作り、対象カレンダーを所有するか書き込めるアカウントで同意を完了します。
+   [Google の OAuth 手順](https://developers.google.com/identity/protocols/oauth2/web-server)に従い、offline access を要求します。
+   scope は `https://www.googleapis.com/auth/calendar.events` だけを要求します。
+   [Calendar の scope 一覧](https://developers.google.com/workspace/calendar/api/auth)も確認してください。
+   同意設定が testing の場合は対象アカウントを test user に含め、現在の refresh token の制限を確認してから運用に使います。
+3. client ID、client secret、refresh token、**default の**送信先カレンダー ID を、追加キーなしの次の JSON 形式にします。
+   以下は実際には使えない架空値です。
 
    ```json
    {
@@ -91,86 +97,92 @@ Google OAuth refresh token outside the application:
    }
    ```
 
-4. Enter the real JSON interactively; never put it in `.dev.vars.example`, a command argument,
-   source control, a support issue, or logs:
+4. 実際の JSON を、自分の Worker の Secret `GOOGLE_CALENDAR_CREDENTIALS` に入力します。
+   CLI を使う場合は、対象ソースのディレクトリと実際の Worker 名を確認し、対話入力します。
 
-   ```bash
-   npx wrangler secret put GOOGLE_CALENDAR_CREDENTIALS
+   ```sh
+   npx wrangler secret put GOOGLE_CALENDAR_CREDENTIALS --name my-salon-reservations
    ```
 
-The Worker exchanges the refresh token only at Google's fixed token endpoint, keeps the access
-token in isolate memory, and writes only start/end, service label, tentative/confirmed state, and a
-non-reversible stable event ID. Redirects and caller-supplied provider URLs are not followed.
+   `.dev.vars.example`、コマンド引数、Git、サポート Issue、ログに実値を残さないでください。
+5. Secret の反映後、後述の再同期を実行します。名前付きの場所は先に専用の送信先を設定して Google 同期を有効にします。
 
-### Credential and target-calendar changes
+Worker は Google の固定 token endpoint でだけ refresh token を交換し、access token は isolate のメモリーに保持します。
+書き込むのは開始・終了、サービス名、仮予約・確定の状態、元の予約 ID を復元できない安定した event ID です。
+redirect や利用者が指定した provider URL は追従しません。
 
-- Rotating the OAuth client secret or refresh token for the same target calendar is safe. Apply the
-  new exact JSON, then run reconciliation; current projections are re-queued with stable event IDs.
-- Changing the **default** `calendarId` does **not** migrate or delete events from the old calendar.
-  While the old account still has access, first inspect and manually remove its dedicated events
-  (or delete a calendar used solely for this installation), then change the secret and reconcile. If
-  the old grant is already gone, cleanup of that external calendar is an operator action; the
-  application cannot safely target it with new credentials.
-- A named target cannot be changed after first binding. Add another location only for a genuinely
-  separate salon; this is not a target-migration mechanism.
-- Removing or invalidating the shared Google secret stops new Google calls. Current reservations
-  remain authoritative and booking remains available. Restore valid credentials and reconcile to
-  recover. Named enabled settings are not silently turned off or purged by a credential outage.
+<a id="credential-and-target-calendar-changes"></a>
+### 認証情報や送信先を変更する
 
-For named targets, copy the actual calendar ID from Google settings. The `primary` keyword is an
-[alias for the current user's primary calendar](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert),
-so it cannot establish a distinct named target. The default mode remains compatible with that
-alias, but named Google synchronization requires an actual ID in the shared default configuration.
-A later shared-target conflict blocks named outbound work for retry; it does not disable the mode
-or purge its state. Named ICS does not require Google credentials.
+- 同じ送信先の client secret や refresh token を更新する場合は、正確な JSON を再登録して再同期します。
+  現在の予定は安定した event ID で再びキューに入ります。
+- **default の `calendarId` の変更では、旧カレンダーの予定を移動・削除しません。**
+  旧アカウントの権限が残る間に専用の予定を確認し、手動で削除します。
+  この導入専用のカレンダーなら、カレンダー自体の削除も運営者が判断します。
+  その後 Secret を変更して再同期してください。旧権限が失われていれば、旧カレンダーの片付けは別途運営者が行います。
+  アプリは新しい認証情報で安全に旧送信先を操作できません。
+- 名前付きの送信先は最初の登録後に変更できません。別の場所を作るのは実際に別店舗である場合に限ります。
+  送信先移行の代わりに場所を追加しないでください。
+- 共通 Google Secret の削除や無効化は新しい Google 呼び出しを止めます。
+  予約データは正本のまま残り、予約受付を続けられます。有効な認証情報を復旧して再同期してください。
+  名前付きの有効設定を、認証障害だけで無効化・削除することはありません。
 
-## Status and bounded reconciliation
+名前付きには、Google の設定から取得した実際のカレンダー ID を使います。
+`primary` は[現在のユーザーの主カレンダーを表す別名](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert)なので、独立した名前付き送信先を確定できません。
+`default` はこの別名にも対応しますが、名前付き Google 同期を使う場合は共通設定の default 送信先にも実 ID が必要です。
+後から共通送信先と衝突すると、名前付きの送信は再試行待ちになります。モードの無効化や状態の削除は行いません。
+名前付き iCalendar は Google 認証情報を必要としません。
 
-Both routes require the existing owner bearer token. Add `?location=<id>` to select a named
-location; omission retains `default`. Reconciliation also requires a same-origin
-request and uses the owner rate limit:
+<a id="status-and-bounded-reconciliation"></a>
+## 状態を確認し、範囲を区切って再同期する
+
+次の API には運営者の Bearer トークンが必要です。名前付きは `?location=<id>` を付け、省略時は `default` になります。
+再同期は同一 origin のリクエストを必要とし、運営者用 rate limit を適用します。
 
 ```text
 GET  /api/admin/calendar/status
 POST /api/admin/calendar/reconcile
 ```
 
-The status response contains mode booleans, aggregate counts, cursors, and redacted ledger reasons.
-Default status retains its old shape and does not return a calendar ID. Named status additionally
-returns `settings:{version,googleEnabled,calendarId,feedEnabled,feedTokenPresent}`; it never returns
-the feed token/digest, Google credentials, reservation ID, event ID, provider body, or Authorization
-header. Reconciliation accepts `{}` or `{"cursor":"YYYY-MM-DD"}`, reads at most seven
-authoritative day partitions, applies lazy pending expiry, and returns the next cursor. Repeat until
-`nextCursor` is `null`; repeating a page is idempotent. If bounded provider-mutation capacity is
-temporarily full, the response stops before the deferred date and returns that same date as
-`nextCursor`; retry it after pending work clears. Failed upserts automatically yield capacity to
-newer work. Live or unresolved delete work is retained, while a cancelled item disappears from the
-ICS feed without waiting for Google capacity.
+status はモードの有効状態、集計数、cursor、秘匿化した ledger の理由を返します。
+`default` は既存の応答形式を維持し、カレンダー ID を返しません。
+名前付きは `settings:{version,googleEnabled,calendarId,feedEnabled,feedTokenPresent}` も返します。
+フィードトークン・digest、Google 認証情報、予約 ID、event ID、provider の本文、Authorization ヘッダーは返しません。
 
-Run reconciliation after first activation, restored credentials, a suspected handoff gap, or a
-target-calendar change. With a valid Google configuration, reconciliation also requeues retained
-failed or configuration-blocked deletes whose local projection is already absent. Normal recovery
-also sweeps the fixed retention/horizon window from the calendar authority's alarm.
+初回有効化、認証情報の復旧、イベント引き渡しの欠落の疑い、default の送信先変更後に、次の順で再同期します。
 
-## Disable and recovery boundary
+1. reconcile に `{}` を送ります。日付を指定して続ける場合は `{"cursor":"YYYY-MM-DD"}` を送ります。
+2. 応答の `nextCursor` が `null` になるまで、その値を次の `cursor` として繰り返します。
+   同じページの再実行は冪等です。
 
-For `default`, removing both optional secrets disables feed access, stops new provider calls, and
-starts local cleanup. For a named location, turn off its feed and Google modes in owner settings;
-removing the shared Google secret is an outage, not a per-location disable. Existing descriptor
-leases are allowed to expire, then the fixed sweep purges
-calendar outbox rows, projections, mutations, and bounded diagnostics from the start of its window.
-The privacy disclosure stays visible until cleanup reaches `disabled`. Removing secrets cannot
-guarantee deletion of copies a
-calendar client cached or events left in a Google calendar whose old grant is no longer available.
+1 リクエストは選択した場所の最大 7 日の正本を読み、仮予約の期限切れも適用します。
+provider 変更処理の上限が一時的に埋まると、未処理の日付の直前で止まり、同じ日付を `nextCursor` に返します。
+待機処理が進んでから再試行してください。失敗した upsert は新しい処理に容量を譲ります。
+未完了・未解決の削除処理は保持しますが、取り消した予約は Google の容量を待たずに iCalendar から消えます。
 
-Do not delete the `CalendarAdapter` Durable Object class or namespace during this process. A
-compatible backout is a forward deployment that retains its class, export, binding, and alarm logic
-until status shows disabled and retained work is drained.
+有効な Google 設定での再同期は、ローカルの projection がなくても、保持中の失敗・設定待ちの削除を再度キューに入れます。
+通常の回復でも、カレンダー actor の alarm が保持期限と対象期間の固定範囲を sweep します。
 
-## Optional live smoke
+<a id="disable-and-recovery-boundary"></a>
+## 連携を止め、保持中の処理を削除する
 
-Automated local fixtures are the required development evidence. After an operator has separately
-authorized and completed their own deployment, they may use one fictional booking to verify the
-feed or one dedicated test calendar, inspect the exact schedule-only payload, cancel the booking,
-and confirm removal. Delete the fictional provider event and rotate disposable credentials when the
-smoke test ends. A live smoke is optional and is not permission to deploy from a development task.
+`default` は 2 つの任意 Secret を両方削除すると、フィードのアクセスと新しい provider 呼び出しを止め、ローカルの削除処理を開始します。
+名前付きは、その場所の設定で購読フィードと Google 同期を無効にします。
+共通 Google Secret の削除は認証障害であり、場所ごとの無効化の代わりにはなりません。
+
+既存 descriptor の lease が期限切れになった後、固定範囲の sweep が calendar outbox、projection、mutation、診断記録を削除します。
+完了して `disabled` になるまでプライバシー表示は残ります。
+Secret の削除では、カレンダーアプリが保存したコピーや、旧権限を失った Google カレンダーの予定まで消去したとは保証できません。
+
+この間に `CalendarAdapter` クラスや namespace を削除しないでください。
+互換性のある切り戻しは、クラス、export、binding、alarm の処理を残した新しいビルドを前方にデプロイする方法です。
+status が `disabled` となり、保持中の処理がなくなるまで維持します。
+
+<a id="optional-live-smoke"></a>
+## 任意で自分の導入先を確認する
+
+開発で必須の根拠はローカル fixture です。運営者が別途許可して自分の導入を完了した後なら、
+架空の予約 1 件でフィードまたは専用テストカレンダーを確認できます。
+予定情報だけの payload を確認し、予約を取り消して予定が消えることを確認します。
+終了後は架空の provider event を削除し、一時認証情報を更新してください。
+この任意の確認手順は、開発タスクから外部デプロイを行う許可ではありません。
