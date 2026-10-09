@@ -45,6 +45,10 @@ services, mutate live accounts, or delete production data without specific autho
 Run `npm run check` and the browser suite required by the changed behavior and standing gates.
 Report the exact verification performed and blockers; never claim work continues after the session.
 
+When GitAI tracing is installed, run Git writes with `GIT_TRACE2_EVENT=0` and the real Git
+executable (for example `/usr/bin/git`). Publish only the intended branch ref and verify that
+remote `refs/notes/*` and `refs/ai/*` remain absent.
+
 ## Existing-system data migration
 
 Before any migration-purpose read, export, import, restore, or cutover involving an existing

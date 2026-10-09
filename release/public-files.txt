@@ -19,9 +19,11 @@ SECURITY.md
 docs/ADAPTER-CONTRACTS.md
 docs/ADR-0001-REUSE-FIRST-PORTING.md
 docs/ADR-0002-CREATE-STORAGE-AUTHORITY.md
+docs/ADR-0003-MULTI-LOCATION-BOUNDARY.md
 docs/CALENDAR-SETUP.md
 docs/CLOUDFLARE.md
 docs/LINE-SETUP.md
+docs/MULTI-LOCATION.md
 docs/PARITY.md
 docs/PORTING.md
 docs/PRIVACY.md
@@ -44,6 +46,7 @@ public/journey.js
 public/line-liff.mjs
 public/line-link.mjs
 public/line.html
+public/location.js
 public/privacy.html
 public/setup.html
 public/styles.css
@@ -57,6 +60,7 @@ src/calendar-adapter.ts
 src/date-parse.ts
 src/installation-config.ts
 src/line-adapter.ts
+src/location.ts
 src/reservation-core.ts
 src/reservation-day.ts
 src/worker.ts
@@ -67,6 +71,8 @@ test/installation-config.test.ts
 test/journey.test.ts
 test/line-adapter.test.ts
 test/line-helpers.ts
+test/location-config.test.ts
+test/location.test.ts
 test/release-audit-denylist.test.ts
 test/release-metadata.test.ts
 test/reservation-core.test.ts
@@ -77,6 +83,10 @@ tests-browser/customer.spec.ts
 tests-browser/harness.ts
 tests-browser/install.spec.ts
 tests-browser/line.spec.ts
+tests-browser/multi-location-calendar.spec.ts
+tests-browser/multi-location-customer.spec.ts
+tests-browser/multi-location-operator.spec.ts
+tests-browser/multi-location.spec.ts
 tests-browser/owner.spec.ts
 tsconfig.json
 vitest.config.ts

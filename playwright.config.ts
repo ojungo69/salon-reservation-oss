@@ -135,8 +135,46 @@ export default defineConfig({
     video: "off",
   },
   projects: [
-    { name: "install", testMatch: /install\.spec\.ts/ },
-    { name: "app", testIgnore: /install\.spec\.ts/, dependencies: ["install"] },
+    { name: "install", testMatch: /install\.spec\.ts/, grepInvert: /@private-artifact/ },
+    {
+      name: "app",
+      testIgnore: /(?:install|multi-location(?:-(?:calendar|customer|operator))?)\.spec\.ts/,
+      grepInvert: /@private-artifact/,
+      dependencies: ["install"],
+    },
+    {
+      name: "multi-location",
+      testMatch: /multi-location\.spec\.ts/,
+      grepInvert: /@capacity-final/,
+      dependencies: ["app"],
+      use: { trace: "off", screenshot: "off", video: "off" },
+    },
+    {
+      name: "multi-location-customer",
+      testMatch: /multi-location-customer\.spec\.ts/,
+      dependencies: ["multi-location"],
+      use: { trace: "off", screenshot: "off", video: "off" },
+    },
+    {
+      name: "multi-location-operator",
+      testMatch: /multi-location-operator\.spec\.ts/,
+      dependencies: ["multi-location-customer"],
+      use: { trace: "off", screenshot: "off", video: "off" },
+    },
+    {
+      name: "multi-location-capacity",
+      testMatch: /multi-location\.spec\.ts/,
+      grep: /@capacity-final/,
+      dependencies: ["multi-location-operator"],
+      use: { trace: "off", screenshot: "off", video: "off" },
+    },
+    {
+      name: "private-artifact",
+      testMatch: /(?:install|owner|multi-location-calendar)\.spec\.ts/,
+      grep: /@private-artifact/,
+      dependencies: ["multi-location-capacity"],
+      use: { trace: "off", screenshot: "off" },
+    },
   ],
   webServer: {
     // The suite runs in a fixed order against one installation, so every run

@@ -65,8 +65,22 @@ for (const variant of ["subject", "body-lowercase", "nested"] as const) {
   });
 }
 
-for (const required of ["docs/ADR-0001-REUSE-FIRST-PORTING.md", "docs/ADR-0002-CREATE-STORAGE-AUTHORITY.md", "docs/PORTING.md"]) {
-  test(`refuses an omitted governance document: ${required}`, { skip: !POSIX }, () => {
+for (const required of [
+  "docs/ADR-0001-REUSE-FIRST-PORTING.md",
+  "docs/ADR-0002-CREATE-STORAGE-AUTHORITY.md",
+  "docs/ADR-0003-MULTI-LOCATION-BOUNDARY.md",
+  "docs/MULTI-LOCATION.md",
+  "docs/PORTING.md",
+  "src/location.ts",
+  "test/location.test.ts",
+  "test/location-config.test.ts",
+  "public/location.js",
+  "tests-browser/multi-location.spec.ts",
+  "tests-browser/multi-location-calendar.spec.ts",
+  "tests-browser/multi-location-customer.spec.ts",
+  "tests-browser/multi-location-operator.spec.ts",
+]) {
+  test(`refuses an omitted required public file: ${required}`, { skip: !POSIX }, () => {
     const { tree, audit } = createFixture();
     try {
       const baseline = audit();

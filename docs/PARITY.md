@@ -2,7 +2,7 @@
 
 This file is the single authority for capability status. It holds two matrices, describing the
 current repository candidate at this commit and maintained against [roadmap](ROADMAP.md) document
-version 1.1.0 (whose baseline release is 0.2.0):
+version 1.1.1 (whose baseline release is 0.2.0):
 
 - the **implemented capability matrix** — what the current repository candidate delivers, with
   public-safe implementation paths and acceptance evidence (a row becomes a *release* claim only
@@ -25,12 +25,13 @@ order lives in [the roadmap](ROADMAP.md); adapter obligations live in
 
 | Sanitized must-have | Public-safe implementation path | Acceptance evidence |
 |---|---|---|
-| Clean-room release boundary | `README.md`, `release/public-files.txt`, `scripts/assemble-public-release.sh`, `scripts/release-audit.mjs` | Public-tree audit: exact allowlist, one root commit/ref, license/content/history/secret checks, no remote or private input |
+| Audited public release boundary | `README.md`, `release/public-files.txt`, `scripts/assemble-public-release.sh`, `scripts/release-audit.mjs` | Ongoing `release:audit`: required allowlist entries, license/content/index/history boundaries and omission regressions. The historical one-commit assembler and `release:audit:public` apply only to a fresh private staging tree; see `docs/RELEASING.md` |
 | Mobile booking journey | `public/index.html`, `public/app.js`, `public/journey.js` | `test/journey.test.ts`; `tests-browser/customer.spec.ts` renders the journey against a running Worker and asserts the recorded result, the editable summary card and confirmation panel, the compact selection past eight services, in-place slot refresh, the operator availability notice, the same-day duplicate acknowledgement, adapter-surface absence, keyboard reach, and no horizontal overflow at 320/360/768/1440 (task-level detail in `docs/UX-PARITY.md`) |
 | Authoritative multi-service choice | `src/installation-config.ts`, `src/worker.ts`, `src/reservation-day.ts` | Configuration/API tests: compatible services, server totals, eligible resources, stale-selection recovery |
 | Pending capacity hold and safe retry | `src/reservation-core.ts`, `src/reservation-day.ts`, `src/worker.ts` | Core/day/API tests: one accepted request, existing-receipt-only `replayOnly`, stale-slot refusal, 50-way race; `test/reservation-day.test.ts` verifies exact-value rollback, identical retry, and unchanged replay after receipt/final-calendar-sequence failure; [scoped authority](ADR-0002-CREATE-STORAGE-AUTHORITY.md) |
 | Accountless customer return/cancel | `public/bookings.html`, `public/app.js`, `src/worker.ts` | Journey/API tests: opt-in local proof, uniform unknown-proof response, one cancellation effect; `tests-browser/customer.spec.ts` renders a remembered booking and opens its cancellation dialog |
 | Bounded operator schedule | `public/admin.html`, `public/app.js`, `src/worker.ts`, `src/reservation-day.ts` | Day/week tests: attention projection, owner auth, status actions, private-detail cache control; `tests-browser/owner.spec.ts` signs in, books on a customer's behalf, opens the detail, and signs out |
+| Multiple-location operation | `src/location.ts`, `src/installation-config.ts`, `src/worker.ts`, existing day/adapter classes, `public/location.js`, customer/operator/setup controllers | `test/location-config.test.ts`, scoped Worker/day/adapter fixtures and `tests-browser/multi-location*.spec.ts`: four-location cap/CAS, independent fifty-way races, proof/pending isolation, atomic grants and revocation, shared webhook retry, independent feeds/targets and activation-epoch cleanup; [verification](../specs/008-multi-location-boundary/verification.md) |
 | Same-day move and closures | `src/reservation-core.ts`, `src/reservation-day.ts`, `src/worker.ts` | Transaction/race tests: stable reference, atomic capacity swap, original unchanged on conflict, shared overlap rule |
 | Immutable history | `src/installation-config.ts`, `src/reservation-day.ts`, `src/worker.ts` | Snapshot/version tests: day-pinned catalog/schedule, current accepted consent, fixed partition address window, pinned purge, and booking facts remain interpretable after edits |
 | No-integration operator fallback | `src/reservation-day.ts`, `src/worker.ts`, `public/admin.html` | Bounded attention/schedule acceptance flow works with no external notification credential |
@@ -41,7 +42,7 @@ order lives in [the roadmap](ROADMAP.md); adapter obligations live in
 | Live-readiness gates | `src/installation-config.ts`, `public/setup.html`, `docs/CLOUDFLARE.md` | Tests: owner, Turnstile hostname/widget/secret, legal/source identity, capacity, and final confirmation all fail closed until complete |
 | Privacy, retention, and proof handling | `docs/PRIVACY.md`, rendered notice pages, browser controller, day retention alarm | Browser-storage checks, key-digest/non-disclosure checks, whole-day deletion test, reviewed editable notices |
 | Accessible public shell | shared `public/styles.css` and public pages | `tests-browser/customer.spec.ts` and `tests-browser/owner.spec.ts`: axe-core WCAG 2.1 A/AA on every public page, the setup screen and the operator screen, keyboard reach through the skip link, and no horizontal overflow at 320/360/768/1440. Reduced motion, forced colours and transparency stay on the manual checklist below |
-| Bounded Free-plan target | `src/installation-config.ts`, `src/reservation-day.ts`, `src/worker.ts`, `docs/CLOUDFLARE.md` | 96 creates plus independently 192 non-create lifecycle actions; local maximum fixture and documented static request/write budget remain below the threshold, while deployment and Free-plan telemetry remain unverified |
+| Bounded resource and cost evidence | `src/installation-config.ts`, `src/reservation-day.ts`, `src/worker.ts`, `docs/CLOUDFLARE.md`, `docs/MULTI-LOCATION.md` | Each location retains 96 creates plus independently 192 non-create lifecycle actions. The conditional empty polling baseline extrapolates to 193,104 alarm/day RPCs for four locations with both adapters, before named-configuration and other work; no universal Free-plan-fit, live billing or maximum-backlog deadline claim |
 | AGPL corresponding source | `LICENSE`, `README.md`, setup source URL, release audit | The authorized public source URL resolves to corresponding source; ownership/licensing confirmation is recorded outside the app |
 
 ## Manual checks at each tagged release
@@ -80,8 +81,8 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 | Guided commissioning and live-readiness | A new installation reaches live safely | Implemented | Implemented matrix: Guided commissioning; Live-readiness gates | — |
 | Privacy, retention, and proof handling | Customer data is minimal, bounded, and deletable | Implemented | Implemented matrix: Privacy, retention, and proof handling | — |
 | Accessible public shell | Every customer can operate the screens | Implemented | Implemented matrix: Accessible public shell | — |
-| Bounded free-tier budget target | Load stays within the documented request/write budgets of the platform's free plan (deployment and free-plan telemetry remain unverified, as the evidence row states) | Implemented | Implemented matrix: Bounded Free-plan target | — |
-| Verifiable public release (clean room, demo, AGPL) | Adopters can trust and legally reuse what they deploy | Implemented | Implemented matrix: Clean-room release boundary; Deployable fictional demo; AGPL corresponding source | — |
+| Bounded free-tier budget target | Load stays within the documented request/write budgets of the platform's free plan | Partial | Per-location command bounds remain implemented, but four locations with both optional adapters exceed the documented Free request allowance in the conditional baseline before other work. Implemented matrix: Bounded resource and cost evidence; live billing/telemetry remain unverified | Future cost optimization requires separate timing/backlog evidence under ADR0003 |
+| Verifiable public release (clean room, demo, AGPL) | Adopters can trust and legally reuse what they deploy | Implemented | Implemented matrix: Audited public release boundary; Deployable fictional demo; AGPL corresponding source | — |
 
 ### External identity and staff
 
@@ -115,9 +116,9 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 
 | Capability | Production task it serves | Status | Current evidence / remaining gap | Roadmap stage / exclusion boundary |
 |---|---|---|---|---|
-| Multiple locations | One installation serves several salons | Planned | Requires the partition/transaction design recorded as an S4 prerequisite | Stage S4 |
+| Multiple locations | One installation serves several salons | Implemented | Up to four independent location/day authorities, two fifty-way races and exact recovery, root-atomic staff grants, local LINE/feed/Google fixtures and scoped real-browser journeys. [ADR0003](ADR-0003-MULTI-LOCATION-BOUNDARY.md), [operator guide](MULTI-LOCATION.md), [acceptance evidence](../specs/008-multi-location-boundary/verification.md) | Stage S4 |
 | Cross-day moves | The operator moves a booking to another day | Deliberately excluded | Needs its own transaction design; not implied by multi-location | [Exclusions](#deliberate-exclusions): cross-day moves |
-| Import/migration from an existing system | A production installation moves its data in | Planned | Hard-depends on S3/S4 schemas existing first | Stage S5 |
+| Import/migration from an existing system | A production installation moves its data in | Planned | S3/S4 supply the destination boundaries; no transfer tool or migration-readiness claim exists. Concrete source/data/destination/operation/rollback confirmation is required before real-data steps | Stage S5 |
 
 ### Out of target
 

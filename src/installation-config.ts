@@ -1,6 +1,7 @@
 import type { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 
-import { ADAPTER } from "./adapter-constants.ts";
+import { ADAPTER, withDeadline } from "./adapter-constants.ts";
+import { DEFAULT_LOCATION_ID, MAX_LOCATIONS, adapterObjectName, parseLocationId } from "./location.ts";
 
 const directNodeRuntime =
   typeof navigator !== "undefined" && navigator.userAgent.startsWith("Node.js/");
@@ -113,6 +114,34 @@ export interface InstallationState {
   createdAt: string;
   updatedAt: string;
 }
+
+export type LocationSummary = { id: string; label: string; bookable: boolean };
+export type LocationCreateResult =
+  | { ok: true; location: { id: string; label: string }; replayed: boolean }
+  | {
+      ok: false;
+      code: "BAD_REQUEST" | "UNAUTHORIZED" | "LOCATION_EXISTS" | "LOCATION_LIMIT_REACHED" | "IDEMPOTENCY_CONFLICT";
+    };
+
+export type NamedCalendarContext = {
+  version: number;
+  activationVersion: number;
+  googleEnabled: boolean;
+  calendarId: string | null;
+  feedEnabled: boolean;
+  feedTokenDigest: string | null;
+};
+export type CalendarSettingsResult =
+  | { ok: true; context: NamedCalendarContext }
+  | {
+      ok: false;
+      code: "BAD_REQUEST" | "UNAUTHORIZED" | "VERSION_CONFLICT" | "LOCATION_NOT_FOUND" |
+        "CALENDAR_TARGET_CONFLICT" | "CALENDAR_TARGET_IMMUTABLE" | "CALENDAR_NOT_CONFIGURED";
+    };
+
+const isCalendarTargetId = (value: unknown): value is string =>
+  typeof value === "string" && value.length >= 1 && value.length <= 1024 &&
+  value.trim() === value && value.toLowerCase() !== "primary" && !CONTROL.test(value);
 
 export interface ReadinessRuntime {
   ownerSecretPresent: boolean;
@@ -1366,6 +1395,15 @@ const timingSafeEqualHex = (left: string, right: string): boolean => {
 
 export type StaffRole = "owner" | "staff";
 
+export type StaffLocationScope = {
+  staffId: string;
+  scopeVersion: number;
+  locationIds: string[] | null;
+};
+export type StaffScopeResult =
+  | { ok: true; scope: StaffLocationScope }
+  | { ok: false; code: "BAD_REQUEST" | "UNAUTHORIZED" | "VERSION_CONFLICT" | "STAFF_UNAVAILABLE" };
+
 type StaffMember = {
   id: string;
   displayName: string;
@@ -1805,6 +1843,25 @@ const parseRpcRuntime = (value: unknown): ReadinessRuntime => {
 };
 
 export class InstallationConfig extends DurableObjectBase<Env> {
+  #lineAlarmTail: Promise<void> = Promise.resolve();
+  #lineCommandsInFlight = 0;
+
+  // One native alarm: serialize only its read/min/write, never adapter RPCs.
+  #updateLineAlarm(dueAt: number | null): Promise<void> {
+    const update = this.#lineAlarmTail.then(async () => {
+      if (dueAt !== null) {
+        const current = await this.ctx.storage.getAlarm();
+        if (current === null || current > dueAt) await this.ctx.storage.setAlarm(dueAt);
+        return;
+      }
+      if (this.#lineCommandsInFlight !== 0 || this.#locationIds().some((id) =>
+        this.#readLineLifecycle(id)?.operation != null)) return;
+      await this.ctx.storage.deleteAlarm();
+    });
+    this.#lineAlarmTail = update.catch(() => undefined);
+    return update;
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -1843,7 +1900,16 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     this.#readStoredState();
   }
 
-  #readStoredState(): { state: InstallationState; stateJson: string } {
+  #readStoredState(locationId = DEFAULT_LOCATION_ID): { state: InstallationState; stateJson: string } {
+    if (parseLocationId(locationId) === null) throw new Error("LOCATION_NOT_FOUND");
+    if (locationId !== DEFAULT_LOCATION_ID) {
+      if (!this.#tableExists("__location_states")) throw new Error("LOCATION_NOT_FOUND");
+      const row = this.ctx.storage.sql.exec<{ state_json: string }>(
+        "SELECT state_json FROM __location_states WHERE location_id = ?", locationId,
+      ).toArray().at(0);
+      if (row === undefined) throw new Error("LOCATION_NOT_FOUND");
+      return this.#parseStateRow(row.state_json);
+    }
     const rows = this.ctx.storage.sql
       .exec<{ singleton: number; state_json: string }>(
         "SELECT singleton, state_json FROM installation_state",
@@ -1853,19 +1919,236 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     if (rows.length !== 1 || row?.singleton !== 1 || typeof row.state_json !== "string") {
       return corruptStorage();
     }
+    return this.#parseStateRow(row.state_json);
+  }
+
+  #parseStateRow(stateJson: string): { state: InstallationState; stateJson: string } {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(row.state_json);
+      parsed = JSON.parse(stateJson);
     } catch {
       return corruptStorage();
     }
     const state = parseInstallationState(parsed);
-    if (JSON.stringify(state) !== row.state_json) return corruptStorage();
-    return { state, stateJson: row.state_json };
+    if (JSON.stringify(state) !== stateJson) return corruptStorage();
+    return { state, stateJson };
   }
 
-  getState(): InstallationState {
-    return clone(this.#readStoredState().state);
+  getState(locationId = DEFAULT_LOCATION_ID): InstallationState {
+    return clone(this.#readStoredState(locationId).state);
+  }
+
+  #locationIds(): string[] {
+    if (!this.#tableExists("__location_states")) return [DEFAULT_LOCATION_ID];
+    const rows = this.ctx.storage.sql.exec<{ location_id: string }>(
+      "SELECT location_id FROM __location_states ORDER BY location_id",
+    ).toArray();
+    if (rows.length >= MAX_LOCATIONS || rows.some(({ location_id }) =>
+      parseLocationId(location_id) === null || location_id === DEFAULT_LOCATION_ID)) {
+      return corruptStorage();
+    }
+    return [DEFAULT_LOCATION_ID, ...rows.map(({ location_id }) => location_id)];
+  }
+
+  #ownerAuthorized(actorId: unknown): boolean {
+    return actorId === null ||
+      (typeof actorId === "string" && UUID.test(actorId) &&
+        (this.#readRoster()?.roster.members.some(({ id, active, role }) =>
+          id === actorId && active && role === "owner") ?? false));
+  }
+
+  #readCalendarContext(locationId: string): NamedCalendarContext {
+    const row = this.#tableExists("__location_calendar_settings")
+      ? this.ctx.storage.sql.exec<{
+        version: number; activation_version: number; google_enabled: number; calendar_id: string | null;
+        feed_enabled: number; feed_token_digest: string | null;
+      }>("SELECT version, activation_version, google_enabled, calendar_id, feed_enabled, feed_token_digest FROM __location_calendar_settings WHERE location_id = ?", locationId).toArray()[0]
+      : undefined;
+    if (row === undefined) {
+      return { version: 0, activationVersion: 0, googleEnabled: false, calendarId: null, feedEnabled: false, feedTokenDigest: null };
+    }
+    if (!Number.isSafeInteger(row.version) || row.version < 1 ||
+      !Number.isSafeInteger(row.activation_version) || row.activation_version < 0 || row.activation_version > row.version ||
+      (row.google_enabled !== 0 && row.google_enabled !== 1) ||
+      (row.feed_enabled !== 0 && row.feed_enabled !== 1) ||
+      (row.calendar_id !== null && !isCalendarTargetId(row.calendar_id)) ||
+      (row.feed_token_digest !== null && (typeof row.feed_token_digest !== "string" || !SHA256_HEX.test(row.feed_token_digest))) ||
+      (row.google_enabled === 1 && row.calendar_id === null) ||
+      ((row.google_enabled === 1 || row.feed_enabled === 1) && row.activation_version === 0) ||
+      (row.feed_enabled === 1 && row.feed_token_digest === null)) return corruptStorage();
+    return { version: row.version, activationVersion: row.activation_version, googleEnabled: row.google_enabled === 1, calendarId: row.calendar_id,
+      feedEnabled: row.feed_enabled === 1, feedTokenDigest: row.feed_token_digest };
+  }
+
+  getCalendarContext(locationId: string): NamedCalendarContext {
+    if (locationId === DEFAULT_LOCATION_ID) throw new Error("BAD_REQUEST");
+    if (parseLocationId(locationId) === null || !this.#locationIds().includes(locationId)) {
+      throw new Error("LOCATION_NOT_FOUND");
+    }
+    return this.#readCalendarContext(locationId);
+  }
+
+  #writeCalendarContext(locationId: string, previousVersion: number, context: NamedCalendarContext): boolean {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS __location_calendar_settings (
+      location_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      google_enabled INTEGER NOT NULL,
+      calendar_id TEXT UNIQUE,
+      feed_enabled INTEGER NOT NULL,
+      feed_token_digest TEXT,
+      activation_version INTEGER NOT NULL
+    )`);
+    const rows = sql.exec<{ location_id: string }>(`INSERT INTO __location_calendar_settings
+      (location_id, version, google_enabled, calendar_id, feed_enabled, feed_token_digest, activation_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(location_id) DO UPDATE SET version = excluded.version,
+        google_enabled = excluded.google_enabled, calendar_id = excluded.calendar_id,
+        feed_enabled = excluded.feed_enabled, feed_token_digest = excluded.feed_token_digest,
+        activation_version = excluded.activation_version
+      WHERE version = ? RETURNING location_id`, locationId, context.version, context.googleEnabled ? 1 : 0,
+      context.calendarId, context.feedEnabled ? 1 : 0, context.feedTokenDigest, context.activationVersion, previousVersion).toArray();
+    if (rows.length > 1) throw new Error("Invalid calendar CAS result");
+    return rows.length === 1;
+  }
+
+  async setCalendarSettings(input: unknown, actorId: unknown, locationId: string): Promise<CalendarSettingsResult> {
+    if (!isRecord(input) || !hasExactKeys(input, ["expectedVersion", "googleEnabled", "calendarId", "feedEnabled"]) ||
+      typeof input.expectedVersion !== "number" || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 ||
+      typeof input.googleEnabled !== "boolean" || typeof input.feedEnabled !== "boolean" ||
+      (input.calendarId !== null && !isCalendarTargetId(input.calendarId)) ||
+      parseLocationId(locationId) === null || locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    // Keep the pure settings module importable in Node; this provider parser
+    // lives beside its Workers-only adapter and is needed only by this RPC.
+    const { parseGoogleCredentials } = await import("./calendar-adapter.ts");
+    const credentials = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
+    const { expectedVersion, googleEnabled, feedEnabled, calendarId } = input;
+    const googleNotConfigured = googleEnabled && (calendarId === null || credentials === null);
+    const googleTargetIsPrimary = googleEnabled && credentials?.calendarId.toLowerCase() === "primary";
+    return this.ctx.storage.transactionSync((): CalendarSettingsResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      if (!this.#locationIds().includes(locationId)) return { ok: false, code: "LOCATION_NOT_FOUND" };
+      const current = this.#readCalendarContext(locationId);
+      if (expectedVersion !== current.version || !Number.isSafeInteger(current.version + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      if (current.calendarId !== null && calendarId !== current.calendarId) {
+        return { ok: false, code: "CALENDAR_TARGET_IMMUTABLE" };
+      }
+      if ((feedEnabled && current.feedTokenDigest === null) || googleNotConfigured) {
+        return { ok: false, code: "CALENDAR_NOT_CONFIGURED" };
+      }
+      if (googleTargetIsPrimary) {
+        return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
+      }
+      if (calendarId !== null) {
+        const duplicate = this.#tableExists("__location_calendar_settings") && this.ctx.storage.sql.exec(
+          "SELECT location_id FROM __location_calendar_settings WHERE calendar_id = ? AND location_id != ?", calendarId, locationId,
+        ).toArray().length > 0;
+        if (credentials?.calendarId === calendarId || duplicate) return { ok: false, code: "CALENDAR_TARGET_CONFLICT" };
+      }
+      const version = current.version + 1;
+      const activationVersion = !current.googleEnabled && !current.feedEnabled && (googleEnabled || feedEnabled)
+        ? version : current.activationVersion;
+      const context: NamedCalendarContext = { ...current, version, activationVersion, googleEnabled, calendarId, feedEnabled };
+      return this.#writeCalendarContext(locationId, current.version, context)
+        ? { ok: true, context } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
+  setCalendarFeedDigest(input: unknown, actorId: unknown, locationId: string): CalendarSettingsResult {
+    if (!isRecord(input) || !hasExactKeys(input, ["expectedVersion", "feedTokenDigest"]) ||
+      typeof input.expectedVersion !== "number" || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 ||
+      typeof input.feedTokenDigest !== "string" || !SHA256_HEX.test(input.feedTokenDigest) ||
+      parseLocationId(locationId) === null || locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    const feedTokenDigest = input.feedTokenDigest;
+    return this.ctx.storage.transactionSync((): CalendarSettingsResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      if (!this.#locationIds().includes(locationId)) return { ok: false, code: "LOCATION_NOT_FOUND" };
+      const current = this.#readCalendarContext(locationId);
+      if (input.expectedVersion !== current.version || !Number.isSafeInteger(current.version + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      const context = { ...current, version: current.version + 1, feedTokenDigest };
+      return this.#writeCalendarContext(locationId, current.version, context)
+        ? { ok: true, context } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
+  listLocations(runtime: ReadinessRuntime, actorId?: string | null): LocationSummary[] {
+    const safeRuntime = parseRpcRuntime(runtime);
+    let allowed: string[] | null = null;
+    if (actorId !== undefined && actorId !== null) {
+      const member = this.#readRoster()?.roster.members.find(({ id, active }) => id === actorId && active);
+      if (member === undefined) throw new Error("UNAUTHORIZED");
+      allowed = this.#readStaffScope(member).locationIds;
+    }
+    return this.#locationIds().filter((id) => allowed === null || allowed.includes(id)).map((id) => {
+      const { state } = this.#readStoredState(id);
+      const settings = activeVersion(state).settings;
+      return {
+        id,
+        label: settings.locationName,
+        bookable: state.mode === "live" && evaluateInstallationReadiness(settings, {
+          ...safeRuntime, ownerAuthenticated: safeRuntime.ownerSecretPresent,
+        }).ready,
+      };
+    });
+  }
+
+  async createLocation(input: unknown, actorId: unknown): Promise<LocationCreateResult> {
+    if (!isRecord(input) || !hasExactKeys(input, ["commandId", "locationId", "locationName"]) ||
+      typeof input.commandId !== "string" || !UUID.test(input.commandId) ||
+      typeof input.locationId !== "string" || parseLocationId(input.locationId) === null || input.locationId === DEFAULT_LOCATION_ID ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    const locationId = input.locationId;
+    const commandId = input.commandId;
+    let label: string;
+    try { label = boundedString(input.locationName, "locationName", 1, 80); }
+    catch { return { ok: false, code: "BAD_REQUEST" }; }
+    const fingerprint = await sha256Hex(canonicalJson({ locationId, label }));
+    return this.ctx.storage.transactionSync((): LocationCreateResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      const ids = this.#locationIds();
+      const sql = this.ctx.storage.sql;
+      if (this.#tableExists("__location_states")) {
+        const receipt = sql.exec<{ creation_fingerprint: string; creation_response_json: string }>(
+          "SELECT creation_fingerprint, creation_response_json FROM __location_states WHERE creation_command_id = ?",
+          commandId,
+        ).toArray().at(0);
+        if (receipt !== undefined) {
+          if (receipt.creation_fingerprint !== fingerprint) return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+          const location: unknown = JSON.parse(receipt.creation_response_json);
+          if (!isRecord(location) || !hasExactKeys(location, ["id", "label"]) ||
+            location.id !== locationId || typeof location.label !== "string" ||
+            !isStoredDisplayName(location.label)) return corruptStorage();
+          return { ok: true, location: { id: locationId, label: location.label }, replayed: true };
+        }
+      }
+      if (ids.includes(locationId)) return { ok: false, code: "LOCATION_EXISTS" };
+      if (ids.length >= MAX_LOCATIONS) return { ok: false, code: "LOCATION_LIMIT_REACHED" };
+      const state = createDefaultInstallationState(new Date().toISOString());
+      activeVersion(state).settings.locationName = label;
+      const location = { id: locationId, label };
+      sql.exec(`CREATE TABLE IF NOT EXISTS __location_states (
+        location_id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        creation_command_id TEXT NOT NULL UNIQUE,
+        creation_fingerprint TEXT NOT NULL,
+        creation_response_json TEXT NOT NULL
+      )`);
+      sql.exec("INSERT INTO __location_states VALUES (?, ?, ?, ?, ?)",
+        locationId, storedStateJson(state), commandId, fingerprint, JSON.stringify(location));
+      return { ok: true, location, replayed: false };
+    });
   }
 
   /**
@@ -1887,14 +2170,19 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   // ---- LINE lifecycle storage (own `__` table; settings JSON untouched) ----
 
-  #readLineLifecycle(): LineLifecycle | null {
-    if (!this.#tableExists("__line_lifecycle")) return null;
-    const rows = this.ctx.storage.sql
+  #readLineLifecycle(locationId = DEFAULT_LOCATION_ID): LineLifecycle | null {
+    const isDefault = locationId === DEFAULT_LOCATION_ID;
+    if (!this.#tableExists(isDefault ? "__line_lifecycle" : "__location_line_lifecycle")) return null;
+    const rows = isDefault ? this.ctx.storage.sql
       .exec<{ singleton: number; lifecycle_json: string }>(
         "SELECT singleton, lifecycle_json FROM __line_lifecycle",
       )
-      .toArray();
+      .toArray() : this.ctx.storage.sql.exec<{ singleton: number; lifecycle_json: string }>(
+        "SELECT 1 AS singleton, lifecycle_json FROM __location_line_lifecycle WHERE location_id = ?",
+        locationId,
+      ).toArray();
     const row = rows[0];
+    if (!isDefault && rows.length === 0) return null;
     if (rows.length !== 1 || row?.singleton !== 1) {
       return corruptStorage();
     }
@@ -1911,7 +2199,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
   // First write creates the table — the lifecycle appears only on operator
   // commands, never on reads.
-  #writeLineLifecycle(lifecycle: LineLifecycle): void {
+  #writeLineLifecycle(lifecycle: LineLifecycle, locationId = DEFAULT_LOCATION_ID): void {
+    const lifecycleJson = JSON.stringify(parseLineLifecycle(lifecycle));
+    if (locationId !== DEFAULT_LOCATION_ID) {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS __location_line_lifecycle (
+        location_id TEXT PRIMARY KEY,
+        lifecycle_json TEXT NOT NULL
+      )`);
+      this.ctx.storage.sql.exec(`INSERT INTO __location_line_lifecycle VALUES (?, ?)
+        ON CONFLICT(location_id) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
+        locationId, lifecycleJson);
+      return;
+    }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS __line_lifecycle (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -1921,7 +2220,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO __line_lifecycle (singleton, lifecycle_json) VALUES (1, ?)
        ON CONFLICT(singleton) DO UPDATE SET lifecycle_json = excluded.lifecycle_json`,
-      JSON.stringify(parseLineLifecycle(lifecycle)),
+      lifecycleJson,
     );
   }
 
@@ -1949,6 +2248,84 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return { roster, rosterJson: row.roster_json };
   }
 
+  #validScopeIds(value: unknown): string[] | null {
+    if (!Array.isArray(value) || value.length > MAX_LOCATIONS) return null;
+    const ids: string[] = [];
+    for (const valueId of value) {
+      const id = parseLocationId(valueId);
+      if (id === null) return null;
+      ids.push(id);
+    }
+    const known = this.#locationIds();
+    if (new Set(ids).size !== ids.length || ids.some((id) => !known.includes(id))) return null;
+    return ids.sort((left, right) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    });
+  }
+
+  #readStaffScope(member: StaffMember): StaffLocationScope {
+    const base = { staffId: member.id, scopeVersion: 0 };
+    if (member.role === "owner") return { ...base, locationIds: null };
+    const row = this.#tableExists("__staff_location_scopes")
+      ? this.ctx.storage.sql.exec<{ scope_version: number; location_ids_json: string }>(
+        "SELECT scope_version, location_ids_json FROM __staff_location_scopes WHERE staff_id = ?", member.id,
+      ).toArray()[0] : undefined;
+    if (row === undefined) return { ...base, locationIds: [DEFAULT_LOCATION_ID] };
+    if (!Number.isSafeInteger(row.scope_version) || row.scope_version < 1) return corruptStorage();
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.location_ids_json); }
+    catch { return corruptStorage(); }
+    const locationIds = this.#validScopeIds(parsed);
+    if (locationIds === null || JSON.stringify(locationIds) !== row.location_ids_json) return corruptStorage();
+    return { staffId: member.id, scopeVersion: row.scope_version, locationIds };
+  }
+
+  #writeStaffScope(scope: StaffLocationScope & { locationIds: string[] }, previousVersion: number): boolean {
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS __staff_location_scopes (
+      staff_id TEXT PRIMARY KEY,
+      scope_version INTEGER NOT NULL,
+      location_ids_json TEXT NOT NULL
+    )`);
+    // RETURNING counts records; rowsWritten also counts primary-key index writes.
+    const rows = sql.exec<{ staff_id: string }>(`INSERT INTO __staff_location_scopes VALUES (?, ?, ?)
+      ON CONFLICT(staff_id) DO UPDATE SET scope_version = excluded.scope_version,
+        location_ids_json = excluded.location_ids_json WHERE scope_version = ? RETURNING staff_id`,
+      scope.staffId, scope.scopeVersion, JSON.stringify(scope.locationIds), previousVersion).toArray();
+    if (rows.length > 1) throw new Error("Invalid scope CAS result");
+    return rows.length === 1;
+  }
+
+  listStaffLocationScopes(actorId: string | null): StaffLocationScope[] {
+    if (!this.#ownerAuthorized(actorId)) throw new Error("UNAUTHORIZED");
+    return (this.#readRoster()?.roster.members ?? []).map((member) => this.#readStaffScope(member));
+  }
+
+  setStaffLocationScope(input: unknown, actorId: unknown): StaffScopeResult {
+    if (!isRecord(input) || !hasExactKeys(input, ["staffId", "expectedScopeVersion", "locationIds"]) ||
+      typeof input.staffId !== "string" || !UUID.test(input.staffId) ||
+      typeof input.expectedScopeVersion !== "number" || !Number.isSafeInteger(input.expectedScopeVersion) || input.expectedScopeVersion < 0 ||
+      (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId)))) {
+      return { ok: false, code: "BAD_REQUEST" };
+    }
+    return this.ctx.storage.transactionSync((): StaffScopeResult => {
+      if (!this.#ownerAuthorized(actorId)) return { ok: false, code: "UNAUTHORIZED" };
+      const locationIds = this.#validScopeIds(input.locationIds);
+      if (locationIds === null) return { ok: false, code: "BAD_REQUEST" };
+      const member = this.#readRoster()?.roster.members.find(({ id }) => id === input.staffId);
+      if (member?.role !== "staff") return { ok: false, code: "STAFF_UNAVAILABLE" };
+      const previous = this.#readStaffScope(member);
+      if (input.expectedScopeVersion !== previous.scopeVersion || !Number.isSafeInteger(previous.scopeVersion + 1)) {
+        return { ok: false, code: "VERSION_CONFLICT" };
+      }
+      const scope = { staffId: member.id, scopeVersion: previous.scopeVersion + 1, locationIds };
+      return this.#writeStaffScope(scope, previous.scopeVersion)
+        ? { ok: true, scope } : { ok: false, code: "VERSION_CONFLICT" };
+    });
+  }
+
   /**
    * One statement for the first write and every later one. The insert path
    * bootstraps a roster that does not exist yet; on an existing row the `WHERE`
@@ -1968,11 +2345,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * lost update into a refusal instead of silent corruption.
    */
   #writeRoster(roster: StaffRoster, previousJson: string | null): boolean {
-    // Validated before the table is created, because the two statements are not
-    // in one transaction: a parser that threw after the `CREATE` would leave a
-    // table holding no rows, which `#readRoster` reads as corruption forever and
-    // which no screen can repair. Unreachable while everything
-    // `applyRosterCommand` builds parses — the ordering is what keeps it so.
+    // Validate before initialization; the caller's transaction also covers any
+    // initial location grant so neither record can commit without the other.
     const rosterJson = JSON.stringify(parseStaffRoster(roster));
     const sql = this.ctx.storage.sql;
     sql.exec(`
@@ -2008,11 +2382,12 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * loop the cheap option as well as the one that does not leak which
    * identifiers exist.
    */
-  resolveActor(digest: unknown): { staffId: string; role: StaffRole } | null {
+  resolveActor(digest: unknown, locationId?: string): { staffId: string; role: StaffRole } | null {
     if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return null;
+    if (locationId !== undefined && parseLocationId(locationId) === null) return null;
     const stored = this.#readRoster();
     if (stored === null) return null;
-    let found: { staffId: string; role: StaffRole } | null = null;
+    let found: StaffMember | null = null;
     for (const member of stored.roster.members) {
       // An inactive member holds an empty digest, which no SHA-256 hex string
       // equals, so deactivation needs no separate check here. `parseStaffMember`
@@ -2020,10 +2395,13 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       // digest disagree in either direction, so revocation rests on the parser
       // rather than on a test of `active` that could be forgotten here.
       if (timingSafeEqualHex(member.credentialDigest, digest)) {
-        found = { staffId: member.id, role: member.role };
+        found = member;
       }
     }
-    return found;
+    if (found === null) return null;
+    if (locationId !== undefined && found.role === "staff" &&
+      !this.#readStaffScope(found).locationIds?.includes(locationId)) return null;
+    return { staffId: found.id, role: found.role };
   }
 
   /** The roster as the operator screen sees it. Never a credential digest. */
@@ -2041,46 +2419,58 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeRosterCommand(
     input: unknown,
     actorId: unknown,
+    locationIds?: string[],
   ): Promise<RosterCommandResult> {
     const command = parseRosterCommand(input);
     if (command === null) return rosterFailure("BAD_REQUEST");
     if (actorId !== null && (typeof actorId !== "string" || !UUID.test(actorId))) {
       return rosterFailure("BAD_REQUEST");
     }
-    const stored = this.#readRoster();
-    const roster = stored?.roster ?? EMPTY_ROSTER;
-    // Re-checked here, not just at the gate. The Worker authorized this caller
-    // before the request body arrived, and on this surface that gap is the
-    // difference between an operation finishing with the rights it opened with
-    // and an operation restoring rights that were taken away while it was open.
-    // Read in the same synchronous turn as the write below, so the roster this
-    // decision is made against is the roster the command lands on.
-    // `null` is the deployment secret, which no roster command can revoke.
-    if (
-      actorId !== null &&
-      !roster.members.some(
-        ({ id, role, active }) => id === actorId && role === "owner" && active,
-      )
-    ) {
-      return rosterFailure("UNAUTHORIZED");
+    if (locationIds !== undefined && (command.operation !== "staff.create" || command.role !== "staff")) {
+      return rosterFailure("BAD_REQUEST");
     }
-    const applied = applyRosterCommand(
-      roster,
-      command,
-      new Date().toISOString(),
-      crypto.randomUUID(),
-    );
-    if ("ok" in applied) return applied;
-    if (command.operation === "staff.create" && command.dryRun) {
-      // Run the same parser the write runs, so "this would have worked" is a
-      // result rather than a claim. Nothing is written, and no credential is
-      // handed out for a record that will not exist.
-      parseStaffRoster(applied.roster);
-      return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
-    }
-    return this.#writeRoster(applied.roster, stored?.rosterJson ?? null)
-      ? { ok: true, member: publicStaffMember(applied.member) }
-      : rosterFailure("VERSION_CONFLICT");
+    const scopeIds = locationIds === undefined ? undefined : this.#validScopeIds(locationIds);
+    if (scopeIds === null) return rosterFailure("BAD_REQUEST");
+    return this.ctx.storage.transactionSync((): RosterCommandResult => {
+      const stored = this.#readRoster();
+      const roster = stored?.roster ?? EMPTY_ROSTER;
+      // Re-checked here, not just at the gate. The Worker authorized this caller
+      // before the request body arrived, and on this surface that gap is the
+      // difference between an operation finishing with the rights it opened with
+      // and an operation restoring rights that were taken away while it was open.
+      // Read in the same synchronous turn as the write below, so the roster this
+      // decision is made against is the roster the command lands on.
+      // `null` is the deployment secret, which no roster command can revoke.
+      if (
+        actorId !== null &&
+        !roster.members.some(
+          ({ id, role, active }) => id === actorId && role === "owner" && active,
+        )
+      ) {
+        return rosterFailure("UNAUTHORIZED");
+      }
+      const applied = applyRosterCommand(
+        roster,
+        command,
+        new Date().toISOString(),
+        crypto.randomUUID(),
+      );
+      if ("ok" in applied) return applied;
+      if (command.operation === "staff.create" && command.dryRun) {
+        // Run the same parser the write runs, so "this would have worked" is a
+        // result rather than a claim. Nothing is written, and no credential is
+        // handed out for a record that will not exist.
+        parseStaffRoster(applied.roster);
+        return { ok: true, dryRun: true, wouldBeFirstMember: roster.members.length === 0 };
+      }
+      if (!this.#writeRoster(applied.roster, stored?.rosterJson ?? null)) {
+        return rosterFailure("VERSION_CONFLICT");
+      }
+      if (scopeIds !== undefined && !this.#writeStaffScope({
+        staffId: applied.member.id, scopeVersion: 1, locationIds: scopeIds,
+      }, 0)) throw new Error("Initial staff scope conflict");
+      return { ok: true, member: publicStaffMember(applied.member) };
+    });
   }
 
   /**
@@ -2088,9 +2478,9 @@ export class InstallationConfig extends DurableObjectBase<Env> {
    * projection with a freshly minted descriptor lease. The lease bounds how
    * long the projection may be trusted by a day-side event commit.
    */
-  getContext(): { state: InstallationState; line?: LineContext } {
-    const state = clone(this.#readStoredState().state);
-    const lifecycle = this.#readLineLifecycle();
+  getContext(locationId = DEFAULT_LOCATION_ID): { state: InstallationState; line?: LineContext } {
+    const state = clone(this.#readStoredState(locationId).state);
+    const lifecycle = this.#readLineLifecycle(locationId);
     if (lifecycle === null) return { state };
     const issuedAt = Date.now();
     const line: LineContext = {
@@ -2112,8 +2502,27 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     return { state, line };
   }
 
+  getLineWebhookTargets(): string[] {
+    return this.#locationIds().filter((id) => {
+      const lifecycle = this.#readLineLifecycle(id);
+      return lifecycle?.active !== null && lifecycle?.active !== undefined &&
+        (lifecycle.phase === "active" || lifecycle.phase === "deactivating");
+    });
+  }
+
+  #lineRealmAvailable(identifiers: LineIdentifiers, locationId: string): boolean {
+    return this.#locationIds().every((id) => {
+      if (id === locationId) return true;
+      const lifecycle = this.#readLineLifecycle(id);
+      const held = [lifecycle?.active, lifecycle?.operation?.kind === "enable" ? lifecycle.operation.identifiers : null];
+      return held.every((realm) => realm === null || realm === undefined ||
+        (realm.liffId === identifiers.liffId && realm.loginChannelId === identifiers.loginChannelId &&
+          realm.messagingChannelId === identifiers.messagingChannelId));
+    });
+  }
+
   /** Owner setup surface: draft and lifecycle facts (never the secret). */
-  lineAdapterStatus(): {
+  lineAdapterStatus(locationId = DEFAULT_LOCATION_ID): {
     phase: LineLifecyclePhase;
     lifecycleVersion: number;
     draft: LineIdentifiers | null;
@@ -2121,7 +2530,8 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operationInFlight: boolean;
     highWaterCopy: number;
   } {
-    const lifecycle = this.#readLineLifecycle();
+    this.#readStoredState(locationId);
+    const lifecycle = this.#readLineLifecycle(locationId);
     if (lifecycle === null) {
       return {
         phase: "disabled",
@@ -2152,6 +2562,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     lifecycle: LineLifecycle,
     safeRuntime: ReadinessRuntime,
     now: string,
+    locationId: string,
   ): LineLifecycle | { ok: false; code: "PHASE_CONFLICT" | "SECRET_MISSING" | "ORIGIN_UNCONFIGURED" } {
     if (command.operation === "line.settings") {
       if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
@@ -2168,8 +2579,9 @@ export class InstallationConfig extends DurableObjectBase<Env> {
       if (lifecycle.phase !== "disabled" || command.identifiers === undefined) {
         return { ok: false, code: "PHASE_CONFLICT" };
       }
+      if (!this.#lineRealmAvailable(command.identifiers, locationId)) return { ok: false, code: "PHASE_CONFLICT" };
       if (!safeRuntime.lineSecretPresent) return { ok: false, code: "SECRET_MISSING" };
-      const settings = activeVersion(this.#readStoredState().state).settings;
+      const settings = activeVersion(this.#readStoredState(locationId).state).settings;
       if (!protectionReady(settings, safeRuntime)) {
         return { ok: false, code: "ORIGIN_UNCONFIGURED" };
       }
@@ -2210,64 +2622,72 @@ export class InstallationConfig extends DurableObjectBase<Env> {
   async executeLineCommand(
     input: unknown,
     runtime: ReadinessRuntime,
+    locationId = DEFAULT_LOCATION_ID,
   ): Promise<LineCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const command = parseLineCommand(input);
     if (command === null) return { ok: false, code: "BAD_REQUEST" };
+    this.#readStoredState(locationId);
     const fingerprint = await lineCommandFingerprint(command);
     const now = new Date().toISOString();
 
-    // Pre-armed before the accepting commit: if this invocation dies between
-    // the commit and the saga driver below, the coordinator alarm still wakes
-    // and re-drives the stored operation to completion. A spurious wake-up
-    // with no operation is a no-op.
-    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
+    this.#lineCommandsInFlight += 1;
+    try {
+      // Pre-armed before the accepting commit: if this invocation dies between
+      // the commit and the saga driver below, the coordinator alarm still wakes
+      // and re-drives the stored operation to completion. A spurious wake-up
+      // with no operation is a no-op.
+      await this.#updateLineAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
 
-    const result = this.ctx.storage.transactionSync((): LineCommandResult => {
-      const lifecycle = this.#readLineLifecycle() ?? defaultLineLifecycle(now);
+      const result = this.ctx.storage.transactionSync((): LineCommandResult => {
+        const lifecycle = this.#readLineLifecycle(locationId) ?? defaultLineLifecycle(now);
 
-      const receipt = lifecycle.receipts.find(
-        ({ commandId }) => commandId === command.commandId,
-      );
-      if (receipt !== undefined) {
-        if (receipt.fingerprint !== fingerprint) {
-          return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+        const receipt = lifecycle.receipts.find(
+          ({ commandId }) => commandId === command.commandId,
+        );
+        if (receipt !== undefined) {
+          if (receipt.fingerprint !== fingerprint) {
+            return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+          }
+          const stored = JSON.parse(receipt.responseJson) as LineCommandOutcome;
+          return { ...stored, replayed: true };
         }
-        const stored = JSON.parse(receipt.responseJson) as LineCommandOutcome;
-        return { ...stored, replayed: true };
-      }
-      if (command.expectedLifecycleVersion !== lifecycle.lifecycleVersion) {
-        return { ok: false, code: "VERSION_CONFLICT" };
-      }
+        if (command.expectedLifecycleVersion !== lifecycle.lifecycleVersion) {
+          return { ok: false, code: "VERSION_CONFLICT" };
+        }
 
-      const next = this.#nextLineLifecycle(command, lifecycle, safeRuntime, now);
-      if ("code" in next) return next;
+        const next = this.#nextLineLifecycle(command, lifecycle, safeRuntime, now, locationId);
+        if ("code" in next) return next;
 
-      const outcome: LineCommandOutcome = {
-        ok: true,
-        phase: next.phase,
-        lifecycleVersion: next.lifecycleVersion,
-        replayed: false,
-      };
-      const cutoff = Date.now() - ADAPTER.RECEIPT_TTL_S * 1000;
-      next.receipts = [
-        ...lifecycle.receipts.filter(
-          ({ createdAt }) => Date.parse(createdAt) >= cutoff,
-        ),
-        {
-          commandId: command.commandId,
-          operation: command.operation,
-          fingerprint,
-          responseJson: JSON.stringify(outcome),
-          createdAt: now,
-        },
-      ].slice(-ADAPTER.RECEIPT_CAP);
-      this.#writeLineLifecycle(next);
-      return outcome;
-    });
+        const outcome: LineCommandOutcome = {
+          ok: true,
+          phase: next.phase,
+          lifecycleVersion: next.lifecycleVersion,
+          replayed: false,
+        };
+        const cutoff = Date.now() - ADAPTER.RECEIPT_TTL_S * 1000;
+        next.receipts = [
+          ...lifecycle.receipts.filter(
+            ({ createdAt }) => Date.parse(createdAt) >= cutoff,
+          ),
+          {
+            commandId: command.commandId,
+            operation: command.operation,
+            fingerprint,
+            responseJson: JSON.stringify(outcome),
+            createdAt: now,
+          },
+        ].slice(-ADAPTER.RECEIPT_CAP);
+        this.#writeLineLifecycle(next, locationId);
+        return outcome;
+      });
 
-    if (result.ok && !result.replayed) await this.#driveLineSaga();
-    return result;
+      if (result.ok && !result.replayed) await this.#driveLineSaga(locationId);
+      return result;
+    } finally {
+      this.#lineCommandsInFlight -= 1;
+      await this.#updateLineAlarm(null);
+    }
   }
 
   // Single-coordinator saga driver: idempotent, re-entrant, alarm re-driven.
@@ -2277,20 +2697,21 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<"done" | "retry"> {
     if (operation.identifiers === null) throw new Error("corrupt enable operation");
-    const meta = await authority.readMeta();
+    const meta = await withDeadline(authority.readMeta(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     const generation = (meta?.highWater ?? 0) + 1;
-    const activated = await authority.activate({
+    const activated = await withDeadline<Awaited<ReturnType<typeof authority.activate>>>(authority.activate({
       operationId: operation.operationId,
       generation,
       snapshot: {
         messagingChannelId: (operation.identifiers as LineIdentifiers).messagingChannelId,
       },
-    });
+    }), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (!activated.ok) return "retry";
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
@@ -2303,7 +2724,7 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         operation: null,
         highWaterCopy: activated.meta.highWater,
         updatedAt: now,
-      });
+      }, locationId);
     });
     return "done";
   }
@@ -2312,20 +2733,21 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<void> {
-    await authority.beginDisable();
+    await withDeadline(authority.beginDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     const finalPassAt = Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000;
     // Pre-arm before recording the step so a crash between the two can
     // only re-run the idempotent beginDisable, never lose the wake-up.
-    await this.ctx.storage.setAlarm(finalPassAt);
+    await this.#updateLineAlarm(finalPassAt);
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
         operation: { ...operation, step: "final-wait", finalPassAt },
         updatedAt: now,
-      });
+      }, locationId);
     });
   }
 
@@ -2333,9 +2755,10 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     operation: LineSagaOperation,
     authority: ReturnType<Env["ADAPTER_DELIVERY"]["getByName"]>,
     now: string,
+    locationId: string,
   ): Promise<void> {
     if (operation.finalPassAt === null || Date.now() < operation.finalPassAt) {
-      await this.ctx.storage.setAlarm(
+      await this.#updateLineAlarm(
         operation.finalPassAt ?? Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1000,
       );
       return;
@@ -2343,18 +2766,18 @@ export class InstallationConfig extends DurableObjectBase<Env> {
     // The idempotent beginDisable re-call reports purge progress; the
     // authority refuses completion until a post-lease full purge pass
     // finished, so keep polling until it flips to disabled.
-    const progress = await authority.beginDisable();
+    const progress = await withDeadline(authority.beginDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (!progress.purgeComplete) {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.#updateLineAlarm(Date.now() + 60_000);
       return;
     }
-    const completed = await authority.completeDisable();
+    const completed = await withDeadline(authority.completeDisable(), ADAPTER.SWEEP_RPC_DEADLINE_MS);
     if (completed.meta.state !== "disabled") {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.#updateLineAlarm(Date.now() + 60_000);
       return;
     }
     this.ctx.storage.transactionSync(() => {
-      const current = this.#readLineLifecycle();
+      const current = this.#readLineLifecycle(locationId);
       if (current?.operation?.operationId !== operation.operationId) return;
       this.#writeLineLifecycle({
         ...current,
@@ -2365,56 +2788,56 @@ export class InstallationConfig extends DurableObjectBase<Env> {
         draft: null,
         operation: null,
         updatedAt: now,
-      });
+      }, locationId);
     });
   }
 
-  async #driveLineSaga(): Promise<void> {
+  async #driveLineSaga(locationId = DEFAULT_LOCATION_ID): Promise<void> {
     for (let step = 0; step < 4; step += 1) {
-      const lifecycle = this.#readLineLifecycle();
+      const lifecycle = this.#readLineLifecycle(locationId);
       const operation = lifecycle?.operation ?? null;
       if (lifecycle === null || operation === null) return;
-      const authority = this.env.ADAPTER_DELIVERY.getByName("installation");
+      const authority = this.env.ADAPTER_DELIVERY.getByName(adapterObjectName(locationId));
       const now = new Date().toISOString();
       try {
         if (operation.kind === "enable") {
-          if ((await this.#driveEnableSaga(operation, authority, now)) === "retry") continue;
+          if ((await this.#driveEnableSaga(operation, authority, now, locationId)) === "retry") continue;
           return;
         }
         if (operation.step === "begin-disable") {
-          await this.#driveBeginDisableStep(operation, authority, now);
+          await this.#driveBeginDisableStep(operation, authority, now, locationId);
           return;
         }
         if (operation.step === "final-wait") {
-          await this.#driveFinalWaitStep(operation, authority, now);
+          await this.#driveFinalWaitStep(operation, authority, now, locationId);
           return;
         }
         return;
       } catch {
         // Adapter RPC failed; leave the operation recorded and let the alarm
         // re-drive it.
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        await this.#updateLineAlarm(Date.now() + 60_000);
         return;
       }
     }
-    await this.ctx.storage.setAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
+    await this.#updateLineAlarm(Date.now() + ADAPTER.SAGA_REDRIVE_DELAY_S * 1000);
   }
 
   override async alarm(): Promise<void> {
-    await this.#driveLineSaga();
-    // No re-arm when idle: with no operation in flight this object keeps no
-    // pending alarm (the same disarm invariant the delivery object holds).
+    await Promise.all(this.#locationIds().map((locationId) => this.#driveLineSaga(locationId)));
+    await this.#updateLineAlarm(null);
   }
 
   async executeCommand(
     input: unknown,
     runtime: ReadinessRuntime,
+    locationId = DEFAULT_LOCATION_ID,
   ): Promise<InstallationCommandResult> {
     const safeRuntime = parseRpcRuntime(runtime);
     const now = new Date().toISOString();
 
     while (true) {
-      const stored = this.#readStoredState();
+      const stored = this.#readStoredState(locationId);
       const result = await executeInstallationCommand(stored.state, input, {
         ...safeRuntime,
         now,
@@ -2423,20 +2846,23 @@ export class InstallationConfig extends DurableObjectBase<Env> {
 
       const nextStateJson = storedStateJson(result.state);
       if (nextStateJson === stored.stateJson) return result;
-      const write = this.ctx.storage.sql.exec(
+      const write = locationId === DEFAULT_LOCATION_ID ? this.ctx.storage.sql.exec(
         `UPDATE installation_state SET state_json = ?
          WHERE singleton = 1 AND state_json = ?`,
         nextStateJson,
         stored.stateJson,
+      ) : this.ctx.storage.sql.exec(
+        "UPDATE __location_states SET state_json = ? WHERE location_id = ? AND state_json = ?",
+        nextStateJson, locationId, stored.stateJson,
       );
       if (write.rowsWritten === 1) return result;
       if (write.rowsWritten !== 0) throw new Error("Invalid installation CAS result");
     }
   }
 
-  async installationReceipt(runtime: ReadinessRuntime): Promise<InstallationReceipt> {
+  async installationReceipt(runtime: ReadinessRuntime, locationId = DEFAULT_LOCATION_ID): Promise<InstallationReceipt> {
     const safeRuntime = parseRpcRuntime(runtime);
-    return createInstallationReceipt(this.#readStoredState().state, {
+    return createInstallationReceipt(this.#readStoredState(locationId).state, {
       ...safeRuntime,
       applicationVersion: APPLICATION_VERSION,
       now: new Date().toISOString(),

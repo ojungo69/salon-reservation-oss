@@ -99,6 +99,82 @@ test("the operator screen carries no automated accessibility violations", async 
   await expectNoAxeViolations(page);
 });
 
+test("reauthentication clears old operator details before the new directory returns", async ({ page }) => {
+  await stubTurnstile(page);
+  await signIn(page);
+  await page.fill("#owner-customer-name", "OLD_PRIVATE");
+  let release!: () => void;
+  let requested!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route("**/api/admin/locations", async (route) => {
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.fill("#owner-token", "invalid-credential-000000000000000000000");
+  await page.click("#auth-form button[type=submit]");
+  try {
+    await started;
+    await expect(page.locator("#owner-customer-name")).toBeEmpty();
+    await expect(page.locator("#owner-customer-name")).toBeDisabled();
+    await expect(page.locator("[data-reservation-list]")).not.toContainText("OLD_PRIVATE");
+    await expect(page.locator("[data-reservation-detail]")).toBeHidden();
+  } finally {
+    release();
+  }
+  await expect(page.locator("#auth-status")).toHaveAttribute("data-tone", "error");
+});
+
+test("reauthentication waits for an in-flight proxy booking to settle", { tag: "@private-artifact" }, async ({ page }) => {
+  await signIn(page);
+  await page.locator("#owner-service-list input").first().check();
+  // Keep the proxy fixture off the shared day used by the status-action test.
+  const independentDate = openDateFrom(openDateFrom(await page.locator("#admin-date").inputValue()));
+  await page.fill("#admin-date", independentDate);
+  await page.locator("#admin-date").blur();
+  await waitForAvailabilitySettled(page);
+  await selectStartTime(page);
+  await page.fill("#owner-customer-name", "架空 代理予約");
+  await page.fill("#owner-contact", "pending-proxy@example.invalid");
+
+  let release!: () => void;
+  let requested!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route("**/api/admin/reservations", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.click("#owner-create-form button[type=submit]");
+  await started;
+  try {
+    await page.fill("#owner-token", "invalid-credential-000000000000000000000");
+    await page.click("#auth-form button[type=submit]");
+    await expect(page.locator("#auth-status")).toContainText("未確認の操作結果");
+    await expect(page.locator("#owner-customer-name")).toHaveValue("架空 代理予約");
+    await expect(page.locator("#logout-button")).toBeDisabled();
+  } finally {
+    release();
+  }
+  await expect(page.locator("#owner-create-result")).toBeVisible();
+  await expect(page.locator("#owner-create-status")).toContainText("代理予約を登録しました");
+  const keyLifecycle = await page.evaluate(() => {
+    const key = document.querySelector("#owner-management-key");
+    const logout = document.querySelector("#logout-button") as HTMLButtonElement;
+    const visible = Boolean(key?.textContent);
+    const logoutEnabled = !logout.disabled;
+    if (logoutEnabled) logout.click();
+    const clearedByApp = !key?.textContent;
+    // Preserve the observed result, but keep a regression out of artifacts.
+    if (!clearedByApp && key) key.textContent = "";
+    return { visible, logoutEnabled, clearedByApp };
+  });
+  expect(keyLifecycle).toEqual({ visible: true, logoutEnabled: true, clearedByApp: true });
+});
+
 // One signed-in session checks every viewport: the sign-in burst of four
 // separate tests bought nothing, and resizing an authenticated page keeps
 // the assertions identical.

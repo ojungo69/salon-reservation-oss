@@ -43,6 +43,134 @@ const journey = <Name extends keyof JourneyModule>(
   return member as JourneyModule[Name];
 };
 
+type LocationModule = {
+  validLocationDirectory: (
+    entries: unknown,
+    requireDefault?: boolean,
+  ) => boolean;
+  aggregateOwnedProofs: (
+    locations: Array<{ id: string; label: string; bookable: boolean }>,
+    readRecords: (locationId: string) => Array<{ reservationId: string; savedAt: number }>,
+  ) => Array<{ locationId: string; label: string; record: { reservationId: string; savedAt: number } }>;
+  storageKey: (base: string, locationId: string) => string;
+  scopedPath: (path: string, locationId: string) => string;
+  explicitLocation: (search: string) => string | null;
+  choosePublicLocation: (
+    locations: Array<{ id: string; bookable: boolean }>,
+    explicit: string | null,
+    defaultPending: boolean,
+  ) => string | null;
+  chooseOperatorLocation: (
+    locations: Array<{ id: string }>,
+    explicit: string | null,
+  ) => string | null;
+};
+
+const locationModule = (await import("../public/location.js").catch(
+  () => undefined,
+)) as Partial<LocationModule> | undefined;
+
+const location = <Name extends keyof LocationModule>(name: Name): LocationModule[Name] => {
+  const member = locationModule?.[name];
+  assert.equal(typeof member, "function", `Implement ${name} in public/location.js`);
+  return member as LocationModule[Name];
+};
+
+test("named location URLs and storage never alter the legacy default bytes", () => {
+  const storageKey = location("storageKey");
+  const scopedPath = location("scopedPath");
+  const explicitLocation = location("explicitLocation");
+  const base = "salon-reservation:pending-customer-create:v1";
+
+  assert.equal(storageKey(base, "default"), base);
+  assert.equal(storageKey(base, "salon-b"), `${base}:location:salon-b`);
+  assert.equal(scopedPath("/api/availability?date=2026-11-18", "default"), "/api/availability?date=2026-11-18");
+  assert.equal(scopedPath("/api/availability?date=2026-11-18", "salon-b"), "/api/availability?date=2026-11-18&location=salon-b");
+  assert.equal(explicitLocation("?x=1"), null);
+  assert.equal(explicitLocation("?location=default"), "default");
+  assert.equal(explicitLocation("?location=salon-b"), "salon-b");
+  for (const query of ["?location=", "?location=SalOn", "?location=a-", "?location=a&location=b"]) {
+    assert.throws(() => explicitLocation(query));
+  }
+  assert.throws(() => scopedPath("/api/config?location=default", "salon-b"));
+});
+
+test("location paths reject authority and double-slash normalization for every scope", () => {
+  const scopedPath = location("scopedPath");
+  const unsafe = [
+    String.raw`/\attacker.invalid/path`, String.raw`/\scope.invalid/path`,
+    "/\t/attacker.invalid/path", "/\n/attacker.invalid/path", "/\r/attacker.invalid/path",
+    "/.//attacker.invalid/path", "/a/..//attacker.invalid/path", "/%2e//attacker.invalid/path",
+  ];
+  for (const locationId of ["default", "salon-b"]) {
+    for (const path of unsafe) {
+      assert.throws(() => scopedPath(path, locationId), TypeError, `${locationId}: ${JSON.stringify(path)}`);
+    }
+  }
+  assert.equal(scopedPath("/bookings?value=%5C#proof", "default"), "/bookings?value=%5C#proof");
+  assert.equal(scopedPath("/bookings?value=%5C#proof", "salon-b"), "/bookings?value=%5C&location=salon-b#proof");
+});
+
+test("location bootstrap prefers explicit scope and legacy pending without cross-location fallback", () => {
+  const choosePublicLocation = location("choosePublicLocation");
+  const chooseOperatorLocation = location("chooseOperatorLocation");
+  const both = [{ id: "default", bookable: true }, { id: "salon-b", bookable: true }];
+  const namedOnly = [{ id: "default", bookable: false }, { id: "salon-b", bookable: true }];
+
+  assert.equal(choosePublicLocation(both, null, false), "default");
+  assert.equal(choosePublicLocation(namedOnly, null, false), "salon-b");
+  assert.equal(choosePublicLocation(namedOnly, null, true), "default");
+  assert.equal(choosePublicLocation(namedOnly, "default", false), "default");
+  assert.equal(choosePublicLocation(namedOnly, "unknown", false), null);
+  assert.equal(choosePublicLocation([{ id: "default", bookable: false }], null, false), "default");
+  assert.equal(chooseOperatorLocation([{ id: "salon-b" }], null), "salon-b");
+  assert.equal(chooseOperatorLocation([{ id: "salon-b" }], "default"), null);
+  assert.equal(chooseOperatorLocation([], null), null);
+});
+
+test("saved proofs stay attached to known locations, including paused ones, without changing records", () => {
+  const aggregateOwnedProofs = location("aggregateOwnedProofs");
+  const defaultRecord = { reservationId: "same-id", savedAt: 10 };
+  const pausedRecord = { reservationId: "same-id", savedAt: 20 };
+  const visited: string[] = [];
+  const proofs = aggregateOwnedProofs(
+    [
+      { id: "default", label: "サロン A", bookable: true },
+      { id: "salon-b", label: "サロン B", bookable: false },
+    ],
+    (id) => {
+      visited.push(id);
+      return id === "default" ? [defaultRecord] : [pausedRecord];
+    },
+  );
+  assert.deepEqual(visited, ["default", "salon-b"]);
+  assert.deepEqual(proofs, [
+    { locationId: "salon-b", label: "サロン B", record: pausedRecord },
+    { locationId: "default", label: "サロン A", record: defaultRecord },
+  ]);
+  assert.deepEqual(
+    aggregateOwnedProofs([{ id: "default", label: "サロン A", bookable: true }],
+      () => [defaultRecord, pausedRecord]).map(({ record }) => record),
+    [defaultRecord, pausedRecord],
+  );
+  assert.deepEqual(defaultRecord, { reservationId: "same-id", savedAt: 10 });
+});
+
+test("directory validation refuses malformed or duplicate network entries without default fallback", () => {
+  const validLocationDirectory = location("validLocationDirectory");
+  assert.equal(validLocationDirectory([{ id: "default", label: "サロン A", bookable: false }]), true);
+  assert.equal(validLocationDirectory([{ id: "salon-b", label: "サロン B", bookable: true }], false), true);
+  assert.equal(validLocationDirectory([], false), true);
+  assert.equal(validLocationDirectory([{ id: "salon-b", label: "サロン B", bookable: true }]), false);
+  assert.equal(validLocationDirectory([null]), false);
+  assert.equal(validLocationDirectory([
+    { id: "default", label: "サロン A", bookable: true },
+    { id: "default", label: "サロン B", bookable: false },
+  ]), false);
+  assert.equal(validLocationDirectory([{ id: "default", label: "", bookable: true }]), false);
+  assert.equal(validLocationDirectory([{ id: "default", label: "サロン A", bookable: "true" }]), false);
+});
+
 const hour = 60 * 60 * 1_000;
 const day = 24 * hour;
 const year = 365 * day;

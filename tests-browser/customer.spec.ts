@@ -18,6 +18,7 @@ const PUBLIC_PAGES = ["/", "/bookings", "/privacy", "/terms", "/cancellation"];
 
 const chooseSlot = async (page: Page, startTime?: string): Promise<void> => {
   await page.fill("#booking-date", openDateFrom(await page.locator("#booking-date").inputValue()));
+  await page.locator("#booking-date").blur();
   // The slot fieldset is disabled while availability loads, so this check waits
   // out the load and cannot land on a slot rendered for the previous date.
   // Explicit times keep later scenarios off the early slots the other specs take.
@@ -354,6 +355,7 @@ test("the loading booking page has no automated accessibility violations", async
 test("keyboard alone reaches the first booking control and the skip link", async ({ page }) => {
   await stubTurnstile(page);
   await page.goto("/");
+  await expect(page.locator("#service-list input").first()).toBeAttached();
 
   await page.keyboard.press("Tab");
   await expect(page.locator(".skip-link")).toBeFocused();
@@ -608,4 +610,77 @@ test("the default configuration renders no location, identity or notification su
   await expect(page.locator("#booking-result")).toBeVisible();
   await expect(page.locator("[data-key-explainer]")).toBeVisible();
   expect(await page.locator("#booking-result").innerText()).not.toMatch(/メール|LINE|SMS|通知/);
+});
+
+test("a named customer choice scopes the URL and legal links, while an unknown link stays blocked", async ({ page }) => {
+  const response = await page.request.fetch(`${SERVER_ORIGIN}/api/config`, {
+    headers: { host: new URL(BROWSER_ORIGIN).host },
+  });
+  const config = await response.json() as Record<string, unknown>;
+  await stubTurnstile(page);
+  await page.route("**/api/locations", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ locations: [
+      { id: "default", label: "サロン A", bookable: true },
+      { id: "salon-b", label: "サロン B", bookable: true },
+    ] }),
+  }));
+  await page.route("**/api/config?location=salon-b", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ...config, locationName: "サロン B", sourceUrl: "not-set" }),
+  }));
+
+  await page.goto("/");
+  await page.locator("[data-location-select]").selectOption("salon-b");
+  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page.locator("[data-location-name]").first()).toHaveText("サロン B");
+  await expect(page.locator("#journey-details a[href^='/privacy.html']")).toHaveAttribute("href", "/privacy.html?location=salon-b");
+  await expect(page.locator("[data-source-link]").first()).toHaveAttribute(
+    "href", "/setup.html?location=salon-b#setup-source-url",
+  );
+
+  await page.goto("/?location=unknown");
+  await expect(page.locator("[data-booking-status]")).toContainText("場所");
+  await expect(page.locator("#booking-form input:enabled")).toHaveCount(0);
+});
+
+test("a sole accepting named location stays scoped without a selector", async ({ page }) => {
+  const response = await page.request.fetch(`${SERVER_ORIGIN}/api/config`, {
+    headers: { host: new URL(BROWSER_ORIGIN).host },
+  });
+  const config = await response.json() as Record<string, unknown>;
+  await stubTurnstile(page);
+  await page.route("**/api/locations", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ locations: [
+      { id: "default", label: "サロン A", bookable: false },
+      { id: "salon-b", label: "サロン B", bookable: true },
+    ] }),
+  }));
+  await page.route("**/api/config?location=salon-b", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ...config, locationName: "サロン B" }),
+  }));
+
+  await page.goto("/");
+  await expect(page).toHaveURL(/\?location=salon-b$/);
+  await expect(page.locator("[data-location-select]")).toHaveCount(0);
+  await expect(page.locator("[data-location-name]").first()).toHaveText("サロン B");
+
+  await page.goto("/privacy.html?location=default");
+  await expect(page.locator("[data-location-name]").first()).not.toHaveText("サロン B");
+  await expect(page.locator('a[href^="/terms.html"]').first()).toHaveAttribute(
+    "href", "/terms.html?location=default",
+  );
+  await page.locator('a[href^="/terms.html"]').first().click();
+  await expect(page).toHaveURL(/\/terms(?:\.html)?\?location=default$/);
+  await page.locator('a[href^="/cancellation.html"]').first().click();
+  await expect(page).toHaveURL(/\/cancellation(?:\.html)?\?location=default$/);
+  await page.locator(".brand-link").click();
+  await expect(page).toHaveURL(/\/\?location=default$/);
+  await expect(page.locator("[data-location-name]").first()).not.toHaveText("サロン B");
 });

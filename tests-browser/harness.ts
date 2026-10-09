@@ -84,6 +84,47 @@ export const openDateFrom = (today: string): string => {
   return date.toISOString().slice(0, 10);
 };
 
+export const signInSetup = async (page: Page, path = "/setup"): Promise<void> => {
+  await page.goto(path);
+  await expect(page.locator("#setup-owner-token")).toBeEnabled();
+  await page.fill("#setup-owner-token", OWNER_TOKEN);
+  await page.click("#setup-auth-submit");
+  await expect(page.locator("#setup-auth-status")).toContainText("認証しました");
+};
+
+export const enableNamedLine = async (page: Page): Promise<void> => {
+  const lineEnabled = await page.evaluate(async (ownerToken) => {
+    const headers = { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" };
+    const endpoint = "/api/admin/line/";
+    const identifiers = {
+      liffId: "1234567890-abcdefgh",
+      loginChannelId: "1234567890",
+      messagingChannelId: "9876543210",
+    };
+    const status = await (await fetch(endpoint + "status?location=salon-b", { headers })).json();
+    let version = status.lifecycleVersion as number;
+    if (status.draft === null) {
+      const saved = await fetch(endpoint + "settings?location=salon-b", {
+        method: "POST", headers,
+        body: JSON.stringify({ commandId: crypto.randomUUID(), expectedLifecycleVersion: version, identifiers }),
+      });
+      version = (await saved.json()).lifecycleVersion;
+    }
+    const enabled = await fetch(endpoint + "enable?location=salon-b", {
+      method: "POST", headers,
+      body: JSON.stringify({ commandId: crypto.randomUUID(), expectedLifecycleVersion: version, identifiers }),
+    });
+    return enabled.status;
+  }, OWNER_TOKEN);
+  expect(lineEnabled).toBe(200);
+  await expect.poll(() => page.evaluate(async (ownerToken) => {
+    const response = await fetch("/api/admin/line/status?location=salon-b", {
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    return (await response.json()).phase;
+  }, OWNER_TOKEN)).toBe("active");
+};
+
 /** Serve the stub in place of the real widget script for the whole page. */
 export const stubTurnstile = async (page: Page, mode = "success"): Promise<void> => {
   await page.addInitScript(
@@ -115,9 +156,10 @@ export const forwardCreateWithoutTurnstile = async (
   page: Page,
 ): Promise<{ requests: Array<Record<string, unknown>> }> => {
   const requests: Array<Record<string, unknown>> = [];
-  await page.route("**/api/reservations", async (route) => {
+  await page.route(/\/api\/reservations(?:\?.*)?$/, async (route) => {
     const request = route.request();
     if (request.method() !== "POST") return route.fallback();
+    const search = new URL(request.url()).search;
     const body = JSON.parse(request.postData() ?? "{}") as Record<string, unknown>;
     requests.push(body);
     const { turnstileToken, replayOnly, ...owner } = body;
@@ -126,7 +168,7 @@ export const forwardCreateWithoutTurnstile = async (
     // owner mutation is refused unless the request arrives on the hostname the
     // installation allows, and unless the origin matches it.
     const response = await route.fetch({
-      url: `${SERVER_ORIGIN}/api/admin/reservations`,
+      url: `${SERVER_ORIGIN}/api/admin/reservations${search}`,
       method: "POST",
       headers: {
         ...request.headers(),
@@ -170,5 +212,6 @@ export const expectNoAxeViolations = async (page: Page): Promise<void> => {
 declare global {
   interface Window {
     __turnstileStub: { mode: string; token: string };
+    turnstile: { reset: (widgetId: string) => void };
   }
 }

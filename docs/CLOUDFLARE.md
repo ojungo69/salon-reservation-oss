@@ -1,27 +1,30 @@
 # Cloudflare deployment and operations
 
-This guide is for the eventual public v0.2 candidate. The current development workspace has no
-public remote and must not be deployed from this document. Confirm the current official Cloudflare
-documentation before an account, billing, domain, or production change; limits and platform
-behavior can change.
+This guide is for operators deploying their own copy of the published public repository. Confirm
+current official Cloudflare documentation before an account, billing, domain, or production change;
+limits and platform behavior can change. The [multi-location guide](MULTI-LOCATION.md) covers
+location setup and staff scope after deployment.
 
 ## Deployment contract
 
-The public README's [official Deploy to Cloudflare button](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
-must target the exact authorized public GitHub repository. It is a deployment action, not a grant of
-authority to publish, configure an account, create secrets, or use personal data.
+The public README's Deploy to Cloudflare button targets this public repository
+([Cloudflare's button documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/)).
+The resulting installation belongs to the deployer; the button does not grant access to an
+existing installation or its data.
 
-The candidate's Wrangler configuration defines the Worker, static assets, rate limiters, and its
+This repository's Wrangler configuration defines the Worker, static assets, rate limiters, and its
 SQLite Durable Object classes. Run `npm run build` first and inspect the resolved configuration.
 The default deployment flow should not require a D1 database, a database console, a manual SQL
 command, or a source edit. Confirm the resources Cloudflare actually reports as created; this
 documentation does not promise a particular account state.
 
-`CalendarAdapter` is an optional installation-singleton SQLite Durable Object. Its binding/export
-is always present so forward upgrades and backouts preserve the namespace, but neither calendar
-mode activates without a valid optional secret. `CALENDAR_FEED_TOKEN` and
-`GOOGLE_CALENDAR_CREDENTIALS` deliberately do not join Wrangler's required-secret list; owner and
-Turnstile remain the only deployment-required secrets. See [calendar setup](CALENDAR-SETUP.md).
+`CalendarAdapter` remains one registered SQLite Durable Object class/binding with a separate actor
+per configured location. Its export stays present for forward upgrades and backouts. The existing
+`default` calendar uses `CALENDAR_FEED_TOKEN` and `GOOGLE_CALENDAR_CREDENTIALS`; named locations
+use owner-issued feed capabilities and their own enabled settings while sharing the existing Google
+credential set. These calendar secrets are optional, not in Wrangler's required-secret list; owner
+and Turnstile remain the only deployment-required secrets. See
+[calendar setup](CALENDAR-SETUP.md).
 
 The two rate-limit namespace IDs are project-specific rather than Cloudflare's sample values.
 Cloudflare shares counters when another Worker in the same account deliberately reuses an ID, so
@@ -78,42 +81,53 @@ hostname; do not assume a branch build is isolated from real state or use it for
 
 ## Free-plan fit
 
-The intended installation is deliberately bounded: one location, 1–8 resources, 1–16 services,
-1–4 selected services, 96 offered resource/start pairs, 96 creates, and 192 accepted mutations per
-day. The per-day create and mutation budgets are cumulative: a cancellation, rejection, or expiry
-puts the time slot back on sale but does not refund the day's budget, because the stored rows it
-created remain until the retention purge. A day that exhausts its create budget says so on the
-booking and operator screens instead of presenting as fully booked; a spent mutation budget
-surfaces as an error on the refused action itself. The final candidate's performance report must calculate its request/write budget against the
-then-current [Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
+The application supports at most four locations, including `default`. Each location retains its
+existing day bounds: 1–8 resources, 1–16 services, 1–4 selected services, 96 offered
+resource/start pairs, 96 creates and 192 accepted mutations. These are product bounds; Cloudflare
+account quotas are shared across all locations. The per-location/day create and mutation budgets
+are cumulative: a cancellation, rejection, or expiry puts the time slot back on sale but does not
+refund the day's budget. Its stored rows remain until the retention purge. A day that exhausts its
+create budget says so on the booking and operator screens instead of presenting as fully booked;
+a spent mutation budget
+surfaces as an error on the refused action itself. Calculate an installation's request/write budget
+against current [Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
 [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/),
 [static-assets limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/),
 and [Turnstile plan](https://developers.cloudflare.com/turnstile/plans/).
 
-This is a small-installation target, not a quota reservation, throughput guarantee, regional
-residency guarantee, or uptime SLA. Account-wide traffic and future platform changes can exhaust a
-limit and stop bookings; monitor the account and reduce scope or choose an appropriate plan before
-relying on the service.
+A local fictional empty-actor probe at the unchanged 60-second sweep observed 24,138 alarm and day
+RPC requests per adapter/day. Eight independent actors (LINE and calendar at four locations)
+extrapolate **193,104 Durable Object requests/day** before customer, operator, provider and
+named-configuration work. That exceeds Cloudflare's currently listed
+**100,000/day Free-plan request allowance**. The figure is a measured local scenario extrapolation,
+not actual billing, a maximum-load bound or a promise about any plan. The four-location cap cannot
+guarantee Free-plan fit. Monitor the account and choose a suitable plan or smaller configuration
+before relying on the service; live billing, latency and quota behavior have not been measured for
+S4. [ADR0003](ADR-0003-MULTI-LOCATION-BOUNDARY.md#bounds-evidence-and-cost) explains the bounded
+model and why a slower idle sweep was deferred.
 
-When calendar integration is configured, a booking request obtains one short-lived calendar
-descriptor and performs only a post-commit Durable Object poke; no Google request is on the booking
-transaction. The calendar authority drains at most 32 day events per pull, sends at most eight
-Google mutations per alarm, and sweeps at most 16 day partitions per alarm. An upsert's worst
+When calendar integration is configured for a location, a booking request obtains one short-lived
+calendar descriptor and performs only a post-commit Durable Object poke; no Google request is on
+the booking transaction. The calendar authority drains at most 32 day events per pull, sends at
+most eight Google mutations per alarm, and sweeps at most 16 day partitions per alarm. An upsert's worst
 convergence path is update, insert, then update, so one send alarm stays below 25 Calendar requests
-plus at most one token exchange. Owner reconciliation reads at most seven days per request. Recheck
-these bounds against the current Workers external/internal subrequest, CPU, connection, Durable
-Object, and alarm limits before production use; the links above remain authoritative.
+plus at most one token exchange. Owner reconciliation reads at most seven selected-location days per
+request. These are per-actor bounds, not an account-wide daily limit. Recheck them against current
+Workers external/internal subrequest, CPU, connection, Durable Object, and alarm limits before
+production use; the links above remain authoritative.
 
 ## Retention, export, recovery, rollback, and deletion
 
-- **Application retention:** each day object is deleted as a whole after the configured retention
-  period. It removes reservations, customer details, management-key digests, snapshots, closures,
-  receipts, and its alarm. Customer cancellation is not an erasure request; it changes booking
+- **Application retention:** each location/day object is deleted as a whole after its configured
+  retention period. It removes reservations, customer details, management-key digests, snapshots,
+  closures, receipts and its alarm. Customer cancellation is not an erasure request; it changes booking
   state until the day is purged.
 - **Export:** the application does not claim to be a backup service or silently export data. If an
   operator needs an export for law, continuity, or a deletion request, define and test a separately
-  authorized, access-controlled process before live use. Minimize the data, protect the export,
-  record its retention, and never put it in source control, issues, or logs.
+  authorized, access-controlled process before live use. Migration-purpose reads or exports from an
+  existing system require the specific prior confirmation in
+  [AGENTS.md](../AGENTS.md#existing-system-data-migration). Minimize exported data, protect it,
+  record its retention, and keep it out of source control, issues and logs.
 - **Recovery:** Durable Object SQLite has a platform PITR capability and limits
   ([reference](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)).
   It is not a substitute for an operator backup policy and may not cover the configured retention
@@ -124,21 +138,24 @@ Object, and alarm limits before production use; the links above remain authorita
   [Worker-code rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
   A code rollback does not undo Durable Object writes, deletion, or a schema change. Keep rollback
   and storage-recovery decisions separate.
-- **Calendar alarms and backout:** one `CalendarAdapter` alarm reconstructs Google retries, claim
-  recovery, day sweep, disable purge, and re-arming from SQLite. Alarm delivery may repeat, so stable
-  event IDs, accepted-event deduplication, desired-version claims, and idempotent delete outcomes
-  are required. Back out only with a forward build that retains the class, binding, export, and
-  schema until cleanup is disabled; a pre-calendar rollback cannot service its namespace.
+- **Calendar alarms and backout:** each location's `CalendarAdapter` alarm reconstructs Google
+  retries, claim recovery, day sweep, disable purge, and re-arming from SQLite. Alarm delivery may
+  repeat. Stable event IDs, accepted-event deduplication, desired-version claims and idempotent
+  delete outcomes
+  are required. Back out only with a forward build that retains the class, binding, export, named
+  actor names and schema until cleanup is disabled; pre-adapter or pre-S4 code cannot service all
+  retained namespaces.
 - **Deletion:** deleting a Worker, domain route, Turnstile widget, or Durable Object namespace is
   external and potentially irreversible. Export what policy requires, resolve the exact account and
   resource, follow the current Cloudflare deletion guidance, and record what remains recoverable.
 
 ## Before accepting real bookings
 
-Confirm the live readiness screen has no blocker, the public source URL serves the corresponding
-AGPL source, the rendered privacy/terms/cancellation notices name the real operator, and the
-configured retention/export/deletion process matches the operator's obligations. Then verify with
-fictional data: availability, one idempotent request, its proof-only status/cancel path, owner
+Confirm each intended location's live readiness screen has no blocker, the public source URL serves
+the corresponding AGPL source, and the rendered privacy/terms/cancellation notices name the real
+operator. Confirm the configured retention/export/deletion process matches the operator's
+obligations. Then verify with fictional data: availability, one idempotent request, its proof-only
+status/cancel path, owner
 authentication, Turnstile rejection, narrow/keyboard UI, and log redaction.
 
 See [PRIVACY.md](PRIVACY.md) for application data and browser retention. Do not print secrets,

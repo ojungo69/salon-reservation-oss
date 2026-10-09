@@ -3,7 +3,9 @@
  * specs/003-line-adapter/tasks.md ("Constants"); the inequalities between them are asserted by
  * a test so a future edit cannot silently break the timing model.
  *
- * Sweep cycle bound (documented, not stored — computed by fullCycleBoundS below):
+ * Conditional sweep cycle model (computed by fullCycleBoundS below): one pull per day
+ * (`more === false`), within the batch-runtime and fault assumptions below. Backlogged days
+ * consume additional batch slots, so this is not a full-backlog delivery deadline.
  *   partitions       = SWEEP_PAST_DAYS + 1 + SWEEP_FUTURE_DAYS = 366 + 1 + 90 = 457
  *   fullCycleBound   = (ceil(partitions / SWEEP_DAY_BATCH) + FAULT_BUDGET_F)
  *                      × (SWEEP_MAX_BATCH_RUNTIME_S + SWEEP_REARM_DELAY_S
@@ -96,12 +98,12 @@ export const ADAPTER = Object.freeze({
   SIGFAIL_WINDOW_S: 86400,
 } as const);
 
-/** Worst-case sweep partitions: every day the fixed window visits, inclusive of
- * both endpoints and today. Derived so the bound can never drift from the window. */
+/** Maximum number of distinct dates in the sweep window, inclusive of both endpoints
+ * and today. Backlogged dates can require more than one pull; this does not count those. */
 export const WORST_CASE_PARTITIONS =
   ADAPTER.SWEEP_PAST_DAYS + 1 + ADAPTER.SWEEP_FUTURE_DAYS;
 
-/** The documented cycle bound, computed for a given partition count. */
+/** The conditional cycle model above, computed for a given number of dates. */
 export function fullCycleBoundS(partitions: number): number {
   const perBatchS =
     ADAPTER.SWEEP_MAX_BATCH_RUNTIME_S +

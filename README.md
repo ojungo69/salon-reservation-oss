@@ -2,14 +2,17 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fojungo69%2Fsalon-reservation-oss)
 
-A small, self-hostable reservation application for one location. Customers can choose compatible
-services, view availability, submit a pending request, and manage it with a browser-generated
-management key. One operator credential controls setup and the bounded schedule.
+A small, self-hostable reservation application for up to four locations in one installation.
+When several locations accept bookings, customers choose one before selecting compatible services,
+viewing availability and submitting a pending request. They manage it with a browser-generated
+management key. Owners configure locations and grant staff access to the schedules they operate.
 
-The v0.2 design targets Cloudflare's Free plan using one Worker, Workers Static Assets, Turnstile,
-Workers Rate Limiting, and SQLite-backed Durable Objects. It has no runtime npm dependencies and
-starts in fictional demo mode. Free-plan quotas and availability are platform limits, not an
-application uptime guarantee.
+The application uses one Worker, Workers Static Assets, Turnstile, Workers Rate Limiting, and
+SQLite-backed Durable Objects. It has no runtime npm dependencies and starts in fictional demo
+mode. The v0.2.0 release predates multi-location support; this source's four-location cap is a
+product limit, not a Cloudflare Free-plan guarantee. Four locations with both optional adapters
+active can exceed the Free request allowance before customer traffic; see
+[Cloudflare operations](docs/CLOUDFLARE.md#free-plan-fit).
 
 ## What it includes
 
@@ -21,15 +24,19 @@ application uptime guarantee.
 - Browser-generated 256-bit management keys; only SHA-256 digests are stored
 - Owner-guided configuration with a demo/live latch, legal-copy readiness checks, and a secret-free
   installation receipt
+- Up to four independently configured locations, with location-scoped staff grants and retained
+  booking management at a paused location
 - Optional schedule-only iCalendar and Google Calendar adapters, disabled by default and excluded
   from availability decisions
 - Whole-day retention deletion, focused race/security checks, and allowlisted release auditing
 
 ## Deliberate limits
 
-One `Asia/Tokyo` location, 1–8 capacity-one resources, 1–16 services, 1–4 services per request,
-same-day rescheduling, and a bounded seven-day operator view are in scope. What lies beyond that —
-and its current status — is recorded capability by capability in
+One `Asia/Tokyo` installation can hold `default` and up to three named locations. Each location
+supports 1–8 capacity-one resources, 1–16 services, 1–4 services per request, same-day
+rescheduling, and a bounded seven-day operator view. Cross-location/day moves, a global customer
+identity and existing-system data migration are outside this feature. What lies beyond that — and
+its current status — is recorded capability by capability in
 [the parity matrices](docs/PARITY.md), not here.
 
 Service and resource identifiers must stay stable while future dates already contain reservations.
@@ -52,9 +59,9 @@ with evidence, and planned target rows remain open. The order in which the remai
 Publishing the audited repository on GitHub is sufficient for the OSS release; deploying a live
 instance is optional. The button below is for users who choose to run their own copy.
 
-The official button is the primary path once the separately audited public candidate exists. It
-uses that candidate's Wrangler configuration; it does not authorize publication, account changes,
-or a real-data deployment from this private workspace.
+The official button uses this published repository's Wrangler configuration for an operator's own
+copy. Deploying or configuring that copy is an operator decision; no source checkout grants access
+to another installation or its data.
 
 1. Deploy, then use the platform-provided `workers.dev` URL only to inspect the fictional demo.
    Demo/setup mode refuses booking mutations and must not receive real customer details.
@@ -80,7 +87,8 @@ or a real-data deployment from this private workspace.
 demo URL and a custom domain, Workers Builds limitations, rollback, export, recovery, and deletion.
 Review [privacy and retention](docs/PRIVACY.md), then replace every fictional operator notice before
 accepting real bookings. Optional calendar modes are documented in
-[calendar setup](docs/CALENDAR-SETUP.md).
+[calendar setup](docs/CALENDAR-SETUP.md). For another salon, start with the
+[multi-location operator guide](docs/MULTI-LOCATION.md) before assigning staff or enabling adapters.
 
 ## Local verification
 
@@ -110,33 +118,23 @@ browser
 ├─ HTML/CSS/JS ─────────────── Workers Static Assets
 └─ /api/*
    └─ Worker ──────────────── validation, Turnstile, rate limits, owner auth
-      ├─ Settings DO ───────── versioned public setup and demo/live readiness
-      └─ Day DO ────────────── reservation transaction, snapshots, retention alarm
+      ├─ Settings DO ───────── location directory, grants, versioned setup/readiness
+      ├─ Day DO per location/date ─ reservation transaction and retention alarm
+      └─ Optional adapter DOs ──── post-commit LINE/calendar work per location
 ```
 
-All requests for one JST date reach one day object. The pure reservation kernel stays
+All requests for one location and JST date reach one day object. The pure reservation kernel stays
 side-effect-free; adapters persist results and expose only safe projections.
 
 ## Public-release boundary
 
-This development workspace is not a publication artifact. The original publisher must keep its
-private-name denylist outside both repositories. The isolated assembler requires it, snapshots it
-into `/tmp`, creates the one root commit, and uses that snapshot for content and commit-metadata
-scans. A later `--denylist` path must resolve under the repository, `/tmp`, or `/var/tmp`:
+This is the published public repository with an ongoing Git history. Normal changes use pull
+requests and `npm run release:audit`. The one-commit assembler and `release:audit:public` describe
+the historical first-publication candidate only; do not run the assembler against this repository
+or replace its history. See [the release procedure](docs/RELEASING.md).
 
-```bash
-./scripts/assemble-public-release.sh /new/release/tree /absolute/private-denylist
-cd /new/release/tree
-npm ci
-npm run check
-denylist_snapshot=$(TMPDIR=/tmp mktemp)
-cp -L -- /absolute/private-denylist "$denylist_snapshot"
-npm run release:audit:public -- --denylist "$denylist_snapshot"
-rm -f -- "$denylist_snapshot"
-```
-
-Never commit the raw denylist or a hash derived from its terms. Forks without private-source
-context can run the generic public-history audit without this project-specific input.
+Never commit real customer data, credentials, account identifiers, private source material or
+deployment output.
 
 ## Security
 

@@ -8,6 +8,7 @@ import {
   parseWebhookBody,
   pushMessage,
   serializeMessageV1,
+  serializeMessageV2,
   verifyIdToken,
   verifyWebhookSignature,
   type LineFetch,
@@ -16,6 +17,7 @@ import {
 import worker from "../src/worker.ts";
 import {
   createPendingReservation,
+  dayStub,
   deliveryStub,
   enableLineAdapter,
   identifiers,
@@ -411,6 +413,19 @@ describe("privacy page state rule", () => {
   const fetchPrivacy = async (customEnv: Env = lineOnlyEnv): Promise<Response> =>
     worker.fetch(new Request("https://example.test/privacy"), customEnv);
 
+  it("S4 discloses the named notification label while preserving the default notice bytes", async () => {
+    await enableLineAdapter();
+    const legacy = await (await fetchPrivacy()).text();
+    await installationStub().createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null);
+    await enableLineAdapter("studio-east");
+    const named = await worker.fetch(new Request("https://example.test/privacy?location=studio-east"), lineOnlyEnv);
+    expect(await named.text()).toContain("通知の本文には店舗名、日時、選択したサービス、予約の状態を含めます。");
+    expect(await (await fetchPrivacy()).text()).toBe(legacy);
+    expect(legacy).toContain("通知の本文には日時、選択したサービス、予約の状態を含めます。");
+  });
+
   it("serves the asset unchanged until the adapter exists, then discloses per state", async () => {
     const baselineResponse = await fetchPrivacy();
     expect(baselineResponse.status).toBe(200);
@@ -486,6 +501,21 @@ describe("privacy page state rule", () => {
 });
 
 describe("message templates and the v1 serializer (FR-009)", () => {
+  it("S4 keeps literal v1 bytes and identifies the named location in v2", () => {
+    const common = {
+      type: "approve" as const,
+      date: "2030-01-15",
+      startTime: "09:00",
+      serviceLabel: "架空カット",
+    };
+    expect(JSON.stringify(serializeMessageV1({ v: 1, ...common }))).toBe(
+      '[{"type":"text","text":"ご予約が確定しました。\\n日時: 2030-01-15 09:00\\nサービス: 架空カット"}]',
+    );
+    expect(JSON.stringify(serializeMessageV2({ v: 2, locationLabel: "架空予約室 東", ...common }))).toBe(
+      '[{"type":"text","text":"ご予約が確定しました。\\n店舗: 架空予約室 東\\n日時: 2030-01-15 09:00\\nサービス: 架空カット"}]',
+    );
+  });
+
   const fragment = (type: MessageFragment["type"]): MessageFragment => ({
     v: 1,
     type,
@@ -746,8 +776,9 @@ describe("link flow over HTTP", () => {
     });
   };
 
-  const mintIntent = async (reservationId: string): Promise<string> => {
-    const response = await post(`/api/reservations/${reservationId}/line/link-intent`, {
+  const mintIntent = async (reservationId: string, locationId = "default"): Promise<string> => {
+    const scope = locationId === "default" ? "" : `?location=${locationId}`;
+    const response = await post(`/api/reservations/${reservationId}/line/link-intent${scope}`, {
       date: lineDay.date,
       managementKey: MANAGEMENT_KEY,
     });
@@ -757,6 +788,170 @@ describe("link flow over HTTP", () => {
     expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
     return body.nonce;
   };
+
+  it("S4 fans one signed webhook out to named actors while default is disabled", async () => {
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect(await installationStub().createLocation({
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, null)).toMatchObject({ ok: true });
+      await enableLineAdapter(locationId);
+    }
+    expect(await deliveryStub().readMeta()).toBeNull();
+    const body = JSON.stringify({ destination: "U0", events: [{
+      type: "unfollow", webhookEventId: "S4SHAREDEVENT0001", timestamp: NOW,
+      source: { type: "user", userId: SUBJECT }, deliveryContext: { isRedelivery: false },
+    }] });
+    const signature = await signWebhookBody(LINE_TEST_SECRET, body);
+    const send = () => worker.fetch(new Request("https://example.test/api/adapters/line/webhook", {
+      method: "POST", headers: { "x-line-signature": signature }, body,
+    }), env);
+    expect((await send()).status).toBe(200);
+    expect((await send()).status).toBe(200);
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect(await runInDurableObject(deliveryStub(locationId), (_instance, state) =>
+        state.storage.sql.exec("SELECT webhook_event_id FROM webhook_dedup").toArray(),
+      )).toEqual([{ webhook_event_id: "S4SHAREDEVENT0001" }]);
+    }
+    expect(await deliveryStub().readMeta()).toBeNull();
+  });
+
+  it("S4 scopes the LINE page's module request while preserving default HTML", async () => {
+    await installationStub().createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null);
+    await enableLineAdapter("studio-east");
+    const html = '<script src="/line-liff.mjs" type="module"></script>';
+    const assetsEnv = Object.create(env) as Env;
+    Object.defineProperty(assetsEnv, "ASSETS", { value: { fetch: async () => new Response(html, {
+      headers: { "content-type": "text/html", etag: '"fixture"', "content-length": String(html.length) },
+    }) } });
+    const named = await worker.fetch(new Request("https://example.test/line.html?location=studio-east"), assetsEnv);
+    expect(named.status).toBe(200);
+    expect(await named.text()).toBe('<script src="/line-liff.mjs?location=studio-east" type="module"></script>');
+    expect(named.headers.get("etag")).toBeNull();
+    expect(named.headers.get("content-security-policy")).toContain("https://static.line-scdn.net");
+    expect((await worker.fetch(new Request("https://example.test/line-liff.mjs?location=studio-east"), assetsEnv)).status).toBe(200);
+    expect((await worker.fetch(new Request("https://example.test/line-liff.mjs"), assetsEnv)).status).toBe(404);
+    await enableLineAdapter();
+    const legacy = await worker.fetch(new Request("https://example.test/line.html"), assetsEnv);
+    expect(await legacy.text()).toBe(html);
+    expect(legacy.headers.get("etag")).toBe('"fixture"');
+  });
+
+  it("S4 retries partial and stalled webhook fanout without duplicate effects or disabled targets", async () => {
+    for (const locationId of ["studio-east", "studio-west", "studio-closed"]) {
+      await installationStub().createLocation({
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, null);
+      if (locationId !== "studio-closed") await enableLineAdapter(locationId);
+    }
+    const payload = JSON.stringify({ destination: "U0", events: [{
+      type: "follow", webhookEventId: "S4PARTIAL0001", timestamp: NOW,
+      source: { type: "user", userId: SUBJECT }, deliveryContext: { isRedelivery: false },
+    }] });
+    const signature = await signWebhookBody(LINE_TEST_SECRET, payload);
+    let west: "failed" | "stalled" | "malformed" | "ready" = "failed";
+    const malformedAcknowledgements = [null, {}, { ok: false }, { ok: "true" }];
+    let acknowledgement: unknown;
+    const addressed: string[] = [];
+    const bindings = Object.create(env) as Env;
+    Object.defineProperty(bindings, "ADAPTER_DELIVERY", { value: { getByName: (name: string) => {
+      addressed.push(name);
+      if (name === "location:studio-west" && west !== "ready") return {
+        processWebhook: () => {
+          if (west === "stalled") return new Promise(() => undefined);
+          if (west === "malformed") return Promise.resolve(acknowledgement);
+          return Promise.reject(new Error("fictional target outage"));
+        },
+      };
+      return env.ADAPTER_DELIVERY.getByName(name);
+    } } });
+    const send = () => worker.fetch(new Request("https://example.test/api/adapters/line/webhook", {
+      method: "POST", headers: { "x-line-signature": signature }, body: payload,
+    }), bindings);
+    expect((await send()).status).toBe(503);
+    west = "stalled";
+    expect((await send()).status).toBe(503);
+    west = "malformed";
+    for (const value of malformedAcknowledgements) {
+      acknowledgement = value;
+      expect((await send()).status).toBe(503);
+    }
+    west = "ready";
+    expect((await send()).status).toBe(200);
+    for (const locationId of ["studio-east", "studio-west"]) {
+      expect(await runInDurableObject(deliveryStub(locationId), (_instance, state) =>
+        state.storage.sql.exec("SELECT webhook_event_id FROM webhook_dedup").toArray(),
+      )).toEqual([{ webhook_event_id: "S4PARTIAL0001" }]);
+    }
+    expect(addressed).toEqual(Array.from({ length: 3 + malformedAcknowledgements.length },
+      () => ["location:studio-east", "location:studio-west"]).flat());
+    expect(await deliveryStub("studio-closed").readMeta()).toBeNull();
+    expect(await deliveryStub().readMeta()).toBeNull();
+  });
+
+  it("S4 accepts unfollow while a failed disable leaves the local actor active", async () => {
+    await installationStub().createLocation({
+      commandId: crypto.randomUUID(), locationId: "studio-east", locationName: "架空予約室 東",
+    }, null);
+    await enableLineAdapter("studio-east");
+    const reservationId = await createPendingReservation({ locationId: "studio-east" });
+    interceptVerify(validClaims());
+    const nonce = await mintIntent(reservationId, "studio-east");
+    expect((await post("/api/adapters/line/link?location=studio-east", { nonce, idToken: "aaaa.bbbb.cccc" })).status).toBe(200);
+    expect(await dayStub(lineDay.date, "studio-east").transitionOwner({ ...lineDay, adapter: {
+      consumer: "line", generation: 1, phase: "active", leaseIssuedAt: NOW, leaseNotAfter: NOW + 30_000,
+    } }, { commandId: crypto.randomUUID(), date: lineDay.date, reservationId, action: "approve" }, { kind: "break_glass" }))
+      .toMatchObject({ ok: true });
+    await deliveryStub("studio-east").pokeDay({ date: lineDay.date });
+    await runInDurableObject(installationStub(), async (instance) => {
+      const holder = instance as unknown as { env: Env };
+      const original = holder.env;
+      holder.env = Object.assign(Object.create(original), { ADAPTER_DELIVERY: { getByName: () => ({
+        beginDisable: async () => { throw new Error("fictional disable outage"); },
+      }) } });
+      try {
+        expect(await instance.executeLineCommand({
+          operation: "line.disable", commandId: crypto.randomUUID(), expectedLifecycleVersion: 2,
+        }, testRuntime(), "studio-east")).toMatchObject({ ok: true, phase: "deactivating" });
+      } finally { holder.env = original; }
+    });
+    expect(await deliveryStub("studio-east").readMeta()).toMatchObject({ state: "active" });
+    const payload = JSON.stringify({ destination: "U0", events: [{
+      type: "unfollow", webhookEventId: "S4DEACTIVATING0001", timestamp: NOW,
+      source: { type: "user", userId: SUBJECT }, deliveryContext: { isRedelivery: false },
+    }] });
+    expect((await worker.fetch(new Request("https://example.test/api/adapters/line/webhook", {
+      method: "POST", headers: { "x-line-signature": await signWebhookBody(LINE_TEST_SECRET, payload) }, body: payload,
+    }), env)).status).toBe(200);
+    expect(await runInDurableObject(deliveryStub("studio-east"), (_instance, state) =>
+      state.storage.sql.exec("SELECT status, park_reason FROM deliveries").toArray(),
+    )).toEqual([{ status: "parked", park_reason: "unfollow" }]);
+    const provider = vi.fn(async () => { throw new Error("parked delivery reached provider"); });
+    vi.stubGlobal("fetch", provider);
+    await runDurableObjectAlarm(deliveryStub("studio-east"));
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("S4 refuses another location's nonce before token verification and never shares consent", async () => {
+    for (const locationId of ["studio-east", "studio-west"]) {
+      await installationStub().createLocation({
+        commandId: crypto.randomUUID(), locationId, locationName: `架空予約室 ${locationId}`,
+      }, null);
+      await enableLineAdapter(locationId);
+    }
+    const reservationId = await createPendingReservation({ locationId: "studio-east" });
+    const nonce = await mintIntent(reservationId, "studio-east");
+    const provider = vi.fn(async () => verifyResponse(validClaims()));
+    vi.stubGlobal("fetch", provider);
+    expect((await post("/api/adapters/line/link?location=studio-west", { nonce, idToken: "aaaa.bbbb.cccc" })).status).toBe(404);
+    expect(provider).not.toHaveBeenCalled();
+    expect((await post("/api/adapters/line/link?location=studio-east", { nonce, idToken: "aaaa.bbbb.cccc" })).status).toBe(200);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(await deliveryStub("studio-east").linkStatus({ reservationId })).toEqual({ linked: "final" });
+    expect(await deliveryStub("studio-west").linkStatus({ reservationId })).toEqual({ linked: null });
+    expect(await deliveryStub("studio-west").diagnostics()).toMatchObject({ links: { final: 0, provisional: 0 } });
+  });
 
   it("hides every link surface while the adapter is inactive", async () => {
     const reservationId = await createPendingReservation();

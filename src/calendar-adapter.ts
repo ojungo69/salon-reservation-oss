@@ -2,6 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import { ADAPTER, withDeadline } from "./adapter-constants.ts";
 import { readBoundedBytes } from "./line-adapter.ts";
+import type { NamedCalendarContext } from "./installation-config.ts";
+import {
+  DEFAULT_LOCATION_ID,
+  dayObjectName,
+  locationFromAdapterId,
+  parseLocationId,
+} from "./location.ts";
 import type {
   AdapterOutboxEvent,
   DayAdapterDescriptor,
@@ -44,6 +51,13 @@ export type GoogleCalendarCredentials = {
   refreshToken: string;
   calendarId: string;
 };
+
+type CalendarConfiguration = {
+  feedToken: string | null;
+  feedTokenDigest: string | null;
+  google: GoogleCalendarCredentials | null;
+  googleEnabled: boolean;
+} & ({ version: null; activationVersion: null } | { version: number; activationVersion: number });
 
 export type CalendarProjection = {
   uid: string;
@@ -93,6 +107,16 @@ export const parseGoogleCredentials = (value: unknown): GoogleCalendarCredential
   }
 };
 
+export const googleCredentialsForLocation = (
+  credentials: GoogleCalendarCredentials | null,
+  calendarId: string | null,
+): GoogleCalendarCredentials | null => {
+  if (credentials === null || !boundedSecret(calendarId, 1_024) ||
+    calendarId.toLowerCase() === "primary" || credentials.calendarId.toLowerCase() === "primary" ||
+    credentials.calendarId === calendarId) return null;
+  return { ...credentials, calendarId };
+};
+
 const sha256Hex = async (value: string): Promise<string> =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -100,11 +124,16 @@ const sha256Hex = async (value: string): Promise<string> =>
 
 export const calendarIdentifiers = async (
   reservationId: string,
+  locationId = DEFAULT_LOCATION_ID,
 ): Promise<{ uid: string; externalId: string }> => {
   if (!UUID.test(reservationId)) throw new Error("invalid reservation id");
+  if (parseLocationId(locationId) === null) throw new Error("invalid location id");
+  const identity = locationId === DEFAULT_LOCATION_ID
+    ? reservationId
+    : `location:${locationId}:${reservationId}`;
   const [uid, externalId] = await Promise.all([
-    sha256Hex(`ics:${reservationId}`),
-    sha256Hex(`google:${reservationId}`),
+    sha256Hex(`ics:${identity}`),
+    sha256Hex(`google:${identity}`),
   ]);
   return {
     uid: `${uid}@example.invalid`,
@@ -597,7 +626,14 @@ const constantTimeTokenMatch = async (left: string, right: string): Promise<bool
 };
 
 export class CalendarAdapter extends DurableObject<Env> {
+  readonly #legacyId = this.env.CALENDAR_ADAPTER.idFromName("installation");
+
+  #locationId(): string {
+    return locationFromAdapterId(this.ctx.id, this.#legacyId);
+  }
+
   #hasSchema(): boolean {
+    this.#locationId();
     return (
       this.ctx.storage.sql
         .exec<{ name: string }>(
@@ -734,15 +770,67 @@ export class CalendarAdapter extends DurableObject<Env> {
     };
   }
 
-  #configuration(): {
-    feedToken: string | null;
-    google: GoogleCalendarCredentials | null;
-  } {
+  async #configuration(): Promise<CalendarConfiguration> {
+    const locationId = this.#locationId();
     const google = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
+    if (locationId !== DEFAULT_LOCATION_ID) {
+      let context: NamedCalendarContext;
+      try {
+        context = await withDeadline(
+          this.env.INSTALLATION_CONFIG.getByName("installation").getCalendarContext(locationId),
+          ADAPTER.SWEEP_RPC_DEADLINE_MS,
+        );
+      } catch (error) {
+        if (!(error instanceof Error && error.message === "LOCATION_NOT_FOUND")) {
+          await this.#armAlarm(Date.now() + ADAPTER.SWEEP_REARM_DELAY_S * 1_000);
+        }
+        throw error;
+      }
+      return {
+        feedToken: null,
+        feedTokenDigest: context.feedEnabled ? context.feedTokenDigest : null,
+        google: context.googleEnabled ? googleCredentialsForLocation(google, context.calendarId) : null,
+        googleEnabled: context.googleEnabled,
+        version: context.version,
+        activationVersion: context.activationVersion,
+      };
+    }
     return {
       feedToken: parseCalendarFeedToken(this.env.CALENDAR_FEED_TOKEN),
+      feedTokenDigest: null,
       google,
+      googleEnabled: google !== null,
+      version: null,
+      activationVersion: null,
     };
+  }
+
+  #configurationVersion(): number {
+    const sql = this.ctx.storage.sql;
+    if (sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='__configuration_version'").toArray().length === 0) {
+      return 0;
+    }
+    const rows = sql.exec<{ version: number }>("SELECT version FROM __configuration_version").toArray();
+    const version = rows[0]?.version;
+    if (rows.length !== 1 || typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+      throw new Error("invalid calendar configuration version");
+    }
+    return version;
+  }
+
+  #rememberConfigurationVersion(version: number | null): void {
+    if (version === null) return;
+    if (!Number.isSafeInteger(version) || version < 0) throw new Error("invalid calendar configuration version");
+    const prior = this.#configurationVersion();
+    if (version < prior) throw new Error("stale calendar configuration");
+    if (version === prior) return;
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS __configuration_version (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL
+      )`);
+      this.ctx.storage.sql.exec(`INSERT INTO __configuration_version (singleton, version) VALUES (1, ?)
+        ON CONFLICT(singleton) DO UPDATE SET version = excluded.version`, version);
+    });
   }
 
   async #armAlarm(dueAt: number): Promise<void> {
@@ -945,14 +1033,16 @@ export class CalendarAdapter extends DurableObject<Env> {
     );
   }
 
-  #insertMetaRow(fingerprint: string, googleConfigured: boolean): void {
+  #insertMetaRow(fingerprint: string, googleConfigured: boolean, generation = 1): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO meta
              (singleton, state, generation, high_water, mode_fingerprint,
               google_blocked_fingerprint, google_configured, google_seen,
               begin_disable_at, purge_completed_at,
               sweep_cursor, last_reconciled_at, reconcile_cursor)
-           VALUES (1, 'active', 1, 1, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+           VALUES (1, 'active', ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+      generation,
+      generation,
       fingerprint,
       googleConfigured ? 1 : 0,
       googleConfigured ? 1 : 0,
@@ -962,18 +1052,20 @@ export class CalendarAdapter extends DurableObject<Env> {
   #reactivateMeta(
     current: CalendarMeta,
     fingerprint: string,
-    configuration: {
-      feedToken: string | null;
-      google: GoogleCalendarCredentials | null;
-    },
+    configuration: CalendarConfiguration,
     now: number,
   ): void {
-    const generation = current.state === "active" ? current.generation : current.highWater + 1;
+    const generation = configuration.activationVersion ??
+      (current.state === "active" ? current.generation : current.highWater + 1);
+    if (configuration.activationVersion !== null && generation < current.highWater) {
+      throw new Error("stale calendar activation");
+    }
+    const epochChanged = configuration.activationVersion !== null && generation !== current.generation;
     const googleChanged =
       configuration.google !== null &&
       (!current.googleConfigured || current.modeFingerprint !== fingerprint);
     const blockedFingerprint =
-      configuration.google === null || googleChanged
+      configuration.google === null || googleChanged || epochChanged
         ? null
         : current.googleBlockedFingerprint;
     this.ctx.storage.sql.exec(
@@ -989,23 +1081,26 @@ export class CalendarAdapter extends DurableObject<Env> {
       configuration.google === null ? 0 : 1,
       configuration.google === null ? 0 : 1,
     );
-    if (googleChanged) {
+    if (epochChanged) {
+      this.ctx.storage.sql.exec(`UPDATE google_mutations SET desired_version = desired_version + 1,
+        generation = ?, attempt = 0, next_attempt_at = ?, first_attempt_at = NULL,
+        claimed_at = NULL, claimed_version = NULL, status = ? WHERE purge_at > ?`,
+      generation, now, configuration.google === null ? "awaiting-configuration" : "queued", now);
+    }
+    if (googleChanged || (epochChanged && configuration.google !== null)) {
       this.#requeueProjections({ ...current, generation });
       this.#requeueConfigurationBlocked(generation, now);
     }
   }
 
   #activateMeta(
-    configuration: {
-      feedToken: string | null;
-      google: GoogleCalendarCredentials | null;
-    },
+    configuration: CalendarConfiguration,
     fingerprint: string,
   ): DayAdapterDescriptor {
     const current = this.#readMeta();
     const now = Date.now();
     if (current === null) {
-      this.#insertMetaRow(fingerprint, configuration.google !== null);
+      this.#insertMetaRow(fingerprint, configuration.google !== null, configuration.activationVersion ?? 1);
     } else {
       this.#reactivateMeta(current, fingerprint, configuration, now);
     }
@@ -1021,8 +1116,41 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   async descriptor(): Promise<DayAdapterDescriptor | null> {
-    const configuration = this.#configuration();
-    if (configuration.feedToken === null && configuration.google === null) {
+    return this.#applyConfiguration(await this.#configuration());
+  }
+
+  async #deactivateNamed(epoch: number, version: number): Promise<null> {
+    this.#rememberConfigurationVersion(version);
+    let meta = this.#readMeta();
+    if (meta !== null && epoch < meta.highWater) throw new Error("stale calendar activation");
+    const needsCleanup = (current: CalendarMeta | null) => epoch > 0 &&
+      (current === null || current.state === "active" || current.generation < epoch);
+    if (!needsCleanup(meta)) return null;
+    const fingerprint = meta === null ? await sha256Hex("null") : null;
+    await this.#armAlarm(Date.now() + ADAPTER.FINAL_PASS_LEASE_WAIT_S * 1_000);
+    this.#rememberConfigurationVersion(version);
+    meta = this.#readMeta();
+    if (meta !== null && epoch < meta.highWater) throw new Error("stale calendar activation");
+    if (!needsCleanup(meta)) return null;
+    this.#ensureSchema();
+    this.ctx.storage.transactionSync(() => {
+      if (meta === null) {
+        if (fingerprint === null) throw new Error("calendar state disappeared");
+        this.#insertMetaRow(fingerprint, false, epoch);
+      }
+      this.ctx.storage.sql.exec(`UPDATE meta SET state = 'deactivating', generation = ?,
+        high_water = MAX(high_water, ?), google_configured = 0, begin_disable_at = ?,
+        purge_completed_at = NULL, sweep_cursor = NULL WHERE singleton = 1`, epoch, epoch, Date.now());
+    });
+    return null;
+  }
+
+  async #applyConfiguration(configuration: CalendarConfiguration): Promise<DayAdapterDescriptor | null> {
+    if (configuration.feedToken === null && configuration.feedTokenDigest === null && !configuration.googleEnabled) {
+      if (configuration.activationVersion !== null) {
+        return this.#deactivateNamed(configuration.activationVersion, configuration.version);
+      }
+      this.#rememberConfigurationVersion(configuration.version);
       const meta = this.#readMeta();
       if (meta?.state === "active") {
         const now = Date.now();
@@ -1038,6 +1166,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     }
 
     const fingerprint = await sha256Hex(JSON.stringify(configuration.google));
+    this.#rememberConfigurationVersion(configuration.version);
     this.#ensureSchema();
     this.#pruneRetention(Date.now());
     const descriptor = this.ctx.storage.transactionSync(() =>
@@ -1121,15 +1250,17 @@ export class CalendarAdapter extends DurableObject<Env> {
     this.#pruneRetention(now);
     const initialMeta = this.#readMeta();
     if (initialMeta?.state !== "active") return 0;
+    const named = this.#locationId() !== DEFAULT_LOCATION_ID;
+    if (named && events.some((event) => event.generation > initialMeta.generation)) return null;
     const prepared = await Promise.all(
       events.map(async (event) => ({
         event:
-          event.generation === 0
+          event.generation === 0 && !named
             ? { ...event, generation: initialMeta.generation }
             : event,
-        recovery: event.generation === 0,
+        recovery: event.generation === 0 && !named,
         eventKey: `${event.generation}:${event.eventId}`,
-        ids: await calendarIdentifiers(event.reservationId),
+        ids: await calendarIdentifiers(event.reservationId, this.#locationId()),
       })),
     );
     const sql = this.ctx.storage.sql;
@@ -1224,7 +1355,7 @@ export class CalendarAdapter extends DurableObject<Env> {
 
   async #drainDay(date: string, rounds: number): Promise<{ accepted: number; pending: boolean }> {
     const stub = this.env.RESERVATION_DAYS.getByName(
-      `single-location:${date}`,
+      dayObjectName(this.#locationId(), date),
     ) as DurableObjectStub<ReservationDay>;
     let accepted = 0;
     for (let round = 0; round < rounds; round += 1) {
@@ -1256,6 +1387,7 @@ export class CalendarAdapter extends DurableObject<Env> {
 
   async pokeDay(input: { date: string }): Promise<{ ok: true; drained: number }> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("bad poke input");
+    if (this.#locationId() !== DEFAULT_LOCATION_ID) await this.descriptor();
     // ponytail: bounded pull loop; anything beyond the budget waits for the
     // next poke or sweep cycle rather than growing one invocation unboundedly.
     const drained = await this.#drainDay(input.date, 10);
@@ -1267,18 +1399,21 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   async feed(input: { token: string }): Promise<CalendarFeedResult> {
-    const configured = parseCalendarFeedToken(this.env.CALENDAR_FEED_TOKEN);
+    const configuration = await this.#configuration();
+    const configured = configuration.feedToken ?? configuration.feedTokenDigest;
     if (configured === null) return { ok: false };
     this.#ensureSchema();
     if (parseCalendarFeedToken(input.token) === null) {
       this.#bump("feed_auth_failed");
       return { ok: false };
     }
-    if (!(await constantTimeTokenMatch(configured, input.token))) {
+    const presented = configuration.feedToken === null ? await sha256Hex(input.token) : input.token;
+    const authenticated = await constantTimeTokenMatch(configured, presented);
+    if (!authenticated) {
       this.#bump("feed_auth_failed");
       return { ok: false };
     }
-    const descriptor = await this.descriptor();
+    const descriptor = await this.#applyConfiguration(configuration);
     if (descriptor === null) return { ok: false };
     const rows = this.ctx.storage.sql
       .exec<ProjectionRow>(
@@ -1425,7 +1560,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     this.#pruneRetention(now);
     const events = input.purgeAt <= now ? [] : input.events;
     const prepared = await Promise.all(
-      events.map(async (event) => ({ event, ids: await calendarIdentifiers(event.reservationId) })),
+      events.map(async (event) => ({ event, ids: await calendarIdentifiers(event.reservationId, this.#locationId()) })),
     );
     return this.ctx.storage.transactionSync(() => {
       const meta = this.#readMeta();
@@ -1549,14 +1684,22 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   async hasDisclosure(): Promise<boolean> {
-    const configuration = this.#configuration();
-    if (configuration.feedToken !== null || configuration.google !== null) return true;
+    const configuration = await this.#configuration();
+    if (configuration.feedToken !== null || configuration.feedTokenDigest !== null || configuration.googleEnabled) return true;
     const meta = this.#readMeta();
     return meta?.state === "active" || meta?.state === "deactivating";
   }
 
-  #claimGoogle(now: number): MutationRow | null {
+  #sendConfigurationCurrent(version: number | null, fingerprint: string): boolean {
+    if (version === null) return true;
+    const meta = this.#readMeta();
+    return version === this.#configurationVersion() && meta?.state === "active" &&
+      googleReady(meta) && meta.modeFingerprint === fingerprint;
+  }
+
+  #claimGoogle(now: number, version: number | null, fingerprint: string): MutationRow | null {
     return this.ctx.storage.transactionSync(() => {
+      if (!this.#sendConfigurationCurrent(version, fingerprint)) return null;
       const sql = this.ctx.storage.sql;
       sql.exec(
         `UPDATE google_mutations SET status = 'queued', claimed_at = NULL,
@@ -1620,6 +1763,7 @@ export class CalendarAdapter extends DurableObject<Env> {
         const meta = this.#readMeta();
         if (
           meta?.state === "active" &&
+          meta.generation === row.generation &&
           meta.googleConfigured &&
           meta.modeFingerprint === credentialFingerprint
         ) {
@@ -1713,11 +1857,13 @@ export class CalendarAdapter extends DurableObject<Env> {
   async #processOneGoogleMutation(
     credentials: GoogleCalendarCredentials,
     credentialFingerprint: string,
+    configurationVersion: number | null,
   ): Promise<"advance" | "stop"> {
     const claimNow = Date.now();
-    const row = this.#claimGoogle(claimNow);
+    const row = this.#claimGoogle(claimNow, configurationVersion, credentialFingerprint);
     if (row === null) return "stop";
     const token = await getGoogleAccessToken(credentials, fetch, claimNow);
+    if (!this.#sendConfigurationCurrent(configurationVersion, credentialFingerprint)) return "stop";
     if (!token.ok) {
       const kind = token.kind === "retryable" ? "retryable" : "configuration";
       this.#settleGoogle(
@@ -1751,14 +1897,16 @@ export class CalendarAdapter extends DurableObject<Env> {
       this.#pruneRetention(settledAt);
       return "advance";
     }
+    if (outcome.kind === "configuration" &&
+      !this.#sendConfigurationCurrent(configurationVersion, credentialFingerprint)) return "stop";
     this.#settleGoogle(row, outcome, settledAt, credentialFingerprint);
     if (outcome.kind === "configuration") return "stop";
     return "advance";
   }
 
-  async #processGoogle(now: number): Promise<void> {
+  async #processGoogle(now: number, configuration: CalendarConfiguration): Promise<void> {
     this.#pruneRetention(now);
-    const credentials = parseGoogleCredentials(this.env.GOOGLE_CALENDAR_CREDENTIALS);
+    const credentials = configuration.google;
     if (credentials === null) {
       this.#parkGoogleMutationsAwaitingConfig();
       return;
@@ -1767,7 +1915,7 @@ export class CalendarAdapter extends DurableObject<Env> {
     if (this.#readMeta()?.googleBlockedFingerprint === credentialFingerprint) return;
     for (let index = 0; index < ADAPTER.SEND_BATCH; index += 1) {
       if (
-        (await this.#processOneGoogleMutation(credentials, credentialFingerprint)) === "stop"
+        (await this.#processOneGoogleMutation(credentials, credentialFingerprint, configuration.version)) === "stop"
       ) {
         return;
       }
@@ -1784,7 +1932,7 @@ export class CalendarAdapter extends DurableObject<Env> {
       if (meta.state === "deactivating") {
         await withDeadline(
           this.env.RESERVATION_DAYS.getByName(
-            `single-location:${cursor}`,
+            dayObjectName(this.#locationId(), cursor),
           ).purgeConsumer({ consumer: "calendar", throughGeneration: meta.generation }),
           ADAPTER.SWEEP_RPC_DEADLINE_MS,
         );
@@ -1856,9 +2004,10 @@ export class CalendarAdapter extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    const descriptor = await this.descriptor();
+    const configuration = await this.#configuration();
+    const descriptor = await this.#applyConfiguration(configuration);
     if (descriptor === null && this.#readMeta()?.state !== "deactivating") return;
-    if (descriptor !== null) await this.#processGoogle(Date.now());
+    if (descriptor !== null) await this.#processGoogle(Date.now(), configuration);
     await this.#sweepStep(Date.now());
   }
 }

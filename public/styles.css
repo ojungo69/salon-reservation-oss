@@ -931,6 +931,14 @@ textarea::placeholder {
   border-block: 1px solid var(--line);
 }
 
+[data-operator-location-anchor]:empty {
+  display: none;
+}
+
+[data-booking-pages] {
+  margin-top: 1rem;
+}
+
 .operator-toolbar .compact-field {
   width: min(13rem, 100%);
 }
@@ -1151,6 +1159,54 @@ textarea::placeholder {
 
 .setup-actions .button-row {
   justify-content: flex-end;
+}
+
+.setup-locations-panel,
+.named-calendar-panel {
+  margin-top: 1rem;
+}
+
+.setup-location-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0;
+}
+
+.setup-location-list button {
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.setup-location-list button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.staff-scope-form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.staff-scope-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.staff-scope-option {
+  display: inline-flex;
+  min-height: 44px;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+}
+
+.staff-scope-option input {
+  width: auto;
+  min-height: auto;
 }
 
 .readiness-panel,

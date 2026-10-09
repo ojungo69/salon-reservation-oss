@@ -1,8 +1,9 @@
 # LINE adapter setup (operator walkthrough)
 
-The LINE adapter is optional. An installation that never follows this page
-keeps serving exactly the same pages, responses, and storage as before — no
-LINE code path runs, and no LINE trace appears anywhere a customer can see.
+The LINE adapter is optional and off for every new location. An installation that never follows
+this page keeps serving bookings without LINE. One shared provider realm can support the existing
+`default` location and separately enabled named locations; each booking needs its own customer
+consent. See [the multi-location guide](MULTI-LOCATION.md#optional-line-per-location).
 Everything below is operator-side; the repository, its fixtures, and its CI
 never contain or contact a real LINE channel.
 
@@ -48,8 +49,8 @@ shows the degraded state until you restore it.
 
 ## Enabling
 
-Identifiers are supplied through the owner API (the setup UI does not manage
-LINE yet). With your owner token:
+Identifiers are supplied through the owner API. The commands below address `default` because they
+omit `location`. With your owner token:
 
 ```sh
 # 1. Check the current state (phase, lifecycleVersion, delivery diagnostics).
@@ -96,6 +97,22 @@ Enabling reuses the installation's live-readiness protection and fails with
 `ORIGIN_UNCONFIGURED` until `allowedHostname` and its matching Turnstile setup
 are ready. Notification messages contain no management URL.
 
+## Named locations and the shared webhook
+
+For a named location, append `?location=<id>` to the existing owner LINE status, settings, enable
+and disable routes, and use that location's reported `lifecycleVersion` in each command. Named
+locations start with LINE off. Their active, deactivating and activating identifiers must match
+the shared realm; S4 does not add a second LINE account. The registered
+`/api/adapters/line/webhook` stays global, with no `location` parameter. It verifies the one raw
+signature before delivering only to active or still-draining actors. If an actor fails, a provider
+retry is deduplicated at each actor so acknowledged locations do not send twice.
+
+Customers explicitly link one booking at its own location. Another location with the same LINE
+subject receives no automatic consent or link. Named notification text includes that location's
+validated public label; default v1 notification bytes are unchanged. LIFF returns to
+`/line.html?location=<id>` for a named location and `/line.html` for `default`; neither URL carries
+a booking proof or token. Never add a location query to the webhook URL.
+
 ## ⚠️ Regional message quotas and pricing
 
 Messaging API plans and limits vary by country or region. For a LINE Official
@@ -131,14 +148,14 @@ CI proves the protocol against fixtures; a real channel is verified by hand:
 - **Secret rotation**: issue a new channel secret in the LINE console, run
   `wrangler secret put LINE_MESSAGING_CHANNEL_SECRET` with the new value,
   then remove the old one on the LINE side. In-flight deliveries retry with
-  the new credentials automatically; during any gap the adapter degrades to
+  the new credentials automatically; during any gap every active location degrades to
   the visible cleanup mode instead of failing silently.
 - **Disabling**: `POST /api/admin/line/disable` (same command shape as
-  above). The adapter shows `deactivating` while it cancels queued work and
-  purges every link, subject, and pending delivery — including the per-day
-  outbox rows — then settles at `disabled`. Remove the secret binding after
-  the status shows `disabled`, not before. Re-enabling later mints a fresh
-  generation; old deliveries can never resurface.
+  above; add `?location=<id>` for a named location). That location's actor shows `deactivating`
+  while it cancels queued work and purges every link, subject and pending delivery, including the per-day
+  outbox rows — then settles at `disabled`. Disabling one location leaves other active locations
+  alone. Remove the shared secret only after **all** locations show `disabled`, not before.
+  Re-enabling later mints a fresh generation; old deliveries can never resurface.
 
 ## Updating the pinned LIFF SDK
 
