@@ -7,13 +7,13 @@ Describe the user-visible or security-relevant change and why it is needed.
 - What changed:
 - What intentionally did not change:
 
-## Production-parity provenance
+## Porting provenance when applicable
 
-Complete this section for every pull request. Follow the quality-led selection rule in
+Complete the applicability line for every pull request. Ordinary independently authored OSS work uses public requirements and tests and marks it no; it does not require private-ledger access. Actual imports or changes to assessed provenance follow
 `docs/ADR-0001-REUSE-FIRST-PORTING.md`: evaluate reuse, generalization, and replacement on evidence,
 not a reuse percentage or work already invested.
 
-- Applies to a production-parity capability: yes / no
+- Imports existing implementation/tests or changes an assessed provenance record: yes / no
 
 When `yes`, copy this declaration once per capability. When `no`, omit capability declarations.
 Split mixed-provenance capabilities into smaller declarations.
@@ -72,5 +72,5 @@ unavailable check, or incomplete review as success.
 ## Documentation and operations
 
 - [ ] README/spec/operator docs were updated when behavior or setup changed
-- [ ] Migration, rollback, and recovery implications were considered
+- [ ] Upgrade, rollback and recovery implications were considered; existing-system migration is optional and real-data steps require separate specific confirmation
 - [ ] Release/parity claims remain supported by concrete evidence

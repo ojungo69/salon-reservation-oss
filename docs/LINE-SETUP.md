@@ -1,165 +1,176 @@
-# LINE adapter setup (operator walkthrough)
+<a id="line-adapter-setup-operator-walkthrough"></a>
+# LINE ログインと通知を設定する
 
-The LINE adapter is optional and off for every new location. An installation that never follows
-this page keeps serving bookings without LINE. One shared provider realm can support the existing
-`default` location and separately enabled named locations; each booking needs its own customer
-consent. See [the multi-location guide](MULTI-LOCATION.md#optional-line-per-location).
-Everything below is operator-side; the repository, its fixtures, and its CI
-never contain or contact a real LINE channel.
+LINE は任意の連携です。新しい場所では無効になっており、この手順を行わなくても予約サイトを使えます。
+まず [Cloudflare の公開準備](CLOUDFLARE.md#demo-first-then-live-readiness)を完了してください。
+1 つの共通 provider で `default` と個別に有効にした名前付きの場所を扱いますが、予約ごとの顧客同意が必要です。
+場所ごとの操作は[複数店舗ガイド](MULTI-LOCATION.md#optional-line-per-location)も参照してください。
 
-All identifiers on this page are placeholders. Never commit a real channel
-ID, channel secret, or LIFF ID to a public repository, issue, or log.
+以下は運営者が自分の導入先で実施する手順です。リポジトリ、テスト用 fixture、CI は実際の LINE チャネルに接続しません。
+このページの ID は架空の例です。実際のチャネル ID、channel secret、LIFF ID を公開リポジトリ、Issue、ログに残さないでください。
 
-## What you create on the LINE side
+<a id="what-you-create-on-the-line-side"></a>
+## 同じ provider にログイン用と通知用のチャネルを用意する
 
-1. Create a provider in the [LINE Developers console](https://developers.line.biz/).
-   Create both channels below inside this same provider. LINE user IDs are
-   provider-scoped, and channels cannot be moved to a different provider later;
-   channels under different providers cannot share a usable notification subject.
-2. Create a **LINE Mini App** channel for the customer-facing login surface.
-   LINE has announced that LIFF and the Mini App are being integrated into a
-   single brand and recommends new apps be created as Mini Apps; a classic
-   **LINE Login** channel with a LIFF app works identically with this
-   adapter if your account cannot create Mini Apps. Note the **channel ID**
-   (a number such as `1234567890`) and the **LIFF ID** (such as
-   `1234567890-abcdefgh`).
-   - New Mini Apps start **unverified**: anyone can open them, but some
-     platform features stay restricted and verification is limited to
-     corporate accounts. This adapter needs none of the restricted features.
-   - Set the LIFF/Mini App **endpoint URL** to `https://<your-host>/line.html`.
-3. Create a **Messaging API** channel (this is the sender of push messages).
-   Note its **channel ID** and its **channel secret**.
-   - Set the **webhook URL** to `https://<your-host>/api/adapters/line/webhook`
-     and enable webhooks. Disable auto-reply features you do not want.
+1. [LINE Developers コンソール](https://developers.line.biz/)で、自分が管理する provider を用意します。
+   ログイン用と Messaging API 用には必ず同じ provider を使います。
+   LINE user ID は provider ごとに異なり、作成後のチャネルを別 provider に移せません。
+   詳細は[チャネルと provider の注意事項](https://developers.line.biz/en/docs/line-mini-app/develop/develop-overview/)を参照してください。
+2. ログイン用の **LINE MINI App** チャネルを作成します。
+   LINE は新しい LIFF アプリを MINI App として作成することを推奨しています。
+   利用条件が合わない場合は、従来の **LINE Login** チャネルに LIFF アプリを追加する方法も、このアダプターで使えます。
+   作成条件と公開・認証による制限は、[現在の LIFF 登録ガイド](https://developers.line.biz/en/docs/liff/registering-liff-apps/)で確認してください。
+   このアダプターは MINI App の service message 機能を使わず、Messaging API で通知します。
+3. ログイン用の **channel ID** と **LIFF ID** を控えます。
+   endpoint URL は `https://<自分のホスト名>/line.html` にします。
+   従来の LINE Login + LIFF を使う場合は、LIFF の **Scope** で `openid` を必ず選択します。
+   本アプリは `liff.getIDToken()` を使うため、`openid` の許可がないと連携できません。
+   [LIFF API リファレンス](https://developers.line.biz/ja/reference/liff/#get-id-token)を参照してください。
+4. 通知用の **LINE 公式アカウント**を作成します。
+   **LINE Official Account Manager** で Messaging API を有効にし、手順 1 と同じ provider を選択します。
+   その後 LINE Developers コンソールで、生成された Messaging API チャネルの **channel ID** と **channel secret** を控えます。
+   Messaging API チャネルは Developers コンソールから直接作成できません。
+   [公式の開始手順](https://developers.line.biz/en/docs/messaging-api/getting-started/)に従ってください。
+5. Messaging API の webhook URL を `https://<自分のホスト名>/api/adapters/line/webhook` にし、webhook を有効にします。
+   不要な自動応答は LINE 側で無効にしてください。webhook URL に `location` は付けません。
 
-## The one secret
+<a id="the-one-secret"></a>
+## Messaging API の Secret を登録する
 
-The Messaging API **channel secret** is the only secret the Worker holds. It
-never goes in `wrangler.jsonc`, `.dev.vars.example`, or the repository:
-
-```sh
-wrangler secret put LINE_MESSAGING_CHANNEL_SECRET
-```
-
-The binding is deliberately absent from the required-secrets list: without
-it the adapter simply stays invisible. If the secret is removed while the
-adapter is active, customer pages fall back to a cleanup-only mode (existing
-links can still be viewed and removed; nothing is sent) and the setup status
-shows the degraded state until you restore it.
-
-## Enabling
-
-Identifiers are supplied through the owner API. The commands below address `default` because they
-omit `location`. With your owner token:
+Worker に保存する LINE の Secret は、Messaging API の **channel secret** だけです。
+対象 Worker のダッシュボードの Secret 欄に `LINE_MESSAGING_CHANNEL_SECRET` として入力します。
+CLI を使う場合は、自分の公開ソースのディレクトリで、`my-salon-reservations` を実際の Worker 名に置き換えて対話入力します。
 
 ```sh
-# 1. Check the current state (phase, lifecycleVersion, delivery diagnostics).
-curl -sS https://<your-host>/api/admin/line/status \
-  -H "authorization: Bearer $OWNER_TOKEN"
-
-# 2. Store the identifiers (allowed while disabled; repeatable).
-curl -sS https://<your-host>/api/admin/line/settings \
-  -H "authorization: Bearer $OWNER_TOKEN" \
-  -H "content-type: application/json" \
-  -H "origin: https://<your-host>" \
-  -d '{
-    "commandId": "'"$(uuidgen)"'",
-    "expectedLifecycleVersion": 0,
-    "identifiers": {
-      "liffId": "1234567890-abcdefgh",
-      "loginChannelId": "1234567890",
-      "messagingChannelId": "9876543210"
-    }
-  }'
-
-# 3. Enable (requires the secret to be present; identifiers are authoritative
-#    here and immutable while active).
-curl -sS https://<your-host>/api/admin/line/enable \
-  -H "authorization: Bearer $OWNER_TOKEN" \
-  -H "content-type: application/json" \
-  -H "origin: https://<your-host>" \
-  -d '{
-    "commandId": "'"$(uuidgen)"'",
-    "expectedLifecycleVersion": 1,
-    "identifiers": {
-      "liffId": "1234567890-abcdefgh",
-      "loginChannelId": "1234567890",
-      "messagingChannelId": "9876543210"
-    }
-  }'
+npx wrangler secret put LINE_MESSAGING_CHANNEL_SECRET --name my-salon-reservations
 ```
 
-`expectedLifecycleVersion` is the optimistic-concurrency check — read it from
-the status response. Repeating a command with the same `commandId` replays
-the recorded outcome; changing identifiers requires disable → enable.
+値を `wrangler.jsonc`、`.dev.vars.example`、コマンド引数、シェル履歴、Git に残さないでください。
+この Secret は必須 Secret の一覧に含まれません。未設定なら LINE の操作は顧客画面に出ません。
+有効化後に Secret が失われると、既存の連携を確認・解除するだけの cleanup モードになります。
+通知は送らず、設定状態に劣化を表示します。Secret を復旧するまでこの状態が続きます。
 
-Enabling reuses the installation's live-readiness protection and fails with
-`ORIGIN_UNCONFIGURED` until `allowedHostname` and its matching Turnstile setup
-are ready. Notification messages contain no management URL.
+<a id="enabling"></a>
+## オーナー API で有効にする
 
-## Named locations and the shared webhook
+以下は `location` を省略した `default` の例です。
+API クライアントに運営者の Bearer トークンを設定します。トークンや Authorization ヘッダーをログに残さないでください。
+変更リクエストは `Content-Type: application/json` と、導入先に一致する `Origin: https://<自分のホスト名>` を必要とします。
 
-For a named location, append `?location=<id>` to the existing owner LINE status, settings, enable
-and disable routes, and use that location's reported `lifecycleVersion` in each command. Named
-locations start with LINE off. Their active, deactivating and activating identifiers must match
-the shared realm; S4 does not add a second LINE account. The registered
-`/api/adapters/line/webhook` stays global, with no `location` parameter. It verifies the one raw
-signature before delivering only to active or still-draining actors. If an actor fails, a provider
-retry is deduplicated at each actor so acknowledged locations do not send twice.
+1. `GET /api/admin/line/status` で `phase` と現在の `lifecycleVersion`、配送診断を確認します。
+2. 無効の間に `POST /api/admin/line/settings` で識別子を保存します。
+   次の JSON の ID は自分の値に、version は直前に読んだ値に、`commandId` は新しい UUID に置き換えます。
 
-Customers explicitly link one booking at its own location. Another location with the same LINE
-subject receives no automatic consent or link. Named notification text includes that location's
-validated public label; default v1 notification bytes are unchanged. LIFF returns to
-`/line.html?location=<id>` for a named location and `/line.html` for `default`; neither URL carries
-a booking proof or token. Never add a location query to the webhook URL.
+   ```json
+   {
+     "commandId": "550e8400-e29b-41d4-a716-446655440000",
+     "expectedLifecycleVersion": 0,
+     "identifiers": {
+       "liffId": "1234567890-abcdefgh",
+       "loginChannelId": "1234567890",
+       "messagingChannelId": "9876543210"
+     }
+   }
+   ```
 
-## ⚠️ Regional message quotas and pricing
+3. status を読み直し、`POST /api/admin/line/enable` を送ります。
+   Secret が必要です。このリクエストの識別子が有効化の正本となり、有効な間は変更できません。
 
-Messaging API plans and limits vary by country or region. For a LINE Official
-Account billed in **Japan**, the Communication Plan currently includes at most
-**200 messages per month and does not allow additional-message purchases —
-delivery stops at the cap**. Do not apply those numbers to another region or
-plan; check the [current pricing for your region](https://developers.line.biz/en/docs/messaging-api/pricing/)
-before relying on notifications.
-LINE returns HTTP 429 for the monthly cap and temporary rate limits alike.
-LINE's retry policy excludes 4xx responses, so the adapter records that attempt
-as terminally `rejected`, with HTTP 429 attached to its diagnostics-ledger
-entry. A Japan-billed salon with a few hundred bookings a month will exceed the
-Communication Plan allowance. Treat LINE as a convenience channel rather than
-the only record: every state change remains visible on the customer's
-booking-management page regardless of message delivery.
+   ```json
+   {
+     "commandId": "550e8400-e29b-41d4-a716-446655440001",
+     "expectedLifecycleVersion": 1,
+     "identifiers": {
+       "liffId": "1234567890-abcdefgh",
+       "loginChannelId": "1234567890",
+       "messagingChannelId": "9876543210"
+     }
+   }
+   ```
 
-## Verifying a live channel (operator-side only)
+4. status で有効化の結果を確認します。
 
-CI proves the protocol against fixtures; a real channel is verified by hand:
+version の `0` と `1` は例です。各操作の前に status の最新値を使ってください。
+別の操作には新しい UUID を使います。応答を受け取れず結果が不明な同一操作の再送では、保存した同じ `commandId` と同じ本文を使います。
+同じ ID は記録済みの結果を返します。識別子を変更する場合は無効化してから再度有効化します。
 
-1. Open `https://<your-host>/` in a browser, book a test reservation, and
-   choose "LINE で通知を受け取る" on the booking-management page.
-2. Complete the LINE login. The page confirms the link.
-3. Approve the reservation from the owner page. A LINE message with the
-   date, service label, and state should arrive.
-4. Check `/api/admin/line/status`: the delivery counters should show one
-   delivered message and no terminal failures.
-5. Send a nonsense request to the webhook URL and confirm it is rejected
-   (the signature-failure counter increments; nothing else changes).
+有効化には公開準備の保護条件も必要です。`allowedHostname` と対応する Turnstile 設定が未完了なら `ORIGIN_UNCONFIGURED` になります。
+通知には予約の管理 URL を含めません。
 
-## Rotation and disabling
+<a id="named-locations-and-the-shared-webhook"></a>
+## 名前付きの場所を設定する
 
-- **Secret rotation**: issue a new channel secret in the LINE console, run
-  `wrangler secret put LINE_MESSAGING_CHANNEL_SECRET` with the new value,
-  then remove the old one on the LINE side. In-flight deliveries retry with
-  the new credentials automatically; during any gap every active location degrades to
-  the visible cleanup mode instead of failing silently.
-- **Disabling**: `POST /api/admin/line/disable` (same command shape as
-  above; add `?location=<id>` for a named location). That location's actor shows `deactivating`
-  while it cancels queued work and purges every link, subject and pending delivery, including the per-day
-  outbox rows — then settles at `disabled`. Disabling one location leaves other active locations
-  alone. Remove the shared secret only after **all** locations show `disabled`, not before.
-  Re-enabling later mints a fresh generation; old deliveries can never resurface.
+名前付きの場所では、既存の status、settings、enable、disable の各オーナー API に `?location=<id>` を付けます。
+各コマンドには、その場所の現在の `lifecycleVersion` を使います。新しい場所の LINE は無効です。
+有効・有効化中・無効化中の識別子は共通の provider 設定と一致する必要があり、S4 は 2 つ目の LINE アカウントを追加しません。
 
-## Updating the pinned LIFF SDK
+登録する `/api/adapters/line/webhook` は全場所で共通で、`location` を付けません。
+生の本文の署名を 1 回検証し、有効または処理中の actor にのみ渡します。
+ある actor が失敗して LINE が再送しても、各 actor の重複排除により受付済みの場所へ二重送信しません。
 
-`public/line.html` pins the LIFF SDK to a specific versioned URL with
-subresource integrity. Update it deliberately by pull request: change the
-version in the URL, recompute the `integrity` hash from the fetched file,
-and re-run the browser suite. Never float on the edge channel.
+顧客は予約が属する場所で明示的に連携します。同じ LINE user ID でも、別の場所へ同意や連携を自動的に引き継ぎません。
+名前付きの場所の通知には検証済みの公開表示名を含め、`default` の v1 通知の内容は維持します。
+LIFF の戻り先は名前付きなら `/line.html?location=<id>`、`default` なら `/line.html` です。
+どちらにも予約の管理キーやトークンを付けません。
+
+<a id="-regional-message-quotas-and-pricing"></a>
+<a id="regional-message-quotas-and-pricing"></a>
+## 地域ごとの配信上限と料金を確認する
+
+Messaging API のプランと上限は国・地域ごとに異なります。
+日本課金のコミュニケーションプランは、現在は月 200 通までで追加購入ができず、上限で配送が止まります。
+他の地域やプランにはこの数字を当てはめず、[現在の地域別料金](https://developers.line.biz/en/docs/messaging-api/pricing/)で確認してください。
+月に数百件の予約があれば、このプランの枠を超える可能性があります。
+
+月間上限と一時的なレート制限は、どちらも HTTP 429 になります。
+LINE の再試行方針では 4xx を再試行しないため、このアダプターはその試行を終端状態 `rejected` として記録し、診断 ledger に HTTP 429 を残します。
+配送の成功にかかわらず、予約の状態は顧客の予約管理画面に表示されます。通知を唯一の記録にしないでください。
+
+<a id="verifying-a-live-channel-operator-side-only"></a>
+## 自分のチャネルで動作を確認する
+
+CI の根拠は fixture によるプロトコル検証です。別途許可された自分の導入先で実チャネルを確認する場合は、架空の予約を使います。
+受信テスト用の LINE ユーザーで、対象の公式アカウントを友だち追加し、ブロックしていないことを確認します。
+HTTP 200 でも未配達になる条件は、[push の公式仕様](https://developers.line.biz/en/reference/messaging-api/nojs/#send-push-message)を参照してください。
+
+1. `https://<自分のホスト名>/` で架空の予約を作り、予約管理画面で「LINE で通知を受け取る」を選びます。
+2. LINE ログインを完了し、画面で連携済みになったことを確認します。
+3. 管理画面で予約を承認し、日付・サービス名・状態の LINE 通知を確認します。
+4. `/api/admin/line/status` の配送件数と終端失敗を確認します。
+5. 署名のない不正リクエストが webhook で拒否され、署名失敗のカウンター以外に変更がないことを確認します。
+
+<a id="rotation-and-disabling"></a>
+## Secret を更新する、連携を無効にする
+
+Secret を更新する場合は LINE 側で更新し、対象 Worker の `LINE_MESSAGING_CHANNEL_SECRET` を新しい値に置き換えます。
+ダッシュボードか、同じディレクトリ・Worker 名で次の対話入力を使います。
+
+```sh
+npx wrangler secret put LINE_MESSAGING_CHANNEL_SECRET --name my-salon-reservations
+```
+
+LINE 側で旧値が残る方式なら、Worker 更新後に旧値を失効させます。
+配送中の処理は新しい認証情報で再試行します。切り替えの空白期間には、有効な全場所が cleanup モードを表示します。
+
+無効にする場合は status を読み直し、`POST /api/admin/line/disable` に次の **2 フィールドだけ**を送ります。
+名前付きなら `?location=<id>` を付けます。`identifiers` は送らないでください。
+
+```json
+{
+  "commandId": "550e8400-e29b-41d4-a716-446655440002",
+  "expectedLifecycleVersion": 2
+}
+```
+
+UUID と version は例です。新しい操作には新しい UUID、version には最新 status の値を使います。
+結果不明の同一操作を再送する場合は、同じ ID と本文を使います。
+その場所は `deactivating` となり、待機中の処理を取り消して、連携、subject、未配送分、日別 outbox を削除した後に `disabled` になります。
+1 つの場所の無効化は他の有効な場所に影響しません。共通 Secret は、**すべての場所が `disabled` になってから**削除します。
+再有効化は新しい世代を使い、以前の配送を復活させません。
+
+<a id="updating-the-pinned-liff-sdk"></a>
+## 固定した LIFF SDK を更新する
+
+`public/line.html` の LIFF SDK は、バージョン付き URL と subresource integrity で固定しています。
+更新は PR で行い、URL のバージョンと取得ファイルの `integrity` hash を同時に更新して、ブラウザーのテストを実行します。
+edge チャネルへの追従には変更しないでください。

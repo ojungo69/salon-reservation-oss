@@ -1,8 +1,14 @@
-# Production-parity roadmap
+# OSS development roadmap
 
-**Roadmap document version**: 1.1.1 · **Baseline release**: 0.2.0 · **Updated**: 2026-10-09
+**Roadmap document version**: 1.2.0 · **Baseline release**: 0.2.0 · **Updated**: 2026-10-09
 
-This file records **order only**: the stages in which the remaining production-parity work lands.
+## Current direction
+
+Develop and release this repository as an independent OSS reservation product. S0 through S4 are complete. Ordinary feature work, documentation, verification and public releases do not require a change to an existing production installation or a transfer of its data.
+
+S5 remains Not started as an optional future project. It is outside the current delivery scope and is not the next mandatory release milestone. Reopen it only for an explicitly requested import/migration project, with its own scope and prior confirmation for real-data steps. Free-plan fit remains Partial; neither production parity nor live-provider readiness is claimed by this scope decision.
+
+This file records delivery stages and optional future work.
 Capability *status* has a single authority — [the production-parity target matrix](PARITY.md) — and
 this file links to it rather than restating it. What a production salon system needs that this
 project deliberately does **not** target is recorded in
@@ -22,23 +28,22 @@ scope (authentication, secrets, validation, hashing, payment-like paths), a secu
 battery — rule-based static analysis plus an adversarial security-focused review. No stage is
 completable on feature tests alone.
 
-**Reuse-first precondition**: architecture-expanding parity work may not move to `In progress`
+**Porting precondition**: actual porting work may not move to `In progress`
 until its capability has a private porting-ledger row, exactly one current disposition, mapped
 production/public tests, publication-rights status, sanitization work, an evidence owner, and any
 ADR required by [the reuse-first decision](ADR-0001-REUSE-FIRST-PORTING.md). Its public-safe
-provenance and migration-readiness projection must appear in [PORTING.md](PORTING.md). Security
-fixes and work required to complete the porting audit may proceed within their stated scope, but
-still record a disposition. This is a cross-cutting gate, not another capability stage.
+provenance and migration-readiness projection must appear in [PORTING.md](PORTING.md). Security fixes inside that porting scope and work required to complete its audit may proceed, but
+still record a disposition. Independently authored security fixes use public evidence. This gate does not apply to independently authored OSS changes, which use public requirements and tests under ADR0001. Historical provenance and publication-rights assessments remain unchanged.
 
 **Dependencies versus recommended order**: `Prerequisites` distinguishes *hard* dependencies (must
 exist first) from *recommended* order (priority, revisable by recorded revision). The hard
 dependency graph is: S0 before everything; S3 and S4 Complete before S5. The rest of the ordering
 (S1 before S2, S2 before S3) is priority, set by issue #1's emphasis.
 
-**Production-parity predicate**: a release may claim production parity only when every row of the
+**Optional production-parity comparison**: a release may claim production parity only when every row of the
 target matrix is `Implemented` or `Deliberately excluded`. Completing stages S0–S5 does not
 automatically confer the claim — it is read from the matrix as it stands at that time, never from
-this table — and the README derives its claim from the matrix for the same reason.
+this table. This comparison is separate from OSS release completion. An OSS release needs its advertised features, quality/security evidence, license and operator guidance; it does not need existing-system migration or deployment to an existing installation.
 
 ## Bounded create authority
 
@@ -53,12 +58,13 @@ this table — and the README derives its claim from the matrix for the same rea
 | **S2 — Calendar ladder (ICS feed + Google outbound sync)** | Complete | The two unconditional rungs of issue #1's decision: an authenticated outbound ICS subscription feed, then an optional outbound event-synchronization adapter whose **first delivered provider is Google** (the recorded decision names it; the contract stays provider-neutral), with reconciliation visibility. Neither rung affects booking availability. **Bidirectional inbound import is not part of this or any scheduled stage** — see [its target-matrix row](PARITY.md#production-parity-target-matrix) for status and boundary; scheduling it here is a recorded revision of this roadmap | Hard: S0. In-stage: the shared post-commit event delivery foundation, if it does not exist yet — whichever adapter stage starts first builds it (S1 in the recommended order). Recommended: after S1 (priority only) | Feed and Google outbound adapter fixture-tested including duplicate, outage, and reconciliation cases; verified zero availability effect; security review battery for the authenticated feed endpoint and provider-credential handling |
 | **S3 — Staff and role boundary** | Complete | Migration path from the single owner secret; authorization, revocation, offboarding, privacy design; the accountless customer path preserved | Hard: S0. Recommended: after S2 (priority only). In-stage: an authorization/migration/offboarding/privacy design precedes implementation | Design recorded, implementation landed with the security review battery |
 | **S4 — Multi-location boundary** | Complete | Location partitioning, transaction isolation, configuration, operator scoping. Cross-day moves are **not** implied by this stage and no stage schedules them — see [their target-matrix row](PARITY.md#production-parity-target-matrix) | Hard: S0. In-stage: a partition/transaction design precedes implementation | Design recorded, implementation landed with isolation/race evidence and the security review battery for the operator-scoping authorization surface |
-| **S5 — Import and migration** | Not started | Stable mapping from an existing production system, dry run, verification, idempotent resume, backup/rollback, auditability, privacy | Hard: S3 **and** S4 Complete — the schemas and storage paths migration writes into must be implemented and verified, not merely designed. Existing-system data steps also require the specific confirmation in [AGENTS.md](../AGENTS.md#existing-system-data-migration) | Dry-run, backup/rollback, and privacy evidence; security review battery for external-input parsing and personal-data handling |
+| **S5 — Optional import and migration** | Not started | Future explicitly requested transfer project; outside current OSS delivery and not required for release. Stable mapping, dry run, verification, idempotent resume, backup/rollback, auditability and privacy would be required | Hard: S3 **and** S4 Complete — the schemas and storage paths migration writes into must be implemented and verified, not merely designed. Existing-system data steps also require the specific confirmation in [AGENTS.md](../AGENTS.md#existing-system-data-migration) | Dry-run, backup/rollback, and privacy evidence; security review battery for external-input parsing and personal-data handling |
 
 ## Revision log
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-10-09 | 1.2.0 | Independent OSS direction: retain completed S0–S4; make unstarted S5 optional and outside current delivery. Actual porting retains its provenance gate; ordinary independently authored work uses public evidence. Existing-system import leaves the current capability target; historical implementation/rights evidence is unchanged |
 | 2026-10-09 | 1.1.1 | S4 status → Complete with ADR0003/Spec008 isolation, scoped roles, optional integration and rendered acceptance evidence; free-tier-budget capability remains Partial and S5 remains Not started |
 | 2026-10-09 | 1.1.1 | S4 status → In progress after the private evidence, accepted ADR0003 and selected-image gates; combined acceptance remains pending |
 | 2026-10-09 | 1.1.1 | Added the explicit confirmation prerequisite for existing-system data migration |

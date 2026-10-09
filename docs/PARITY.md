@@ -2,7 +2,7 @@
 
 This file is the single authority for capability status. It holds two matrices, describing the
 current repository candidate at this commit and maintained against [roadmap](ROADMAP.md) document
-version 1.1.1 (whose baseline release is 0.2.0):
+version 1.2.0 (whose baseline release is 0.2.0):
 
 - the **implemented capability matrix** — what the current repository candidate delivers, with
   public-safe implementation paths and acceptance evidence (a row becomes a *release* claim only
@@ -58,6 +58,8 @@ and they are run once per tagged release and recorded in the release notes.
 | Screen reader | Complete one booking with a screen reader and confirm each step change and the result are announced |
 
 ## Production-parity target matrix
+
+This matrix retains the capability comparison for reference. Independent OSS release completion is defined by the supported public product, its advertised behavior, verification, license and operator guidance. It does not require adoption by an existing installation. Under the 2026-10-09 direction, existing-system migration is outside the current target and S5 is an optional future project. This scope change does not implement a transfer tool or establish production parity; free-tier fit remains Partial.
 
 Status is exactly one of four atomic values — **Implemented**, **Partial**, **Planned**,
 **Deliberately excluded** — one per row. Where a named capability has parts with different
@@ -118,7 +120,7 @@ column points into [the deliberate exclusions](#deliberate-exclusions) below.
 |---|---|---|---|---|
 | Multiple locations | One installation serves several salons | Implemented | Up to four independent location/day authorities, two fifty-way races and exact recovery, root-atomic staff grants, local LINE/feed/Google fixtures and scoped real-browser journeys. [ADR0003](ADR-0003-MULTI-LOCATION-BOUNDARY.md), [operator guide](MULTI-LOCATION.md), [acceptance evidence](../specs/008-multi-location-boundary/verification.md) | Stage S4 |
 | Cross-day moves | The operator moves a booking to another day | Deliberately excluded | Needs its own transaction design; not implied by multi-location | [Exclusions](#deliberate-exclusions): cross-day moves |
-| Import/migration from an existing system | A production installation moves its data in | Planned | S3/S4 supply the destination boundaries; no transfer tool or migration-readiness claim exists. Concrete source/data/destination/operation/rollback confirmation is required before real-data steps | Stage S5 |
+| Import/migration from an existing system | An operator transfers an existing installation into the OSS product | Deliberately excluded | Outside current independent OSS delivery; no transfer tool or migration-readiness claim exists. S5 may be reopened on explicit request, with specific prior confirmation before real-data steps | [Exclusions](#deliberate-exclusions): optional existing-system migration |
 
 ### Out of target
 
@@ -143,6 +145,7 @@ recorded revision of [the roadmap](ROADMAP.md) and this matrix.
 | CRM, medical notes, and customer search | Excluded; the data model stays booking-minimal on purpose | Any future customer-record model requires a separate privacy/retention and access-control review |
 | Cross-day moves | Same-day move is implemented; crossing a day boundary breaks the day-partition transaction model | Design a new partition/transaction model before adding it (independent of multi-location, which S4 covers) |
 | Custom production operations | Operators configure their own domain, secrets, monitoring, export, recovery, and notices after authorization; the release does not operate installations | Remains operator-side; the release documents interfaces, not operations |
+| Optional existing-system migration | Independent OSS delivery does not transfer data or change an existing production installation | Reopen optional S5 only through an explicit import/migration request, mapping/privacy/rollback evidence and specific prior confirmation for real-data steps |
 
 **Cross-cutting adapter boundary** (not an exclusion row — it applies to planned and excluded
 providers alike): every external provider is optional and disabled by default, per the constitution

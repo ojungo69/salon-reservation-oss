@@ -4,6 +4,8 @@ Every advertised version must resolve to an immutable Git tag and a GitHub Relea
 the exact source commit. This procedure is reproducible from a clean checkout and needs no
 Cloudflare account, deployment, or private input.
 
+Releasing this independent OSS does not require an existing installation to adopt it, change production or transfer data. S5 is optional and outside current delivery. Migration-readiness records and the optional production-parity comparison do not substitute for this release's quality, security, license and operator-guidance checks. Ordinary independently authored release work does not require private-ledger access.
+
 ## Versioning
 
 The project follows Semantic Versioning. Because the application is deployed by operators rather
