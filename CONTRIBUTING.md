@@ -188,18 +188,18 @@ config resolution, so what gets exported is empty. Keep the line, and test any c
 ## Dependency updates
 
 `scripts/release-audit.mjs` checks that every direct dependency appears in
-[`docs/THIRD_PARTY_LICENSES.md`](docs/THIRD_PARTY_LICENSES.md) at the exact version `package.json`
-declares. Dependabot does not know about that table, so **every one of its npm pull requests is red
-until someone updates the table in the same branch**:
+[`docs/THIRD_PARTY_LICENSES.md`](docs/THIRD_PARTY_LICENSES.md), matching the package name and its
+license expression in `package-lock.json`. A version-only update with the same license passes
+without editing the table. An undocumented direct dependency or a changed license fails:
 
 ```text
 release audit failed: direct dependency license documentation drift: @types/node
 ```
 
-The fix is one line per bumped package — the version column, and the license column if the license
-itself changed, which is worth reading rather than assuming. Push that commit to Dependabot's branch
-rather than opening a second pull request. The friction is the point: a dependency's license is a
-thing a human should look at, and an automated bump is exactly when nobody does.
+Review a new dependency or license change before updating its table entry in the same branch.
+The version column records the documented snapshot; the lockfile is authoritative for installed
+versions. Every locked package must still have a license from the reviewed set, including transitive
+dependencies. A new or missing license expression continues to fail the audit.
 
 `@types/node` is deliberately excluded from Dependabot's major updates. Its majors track Node.js
 majors, and this project pins Node in `.nvmrc` and `engines.node` and compiles against
@@ -215,18 +215,22 @@ bump that pulls a new `workerd`), two files must be updated together:
 That duplication is deliberate. It forces a human to look at the new install script before it runs
 in CI. Do not relax the audit to avoid the second edit.
 
-The workflow that carries this policy is pinned too. `scripts/release-audit.mjs` holds
-`WORKFLOW_LINES`: every active line of `.github/workflows/ci.yml`, in order. The file must match it
+All three workflows are pinned too. `scripts/release-audit.mjs` holds `WORKFLOW_LINES`, with a
+separate ordered list for `ci.yml`, `dependabot-auto-merge.yml`, and `dependency-stall.yml` in
+`.github/workflows/`. Each list fixes every active YAML line and every block scalar content line.
+The files share one comparison procedure and must match their lists
 exactly, with one exemption — each `uses:` value is reduced to the action identity before comparing,
 and the SHA is checked separately for being a 40-character commit pin, so Dependabot's digest bumps
-stay quiet. `.nvmrc` is compared exactly too. Changing what CI runs therefore means editing
+stay quiet. `.nvmrc` is compared exactly too. Changing what any workflow runs therefore means editing
 `WORKFLOW_LINES` in the same pull request.
 
 Lines are split the way YAML splits them, including on a lone carriage return, which YAML treats
-as a line break and JavaScript does not. Comments are stripped before matching, so commenting a step
+as a line break and JavaScript does not. YAML comments are stripped before matching, so commenting a step
 out fails the audit the same way deleting it does, and rewording a comment does not. Indentation is stripped as well: the list is
 what says where a line belongs, so a job-level `permissions:` block is two lines the reviewed
-workflow does not have, wherever it sits.
+workflow does not have, wherever it sits. Inside a block scalar, `#` belongs to the script or
+expression rather than a YAML comment, so the audit retains it and the rest of the line. Shell
+comments inside scripts are also pinned; changing one requires updating the corresponding list.
 
 Both of those follow YAML's rule that space and tab are the only whitespace, and that a `#` starts a
 comment when whitespace precedes it or when it is the first character on the line. Anything wider would hide characters from the comparison
@@ -234,9 +238,10 @@ that Actions still executes — `run: npm run check<U+00A0># rest` is one comman
 shell, but `String.prototype.trim` and `\s` both treat U+00A0 as space. A byte-order mark and CRLF
 endings are removed by name instead, because they are legal and change nothing about what runs.
 
-`ci.yml` must also be the only file in `.github/workflows/`. GitHub runs every workflow in that
-directory, so a second one is a second place to install, with triggers and permissions of its own,
-and pinning one file would say nothing about it.
+`.github/workflows/` must contain exactly those three files. Adding a fourth workflow or removing
+one fails the audit. Adding or replacing a workflow requires reviewing its complete contents,
+updating `WORKFLOW_LINES`, and registering its published path in `release/public-files.txt` and
+the audit's `REQUIRED` set in the same pull request.
 
 The list is exhaustive rather than limited to the security-relevant lines, because a partial list
 says nothing about what someone *adds* or *retunes* — a second `npm ci`, a `yarn install`, an
@@ -245,11 +250,11 @@ reaches inside node and npm, an `if:` that turns a pinned step off. A pinned `ru
 while nothing else decides how it runs, so rather than name each way, anything that is not the
 reviewed line fails.
 
-Matching whole lines is also what rules out the YAML spellings a looser reader would miss: a folded
-scalar continuing a pinned command on the next line, a block scalar hiding a script under `run: |`,
-a flow mapping step, `on: {pull_request: null, pull_request_target: null}` on one line, a quoted
-`"run":` key, an anchor, a second `---` document. None of them is the reviewed line. Write the
-workflow in the plain style already there.
+Matching whole lines also fixes the YAML spellings: converting a command into a folded or literal
+scalar, adding a flow mapping step, quoting a `"run":` key, adding an anchor or a second `---`
+document changes the reviewed lines and fails. Existing block scalars, including the auto-merge
+script under `run: |`, are permitted only with their complete reviewed contents. Keep the spelling
+already reviewed for each workflow.
 
 This is a drift gate, not a boundary against a hostile committer: anyone who can edit the workflow
 can edit the audit beside it. Its job is to make a weakening visible in review rather than

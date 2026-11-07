@@ -5,7 +5,13 @@
 .github/ISSUE_TEMPLATE/question.yml
 .github/dependabot.yml
 .github/pull_request_template.md
+.github/scripts/dependabot-diverged.jq
+.github/scripts/dependabot-diverged.test.mjs
+.github/scripts/dependency-stall.mjs
+.github/scripts/dependency-stall.test.mjs
 .github/workflows/ci.yml
+.github/workflows/dependabot-auto-merge.yml
+.github/workflows/dependency-stall.yml
 .gitignore
 .npmrc
 .nvmrc

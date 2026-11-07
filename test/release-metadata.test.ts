@@ -38,6 +38,164 @@ const createFixture = () => {
   }
 };
 
+test("workflow audit accepts exactly the three reviewed workflows", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    const result = audit();
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /release audit passed/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+test("workflow audit rejects a fourth workflow", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    writeFileSync(join(tree, ".github/workflows/extra.yml"), "name: Extra\non: push\njobs: {}\n");
+    const result = audit();
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /unreviewed workflow file/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+for (const name of ["dependabot-auto-merge.yml", "dependency-stall.yml"]) {
+  test(`workflow audit rejects a missing reviewed workflow: ${name}`, { skip: !POSIX }, () => {
+    const { tree, audit } = createFixture();
+    try {
+      const path = `.github/workflows/${name}`;
+      // Omit the manifest entry too: the manifest check then rejects the missing required path
+      // before the workflow-set check runs.
+      writeFileSync(join(tree, "release/public-files.txt"),
+        `${PUBLIC_PATHS.filter((entry) => entry !== path).join("\n")}\n`);
+      rmSync(join(tree, path));
+      const result = audit();
+      assert.equal(result.status, 1, result.output);
+      assert.match(result.output, /required public path is missing/);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, before, after, expected] of [
+    ["changed permissions", "  contents: write", "  contents: read", /workflow drift/],
+    ["changed runner", "    runs-on: ubuntu-latest", "    runs-on: self-hosted", /workflow drift/],
+    ["extra step", "    steps:", "    steps:\n      - run: echo unexpected", /workflow drift/],
+    ["un-pinned action", /actions\/checkout@[0-9a-f]{40}/, "actions/checkout@v4", /GitHub Action is not commit-pinned/],
+    ["quoted action key", "uses: actions/checkout@", '"uses": actions/checkout@', /workflow drift/],
+  ] as const) {
+    // The watcher has read access; test a change in the opposite direction.
+    const original = label === "changed permissions" && name === "dependency-stall.yml"
+      ? "  contents: read" : before;
+    const replacement = label === "changed permissions" && name === "dependency-stall.yml"
+      ? "  contents: write" : after;
+    test(`workflow audit rejects ${label}: ${name}`, { skip: !POSIX }, () => {
+      const { tree, audit } = createFixture();
+      try {
+        const path = join(tree, ".github/workflows", name);
+        const source = readFileSync(path, "utf8");
+        const changed = source.replace(original, replacement);
+        assert.notEqual(changed, source, "fixture must change the intended line");
+        writeFileSync(path, changed);
+        const result = audit();
+        assert.equal(result.status, 1, result.output);
+        assert.match(result.output, expected);
+      } finally {
+        rmSync(tree, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("workflow audit preserves YAML comment, line-ending and digest normalization for all three files", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    for (const name of ["ci.yml", "dependabot-auto-merge.yml", "dependency-stall.yml"]) {
+      const path = join(tree, ".github/workflows", name);
+      const source = readFileSync(path, "utf8")
+        .replace(/actions\/checkout@[0-9a-f]{40}/, `actions/checkout@${"1".repeat(40)}`);
+      writeFileSync(path, `\uFEFF# Reviewed YAML comment\r\n${source.replaceAll("\n", "\r\n")}`);
+    }
+    const result = audit();
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /release audit passed/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+test("workflow audit checks script content after a quoted hash", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    const path = join(tree, ".github/workflows/dependabot-auto-merge.yml");
+    const source = readFileSync(path, "utf8");
+    const changed = source.replace('echo "Skip: #$pr_number declares', 'echo "Skip: #$pr_number unexpectedly declares');
+    assert.notEqual(changed, source);
+    writeFileSync(path, changed);
+    const result = audit();
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /workflow drift/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+test("direct dependency license audit accepts a version-only update", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    const packagePath = join(tree, "package.json");
+    const lockPath = join(tree, "package-lock.json");
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    packageJson.devDependencies["@types/node"] = "24.13.4";
+    lock.packages[""].devDependencies["@types/node"] = "24.13.4";
+    lock.packages["node_modules/@types/node"].version = "24.13.4";
+    writeFileSync(packagePath, JSON.stringify(packageJson));
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = audit();
+    assert.equal(result.status, 0, result.output);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+test("direct dependency license audit rejects a changed license even if otherwise allowed", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    const lockPath = join(tree, "package-lock.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock.packages["node_modules/@types/node"].license = "Apache-2.0";
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = audit();
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /direct dependency license documentation drift: @types\/node/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
+test("direct dependency license audit rejects an undocumented dependency", { skip: !POSIX }, () => {
+  const { tree, audit } = createFixture();
+  try {
+    const packagePath = join(tree, "package.json");
+    const lockPath = join(tree, "package-lock.json");
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    packageJson.devDependencies["fictional-tool"] = "1.0.0";
+    lock.packages[""].devDependencies["fictional-tool"] = "1.0.0";
+    lock.packages["node_modules/fictional-tool"] = { version: "1.0.0", license: "MIT" };
+    writeFileSync(packagePath, JSON.stringify(packageJson));
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = audit();
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /direct dependency license documentation drift: fictional-tool/);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
 for (const variant of ["subject", "body-lowercase", "nested"] as const) {
   test(`refuses private evidence in annotated tag metadata: ${variant}`, { skip: !POSIX }, () => {
     const { tree, git, audit } = createFixture();

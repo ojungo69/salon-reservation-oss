@@ -44,7 +44,13 @@ const ALLOWED_DEPENDENCY_LICENSES = new Set([
 const REQUIRED = new Set([
   "AGENTS.md",
   ".github/pull_request_template.md",
+  ".github/scripts/dependabot-diverged.jq",
+  ".github/scripts/dependabot-diverged.test.mjs",
+  ".github/scripts/dependency-stall.mjs",
+  ".github/scripts/dependency-stall.test.mjs",
   ".github/workflows/ci.yml",
+  ".github/workflows/dependabot-auto-merge.yml",
+  ".github/workflows/dependency-stall.yml",
   ".npmrc",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
@@ -368,7 +374,11 @@ const auditToolchain = (packageJson) => {
 };
 
 const auditDependencyLicenses = (packageJson, lock) => {
-  const licenseDoc = readText("docs/THIRD_PARTY_LICENSES.md");
+  const licenseDoc = readLines("docs/THIRD_PARTY_LICENSES.md");
+  const documentedLicenses = new Map(
+    [...licenseDoc.matchAll(/^\| `([^`]+)` \| [^|\r\n]+ \| ([^|\r\n]+) \|[ \t]*$/gm)]
+      .map(([, name, license]) => [name, license.trim()]),
+  );
   for (const [path, metadata] of Object.entries(lock.packages ?? {})) {
     if (path === "") continue;
     if (typeof metadata.license !== "string") fail(`missing package license: ${path}`);
@@ -376,8 +386,9 @@ const auditDependencyLicenses = (packageJson, lock) => {
       fail(`unreviewed package license ${metadata.license}: ${path}`);
     }
   }
-  for (const [name, version] of Object.entries(packageJson.devDependencies ?? {})) {
-    if (!licenseDoc.includes(`| \`${name}\` | ${version} |`)) {
+  for (const name of Object.keys(packageJson.devDependencies ?? {})) {
+    const metadata = lock.packages?.[`node_modules/${name}`];
+    if (!metadata || documentedLicenses.get(name) !== metadata.license) {
       fail(`direct dependency license documentation drift: ${name}`);
     }
   }
@@ -415,8 +426,9 @@ const auditPackage = () => {
   auditDependencyLicenses(packageJson, lock);
 };
 
-// Every active line of ci.yml, in order, with each `uses:` value reduced to the
-// action identity so Dependabot's SHA bumps stay quiet. Pinning the whole file
+// Every active YAML line and literal block line of each workflow, in order.
+// Each `uses:` value is reduced to the action identity so Dependabot's SHA
+// bumps stay quiet. Pinning the whole file
 // rather than the security-relevant subset is what makes the check hold: the
 // pinned npm is what enforces allowScripts at all, --ignore-scripts is what
 // keeps third-party install code from running, and the listing gate is what
@@ -424,62 +436,444 @@ const auditPackage = () => {
 // grow a step that installs some other way, a job whose `permissions:` override
 // the read-only default, a `container:` that picks a different machine, or a
 // checkout that keeps its credentials. Only an exhaustive list says that.
-const WORKFLOW_LINES = [
-  "name: CI",
-  "on:",
-  "pull_request:",
-  "push:",
-  "branches:",
-  "- main",
-  "permissions:",
-  "contents: read",
-  "concurrency:",
-  "group: ci-${{ github.ref }}",
-  "cancel-in-progress: true",
-  "jobs:",
-  "check:",
-  "runs-on: ubuntu-latest",
-  "timeout-minutes: 25",
-  "steps:",
-  "- name: Check out source",
-  "uses: actions/checkout",
-  "with:",
-  "fetch-depth: 0",
-  "persist-credentials: false",
-  "- name: Set up Node.js",
-  "uses: actions/setup-node",
-  "with:",
-  "node-version-file: .nvmrc",
-  "cache: npm",
-  "package-manager-cache: false",
-  "- name: Pin npm",
-  "run: npm install -g --ignore-scripts npm@12.0.2",
-  "- name: Report toolchain",
-  "run: node --version && npm --version",
-  "- name: Install locked dependencies",
-  "run: npm ci --ignore-scripts",
-  "- name: Verify the install-script allowlist covers every installed script",
-  "run: npm install-scripts ls --json | jq -e '.allowScripts == []'",
-  "- name: Verify",
-  "run: npm run check",
-  "- name: Cache the Playwright browser",
-  "uses: actions/cache",
-  "with:",
-  "path: ~/.cache/ms-playwright",
-  "key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}",
-  "- name: Install the browser the rendered-page tests drive",
-  "run: ./node_modules/.bin/playwright install chromium",
-  "- name: Verify the rendered pages",
-  "run: npm run test:browser",
-  "- name: Keep a failing run's traces",
-  "if: failure()",
-  "uses: actions/upload-artifact",
-  "with:",
-  "name: rendered-page-failures",
-  "path: .playwright",
-  "include-hidden-files: true",
-  "retention-days: 3",
-];
+const WORKFLOW_LINES = {
+  "ci.yml": [
+    "name: CI",
+    "on:",
+    "pull_request:",
+    "push:",
+    "branches:",
+    "- main",
+    "permissions:",
+    "contents: read",
+    "concurrency:",
+    "group: ci-${{ github.ref }}",
+    "cancel-in-progress: true",
+    "jobs:",
+    "check:",
+    "runs-on: ubuntu-latest",
+    "timeout-minutes: 25",
+    "steps:",
+    "- name: Check out source",
+    "uses: actions/checkout",
+    "with:",
+    "fetch-depth: 0",
+    "persist-credentials: false",
+    "- name: Set up Node.js",
+    "uses: actions/setup-node",
+    "with:",
+    "node-version-file: .nvmrc",
+    "cache: npm",
+    "package-manager-cache: false",
+    "- name: Pin npm",
+    "run: npm install -g --ignore-scripts npm@12.0.2",
+    "- name: Report toolchain",
+    "run: node --version && npm --version",
+    "- name: Install locked dependencies",
+    "run: npm ci --ignore-scripts",
+    "- name: Verify the install-script allowlist covers every installed script",
+    "run: npm install-scripts ls --json | jq -e '.allowScripts == []'",
+    "- name: Verify",
+    "run: npm run check",
+    "- name: Cache the Playwright browser",
+    "uses: actions/cache",
+    "with:",
+    "path: ~/.cache/ms-playwright",
+    "key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}",
+    "- name: Install the browser the rendered-page tests drive",
+    "run: ./node_modules/.bin/playwright install chromium",
+    "- name: Verify the rendered pages",
+    "run: npm run test:browser",
+    "- name: Keep a failing run's traces",
+    "if: failure()",
+    "uses: actions/upload-artifact",
+    "with:",
+    "name: rendered-page-failures",
+    "path: .playwright",
+    "include-hidden-files: true",
+    "retention-days: 3",
+  ],
+  "dependabot-auto-merge.yml": [
+    "name: Dependabot auto-merge",
+    "on:",
+    "workflow_run:",
+    "workflows: [\"CI\"]",
+    "types: [completed]",
+    "permissions:",
+    "contents: write",
+    "pull-requests: write",
+    "jobs:",
+    "auto-merge:",
+    "name: Merge minor/patch updates",
+    "runs-on: ubuntu-latest",
+    "if: >",
+    "github.event.workflow_run.conclusion == 'success' &&",
+    "github.event.workflow_run.event == 'pull_request' &&",
+    "startsWith(github.event.workflow_run.head_branch, 'dependabot/')",
+    "steps:",
+    "- name: Checkout trusted scripts from main",
+    "uses: actions/checkout",
+    "with:",
+    "ref: main",
+    "persist-credentials: false",
+    "sparse-checkout: .github/scripts",
+    "- name: Merge grouped minor/patch PR",
+    "env:",
+    "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}",
+    "HEAD_SHA: ${{ github.event.workflow_run.head_sha }}",
+    "REPO: ${{ github.repository }}",
+    "run: |",
+    "set -euo pipefail",
+    "case \"$HEAD_BRANCH\" in",
+    "dependabot/*) ;;",
+    "*)",
+    "echo \"Skip: $HEAD_BRANCH is not a Dependabot branch\"",
+    "exit 0",
+    ";;",
+    "esac",
+    "# The PR number is all this lookup is for. The author filter stays",
+    "# as a second condition, but it proves who OPENED the PR — not what",
+    "# its text says now.",
+    "pr=$(gh pr list --repo \"$REPO\" --head \"$HEAD_BRANCH\" \\",
+    "--author \"app/dependabot\" --state open --json number --jq '.[0]')",
+    "pr_number=$(printf '%s' \"$pr\" | jq -r '.number // empty')",
+    "if [ -z \"$pr_number\" ]; then",
+    "echo \"Skip: no open Dependabot PR for $HEAD_BRANCH\"",
+    "exit 0",
+    "fi",
+    "# Decide from the COMMIT, not from the PR title. A title is mutable:",
+    "# a collaborator, or any installed App holding pull-requests: write,",
+    "# can rewrite it after CI, and rewriting it does not change HEAD — so",
+    "# --match-head-commit cannot see it and an exact replacement would",
+    "# look like a legitimate patch bump. The commit message belongs to the",
+    "# SHA that CI verified and that --match-head-commit pins, and",
+    "# Dependabot signs its commits, so require that signature too.",
+    "commit=$(gh api \"repos/$REPO/commits/$HEAD_SHA\" \\",
+    "--jq '{login: (.author.login // \"\"), verified: .commit.verification.verified, message: .commit.message}')",
+    "commit_login=$(printf '%s' \"$commit\" | jq -r '.login')",
+    "commit_verified=$(printf '%s' \"$commit\" | jq -r '.verified')",
+    "message=$(printf '%s' \"$commit\" | jq -r '.message')",
+    "subject=${message%%$'\\n'*}",
+    "if [ \"$commit_login\" != \"dependabot[bot]\" ] || [ \"$commit_verified\" != \"true\" ]; then",
+    "echo \"Skip: #$pr_number — $HEAD_SHA is not a verified Dependabot commit (author=$commit_login verified=$commit_verified)\"",
+    "exit 0",
+    "fi",
+    "# Decide from the metadata trailer Dependabot writes at the end of",
+    "# the commit message, not from its subject line. The subject is a",
+    "# LOSSY rendering of the update: dependabot-core's commit_subject",
+    "# drops the whole \" from X to Y\" once the subject passes 72",
+    "# characters, and then cuts at the first \" in \" if it is still too",
+    "# long, so #52 on this repository really is",
+    "# \"bump actions/checkout in the actions-minor-patch group\" with no",
+    "# versions anywhere in it. The trailer names update-type per",
+    "# dependency and is the same block the official",
+    "# dependabot/fetch-metadata action reads.",
+    "#",
+    "# Residual risk, accepted deliberately: nothing in the REST API",
+    "# authenticates the CONTENT of a commit message. verified=true",
+    "# attests the signature over the commit, and GitHub signs",
+    "# Dependabot's commits with its own web-flow key, but author is a",
+    "# separate field, so anyone who can write to this repository could",
+    "# craft a commit that reads like a patch bump. That is not a",
+    "# privilege this gate grants: write access already merges. The",
+    "# officially recommended action authenticates no better, because",
+    "# there is no second source to compare against.",
+    "# The LAST complete block, so a \"---\" inside a quoted changelog",
+    "# cannot introduce one.",
+    "trailer=$(printf '%s\\n' \"$message\" | awk '",
+    "/^---$/ { buffer = \"\"; inside = 1; next }",
+    "/^\\.\\.\\.$/ { if (inside) { last = buffer; inside = 0 } next }",
+    "inside { buffer = buffer $0 \"\\n\" }",
+    "END { printf \"%s\", last }')",
+    "# Parsed strictly against the shape dependabot-core writes, and every",
+    "# deviation holds the PR. Counting keys across the block instead let a",
+    "# quoted key (\"update-type\": …) read as \"no type declared\" and fall",
+    "# through to the subject, and let an update-type outside the",
+    "# updated-dependencies list count for a dependency that declared none.",
+    "read -r verdict items typed majors _blocked reason <<< \"$(printf '%s\\n' \"$trailer\" | awk '",
+    "# awk splits on LF, so a CR inside a line hides everything after it",
+    "# from every rule below — and YAML would have read that as a second",
+    "# line, which is how a major declaration became invisible. Printable",
+    "# ASCII and spaces only; anything else holds.",
+    "!/^[ -~]*$/ { bad = \"a character outside printable ASCII\"; exit }",
+    "NR == 1 {",
+    "if ($0 != \"updated-dependencies:\") { bad = \"the block does not start with updated-dependencies:\" ; exit }",
+    "next",
+    "}",
+    "/^- dependency-name: ./ {",
+    "items++; typed_here = 0",
+    "name = $0; sub(/^- dependency-name: /, \"\", name)",
+    "# Psych quotes scoped names. Accept simple single or double",
+    "# quotes; hold escaped or ambiguous spellings rather than read",
+    "# a different package name from the same YAML scalar.",
+    "apostrophe = sprintf(\"%c\", 39)",
+    "quote = substr(name, 1, 1)",
+    "if (quote == apostrophe || quote == \"\\\"\") {",
+    "if (length(name) < 3 || substr(name, length(name), 1) != quote) {",
+    "bad = \"an unreadable dependency-name\"; exit",
+    "}",
+    "name = substr(name, 2, length(name) - 2)",
+    "}",
+    "if (index(name, apostrophe) || index(name, \"\\\"\") || index(name, \"\\\\\") || index(name, \" \")) {",
+    "bad = \"an unreadable dependency-name\"; exit",
+    "}",
+    "next",
+    "}",
+    "/^- / { bad = \"a list item that is not dependency-name: \" $0; exit }",
+    "/^  [a-z][a-z-]*: ./ {",
+    "if (items == 0) { bad = \"a field before any dependency: \" $0; exit }",
+    "key = $0; sub(/^  /, \"\", key); sub(/:.*$/, \"\", key)",
+    "if (key == \"dependency-name\") { bad = \"a second dependency-name field\"; exit }",
+    "if (key == \"update-type\") {",
+    "if (typed_here) { bad = \"two update-type fields on one dependency\"; exit }",
+    "typed_here = 1; typed++",
+    "value = $0; sub(/^  update-type: /, \"\", value)",
+    "if (value !~ /^version-update:semver-(major|minor|patch)$/) { bad = \"an unreadable update-type: \" value; exit }",
+    "if (value == \"version-update:semver-major\") majors++",
+    "}",
+    "next",
+    "}",
+    "/^[[:space:]]*$/ { next }",
+    "{ bad = \"an unrecognised line: \" $0; exit }",
+    "END {",
+    "if (bad != \"\") printf \"HOLD 0 0 0 0 %s\", bad",
+    "else printf \"OK %d %d %d %d -\", items, typed, majors, blocked",
+    "}')\"",
+    "if [ \"$verdict\" != OK ]; then",
+    "echo \"Skip: #$pr_number holds for manual review — its updated-dependencies trailer has $reason\"",
+    "exit 0",
+    "fi",
+    "if [ \"$items\" -eq 0 ]; then",
+    "echo \"Skip: #$pr_number holds for manual review — its commit message carries no updated-dependencies trailer\"",
+    "exit 0",
+    "fi",
+    "if [ \"$majors\" -gt 0 ]; then",
+    "echo \"Skip: #$pr_number declares $majors major update(s) (manual review required)\"",
+    "exit 0",
+    "fi",
+    "if [ \"$typed\" -eq \"$items\" ]; then",
+    "echo \"Non-major update ($items dependency/dependencies, all minor or patch): $subject\"",
+    "elif [ \"$items\" -eq 1 ] && [ \"$typed\" -eq 0 ]; then",
+    "# A security update declares no update-type — the trailer names only",
+    "# the version it moves TO — so the version pair in the subject is",
+    "# the only statement of what changed. These are the PRs this gate",
+    "# exists for: dependabot.yml groups every *version* update, so what",
+    "# arrives ungrouped is a security update, and those used to sit open",
+    "# for days with high-severity advisories unpatched (fast-uri, svgo,",
+    "# js-yaml). A subject long enough to have lost its version pair is",
+    "# held rather than guessed at.",
+    "case \"$subject\" in",
+    "*[[:cntrl:]]*)",
+    "echo \"Skip: #$pr_number holds for manual review — its commit subject is not a single plain line\"",
+    "exit 0",
+    ";;",
+    "esac",
+    "# Anchored to the WHOLE subject: an optional \"chore(deps): \"-style",
+    "# prefix, the sentence, and the one suffix an untyped update can",
+    "# carry — \" (via audit fix)\", which dependabot-core appends when",
+    "# the fix came from npm audit. A group or directory suffix cannot",
+    "# reach here: this branch needs a single dependency with no",
+    "# declared type, and dependabot.yml groups only version updates,",
+    "# in one directory.",
+    "re_prefix='^([^[:space:]]+:[[:space:]]+)?[Bb]ump[[:space:]]+'",
+    "# dependabot-core appends \" in /<directory>\" to an ungrouped update outside \"/\".",
+    "re_dir='([[:space:]]+in[[:space:]]+/[A-Za-z0-9._/-]*)?'",
+    "re_audit='([[:space:]]+\\(via[[:space:]]+audit[[:space:]]+fix\\))?'",
+    "# A whole version token, not a numeric prefix of one: \"1evil\" and a",
+    "# full-width digit in \"1０.0.0\" must not read as major 1. The suffix",
+    "# takes further hyphens and pluses, so 1.0.0-rc.1+build.5 and",
+    "# 1.0.0-alpha-beta parse as well.",
+    "re_version='v?[0-9]+(\\.[0-9]+)*([-+][0-9A-Za-z.+-]+)?'",
+    "# Group indices: 2 = old version token, 5 = new one.",
+    "bump_re=\"${re_prefix}[^[:space:]]+[[:space:]]+from[[:space:]]+(${re_version})[[:space:]]+to[[:space:]]+(${re_version})${re_dir}${re_audit}$\"",
+    "if [[ ! \"$subject\" =~ $bump_re ]]; then",
+    "echo \"Skip: #$pr_number holds for manual review — one untyped dependency, and its subject is not one readable version pair\"",
+    "echo \"  subject: $subject\"",
+    "exit 0",
+    "fi",
+    "old_version=\"${BASH_REMATCH[2]#v}\"",
+    "new_version=\"${BASH_REMATCH[5]#v}\"",
+    "old_major=\"${old_version%%[.+-]*}\"",
+    "new_major=\"${new_version%%[.+-]*}\"",
+    "if [ \"$old_major\" != \"$new_major\" ]; then",
+    "echo \"Skip: #$pr_number bumps major $old_major -> $new_major (manual review required)\"",
+    "exit 0",
+    "fi",
+    "echo \"Untyped security update ($old_version -> $new_version): $subject\"",
+    "else",
+    "echo \"Skip: #$pr_number holds for manual review — $items dependencies, only $typed of them declare an update type\"",
+    "exit 0",
+    "fi",
+    "# The trailer says what the update IS; this says what the PR may",
+    "# TOUCH. Nothing in the REST API can authenticate the message (see",
+    "# above), so bound the blast radius of a commit that lies: a",
+    "# Dependabot PR only ever edits its ecosystem's manifests, and every",
+    "# one this repository has merged did exactly that (#52 the workflow it",
+    "# pins, #58/#60/#66 package.json and package-lock.json).",
+    "case \"$HEAD_BRANCH\" in",
+    "# \\A and \\z, not ^ and $: jq's $ matches before a trailing",
+    "# newline, so \"package.json\\n\" — a different path to git, and not a",
+    "# manifest — satisfied the anchored pattern (measured on jq 1.7).",
+    "dependabot/npm_and_yarn/*) allow_re='\\A([^/]+/)*package(-lock)?\\.json\\z' ;;",
+    "dependabot/github_actions/*) allow_re='\\A\\.github/workflows/[^/]+\\.ya?ml\\z' ;;",
+    "*)",
+    "echo \"Skip: #$pr_number is for an ecosystem this gate has no file allowlist for ($HEAD_BRANCH)\"",
+    "exit 0",
+    ";;",
+    "esac",
+    "# Pinned to HEAD_SHA, not read off the PR. The pull-request files",
+    "# endpoint answers for whatever the PR points at WHEN IT IS CALLED, so",
+    "# a branch flipped to a harmless commit for the length of that call and",
+    "# flipped back would be checked in place of the commit being merged —",
+    "# --match-head-commit would still match, because it only compares the",
+    "# head at merge time. The compare endpoint takes the SHA itself.",
+    "# The comparison point is main, named literally. Taking it from the",
+    "# PR was the same hole one level up: base is mutable, so retargeting",
+    "# the PR to a branch that already contains the unwanted change — no",
+    "# push, no new HEAD, invisible to --match-head-commit — makes the",
+    "# compare return only the manifests. The PR's own base is checked",
+    "# instead of trusted, because a merge has to land on main.",
+    "compare=$(gh api \"repos/$REPO/compare/main...$HEAD_SHA\")",
+    "# Matched inside jq so a filename is never split on whitespace: git",
+    "# accepts a newline in a path, and \"package.json\\npackage-lock.json\"",
+    "# is one file that would read as two allowed ones. Only added,",
+    "# modified and changed pass — a rename has a second path on the other",
+    "# side of it and a removal takes a file away, so both hold.",
+    "offenders=$(printf '%s' \"$compare\" | jq -r --arg allow \"$allow_re\" '",
+    "[ .files[]?",
+    "| select(((.status | IN(\"added\", \"modified\", \"changed\")) | not)",
+    "or ((.filename | test($allow)) | not))",
+    "| .status + \" \" + (.filename | @json) ] | .[]')",
+    "file_count=$(printf '%s' \"$compare\" | jq '.files | length')",
+    "# \"ahead\" means main is an ancestor of HEAD_SHA, so main is the only",
+    "# merge base and this three-dot file list IS what a squash applies.",
+    "# With a criss-cross history there are several merge bases, the API",
+    "# picks one, and the list can then omit a change the merge would",
+    "# carry — so anything but \"ahead\" holds until Dependabot rebases,",
+    "# which it does on its own when main moves.",
+    "compare_status=$(printf '%s' \"$compare\" | jq -r '.status // \"\"')",
+    "merge_base=$(printf '%s' \"$compare\" | jq -r '.merge_base_commit.sha // \"\"')",
+    "main_sha=$(gh api \"repos/$REPO/commits/main\" --jq '.sha')",
+    "if [ \"$compare_status\" != ahead ] || [ \"$merge_base\" != \"$main_sha\" ]; then",
+    "# D3: pin both sides to SHAs and accept only disjoint, signed Dependabot changes.",
+    "gh api \"repos/$REPO/compare/$merge_base...$HEAD_SHA\" > \"$RUNNER_TEMP/dependabot-head.json\"",
+    "gh api \"repos/$REPO/compare/$merge_base...$main_sha\" > \"$RUNNER_TEMP/dependabot-main.json\"",
+    "printf '%s' \"$compare\" > \"$RUNNER_TEMP/dependabot-compare.json\"",
+    "if ! jq -n --slurpfile compare \"$RUNNER_TEMP/dependabot-compare.json\" \\",
+    "--slurpfile head \"$RUNNER_TEMP/dependabot-head.json\" \\",
+    "--slurpfile main \"$RUNNER_TEMP/dependabot-main.json\" \\",
+    "'{compare: $compare[0], head: $head[0], main: $main[0]}' \\",
+    "| jq -e -f .github/scripts/dependabot-diverged.jq >/dev/null; then",
+    "echo \"Skip: #$pr_number is $compare_status of main (merge base $merge_base, main $main_sha) — D3 could not prove disjoint paths and single-parent verified Dependabot commits\"",
+    "exit 0",
+    "fi",
+    "mergeable=$(gh api \"repos/$REPO/pulls/$pr_number\" --jq '.mergeable')",
+    "if [ \"$mergeable\" != true ]; then",
+    "echo \"Skip: #$pr_number is not mergeable (mergeable=$mergeable)\"",
+    "exit 0",
+    "fi",
+    "fi",
+    "if [ -z \"$file_count\" ] || [ \"$file_count\" -eq 0 ]; then",
+    "echo \"Skip: #$pr_number holds for manual review — no file list to check for $HEAD_SHA\"",
+    "exit 0",
+    "fi",
+    "# The endpoint stops at 300 files, so above that the list cannot be",
+    "# shown to be complete and a clean sample proves nothing.",
+    "if [ \"$file_count\" -ge 300 ]; then",
+    "echo \"Skip: #$pr_number changes $file_count files, at or past the compare limit — the file list cannot be checked in full\"",
+    "exit 0",
+    "fi",
+    "if [ -n \"$offenders\" ]; then",
+    "echo \"Skip: #$pr_number touches files outside the allowlist for $HEAD_BRANCH:\"",
+    "printf '  %s\\n' \"$offenders\"",
+    "exit 0",
+    "fi",
+    "echo \"Diff is $file_count file(s), all dependency manifests for $HEAD_BRANCH\"",
+    "# --auto: 全要件（ruleset の required status checks とスレッド解決）が",
+    "# 満たされた時点で GitHub がマージする。この時点で既に満たされていれば即マージ。",
+    "# --match-head-commit: CI が検証した commit と PR HEAD が一致する場合のみ",
+    "# 対象にする（TOCTOU 防止）。CI 後に rebase されていたら失敗するが、",
+    "# 新しい CI 実行が完了すれば再試行される。",
+    "# Read last, immediately before the merge call. There is no",
+    "# --match-base to pin it the way --match-head-commit pins HEAD (the",
+    "# REST merge takes an expected head `sha` and nothing for the base),",
+    "# and GitHub's auto-merge resolves the base when it merges, minutes",
+    "# later — so this narrows the window, it does not close it.",
+    "#",
+    "# Accepted residual, and its precondition: an actor holding only",
+    "# pull-requests: write could retarget the PR after this read and have",
+    "# this job's contents: write token merge HEAD onto that other branch.",
+    "#",
+    "# A second window has the same shape and is NOT covered by \"the base",
+    "# is still main\": main can advance between the checks above and the",
+    "# moment auto-merge fires. If such a commit RENAMES one of the",
+    "# allowlisted manifests, the squash applies this PR's change to the",
+    "# renamed path — a path the allowlist never approved. It needs no",
+    "# attacker: a maintainer renaming a lockfile while a PR is pending",
+    "# does it. What lands is still a dependency bump, and pushing that",
+    "# rename to main already requires write access to main.",
+    "#",
+    "# Both windows would close server-side with one setting rather than",
+    "# more code here: strict_required_status_checks_policy on the ruleset",
+    "# makes GitHub require the branch to be current with main before it",
+    "# merges, so the diff checked here would be the diff applied.",
+    "#",
+    "# It stays off (false), deliberately. Dependabot opens its PRs in",
+    "# pairs on the same schedule, and merging the first leaves the second",
+    "# behind main. Under strict the second stops there — and nothing",
+    "# restarts it: CI does not re-run when only main moves, so this job",
+    "# never reaches a second decision, and Dependabot's own rebasing does",
+    "# not trigger on \"the base advanced\" either (dependabot-core #10969).",
+    "# Turning it on would trade a window of minutes for a weekly manual",
+    "# step on the very updates this workflow exists to land unattended.",
+    "# Before turning it on, this job needs a trigger for main moving (the",
+    "# token Dependabot acts on is REBASE_TOKEN, used above).",
+    "base_ref=$(gh api \"repos/$REPO/pulls/$pr_number\" --jq '.base.ref')",
+    "if [ \"$base_ref\" != main ]; then",
+    "echo \"Skip: #$pr_number targets $base_ref, not main\"",
+    "exit 0",
+    "fi",
+    "echo \"Enabling auto-merge for PR #$pr_number ($HEAD_BRANCH @ $HEAD_SHA)\"",
+    "gh pr merge --repo \"$REPO\" --auto --squash --delete-branch \\",
+    "--match-head-commit \"$HEAD_SHA\" \"$pr_number\"",
+  ],
+  "dependency-stall.yml": [
+    "name: Dependency stall watch",
+    "on:",
+    "schedule:",
+    "- cron: '0 1 * * 1'",
+    "workflow_dispatch:",
+    "permissions:",
+    "contents: read",
+    "pull-requests: read",
+    "actions: read",
+    "checks: read",
+    "statuses: read",
+    "issues: write",
+    "concurrency:",
+    "group: dependency-stall",
+    "cancel-in-progress: false",
+    "jobs:",
+    "watch:",
+    "runs-on: ubuntu-latest",
+    "timeout-minutes: 10",
+    "steps:",
+    "- name: Checkout monitoring script",
+    "uses: actions/checkout",
+    "with:",
+    "persist-credentials: false",
+    "sparse-checkout: .github/scripts",
+    "- name: Setup Node.js",
+    "uses: actions/setup-node",
+    "with:",
+    "node-version: '24'",
+    "- name: Report stalled dependency updates",
+    "env:",
+    "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "run: node .github/scripts/dependency-stall.mjs",
+  ],
+};
 const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
 
 // Space and tab are the only YAML whitespace, and a `#` is only a comment when
@@ -488,8 +882,8 @@ const WORKFLOW_ACTION = /^(- )?uses: (\S+)$/;
 // Actions still executes. `run: npm run check # rest` is one command to
 // YAML and to the shell, and `String.prototype.trim` treats U+00A0 as space.
 const YAML_SPACE = " \t";
-const stripComment = (line) => {
-  const comment = line.search(/[ \t]#/);
+const stripComment = (line, literal = false) => {
+  const comment = literal ? -1 : line.search(/[ \t]#/);
   const content = comment === -1 ? line : line.slice(0, comment);
   let start = 0;
   let end = content.length;
@@ -500,15 +894,8 @@ const stripComment = (line) => {
 
 // Indentation is dropped, so the list is what says where a line belongs: a
 // job-level `permissions:` block the reviewed workflow does not have is rejected.
-const auditWorkflow = () => {
-  // GitHub runs every file in this directory, so pinning one of them says
-  // nothing on its own: a second workflow is a second place to install, with
-  // its own permissions and its own triggers.
-  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort();
-  if (workflows.length !== 1 || workflows[0] !== "ci.yml") {
-    fail(`unreviewed workflow file: ${JSON.stringify(workflows)}`);
-  }
-  const workflow = readText(".github/workflows/ci.yml");
+const auditWorkflow = (name, reviewedLines) => {
+  const workflow = readText(`.github/workflows/${name}`);
   // Deliberately redundant with the list. This is the one key whose presence
   // hands a write token to code from a fork, and it should fail by name however
   // it is written.
@@ -518,27 +905,43 @@ const auditWorkflow = () => {
   // comment on the line above it. A leading byte-order mark is legal and
   // changes nothing about what runs, so it is removed by name rather than by a
   // whitespace rule wide enough to swallow more than it is.
-  const lines = workflow
-    .replace(/^\uFEFF/, "")
-    .split(/\r\n|\r|\n/)
-    .map(stripComment)
-    .filter((line) => line.length !== 0 && !line.startsWith("#"))
-    .map((line) => {
-      const action = WORKFLOW_ACTION.exec(line);
-      if (action === null) return line;
+  const lines = [];
+  let blockIndent = null;
+  for (const rawLine of workflow.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/)) {
+    const indent = rawLine.match(/^[ \t]*/)[0].length;
+    const inBlock = blockIndent !== null && (indent > blockIndent || /^[ \t]*$/.test(rawLine));
+    if (!inBlock) blockIndent = null;
+    // A block's # characters belong to its script/expression, not YAML comments.
+    const line = stripComment(rawLine, inBlock);
+    if (line.length === 0 || (!inBlock && line.startsWith("#"))) continue;
+    if (!inBlock && /^[a-z-]+: [|>]$/.test(line)) blockIndent = indent;
+    const action = inBlock ? null : WORKFLOW_ACTION.exec(line);
+    if (action === null) {
+      lines.push(line);
+    } else {
       if (!/@[0-9a-f]{40}$/.test(action[2])) {
-        fail(`GitHub Action is not commit-pinned: ${action[2]}`);
+        fail(`GitHub Action is not commit-pinned: ${action[2]} in ${name}`);
       }
-      return `${action[1] ?? ""}uses: ${action[2].slice(0, action[2].lastIndexOf("@"))}`;
-    });
-  for (let index = 0; index < Math.max(lines.length, WORKFLOW_LINES.length); index += 1) {
-    if (lines[index] !== WORKFLOW_LINES[index]) {
+      lines.push(`${action[1] ?? ""}uses: ${action[2].slice(0, action[2].lastIndexOf("@"))}`);
+    }
+  }
+  for (let index = 0; index < Math.max(lines.length, reviewedLines.length); index += 1) {
+    if (lines[index] !== reviewedLines[index]) {
       fail(
-        `workflow drift: ${JSON.stringify(lines[index] ?? null)} where the reviewed` +
-          ` workflow has ${JSON.stringify(WORKFLOW_LINES[index] ?? null)}`,
+        `workflow drift in ${name}: ${JSON.stringify(lines[index] ?? null)} where the reviewed` +
+          ` workflow has ${JSON.stringify(reviewedLines[index] ?? null)}`,
       );
     }
   }
+};
+
+const auditWorkflows = () => {
+  const byName = (a, b) => a.localeCompare(b);
+  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort(byName);
+  if (JSON.stringify(workflows) !== JSON.stringify(Object.keys(WORKFLOW_LINES).sort(byName))) {
+    fail(`unreviewed workflow file: ${JSON.stringify(workflows)}`);
+  }
+  for (const [name, lines] of Object.entries(WORKFLOW_LINES)) auditWorkflow(name, lines);
 };
 
 const auditAuthForms = () => {
@@ -751,7 +1154,7 @@ try {
   const denylist = loadDenylist(options.denylist);
   scanPublicText(paths, denylist);
   auditPackage();
-  auditWorkflow();
+  auditWorkflows();
   auditAuthForms();
   if (options.publicTree) auditPublicTree(paths, denylist);
   console.log(`release audit passed (${paths.length} allowlisted files${options.publicTree ? ", public history" : ""})`);

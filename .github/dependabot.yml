@@ -12,6 +12,25 @@ updates:
       - dependencies
     commit-message:
       prefix: "deps"
+    cooldown:
+      default-days: 7
+    groups:
+      workers-vitest:
+        applies-to: version-updates
+        patterns:
+          - "wrangler"
+          - "@cloudflare/vitest-pool-workers"
+          - "vitest"
+          - "@vitest/*"
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      npm-major:
+        applies-to: version-updates
+        update-types:
+          - major
     ignore:
       # @types/node major versions track Node.js major versions. This project
       # pins Node in .nvmrc and engines.node, and tsconfig.json compiles against
@@ -33,3 +52,15 @@ updates:
       - dependencies
     commit-message:
       prefix: "ci"
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      actions-major:
+        applies-to: version-updates
+        update-types:
+          - major
