@@ -66,7 +66,8 @@ for (const name of ["dependabot-auto-merge.yml", "dependency-stall.yml"]) {
     const { tree, audit } = createFixture();
     try {
       const path = `.github/workflows/${name}`;
-      // Omit the manifest entry too, so the workflow-set check must still reject it.
+      // Omit the manifest entry too: the manifest check then rejects the missing required path
+      // before the workflow-set check runs.
       writeFileSync(join(tree, "release/public-files.txt"),
         `${PUBLIC_PATHS.filter((entry) => entry !== path).join("\n")}\n`);
       rmSync(join(tree, path));

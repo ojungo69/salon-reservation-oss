@@ -514,7 +514,7 @@ const WORKFLOW_LINES = {
     "- name: Checkout trusted scripts from main",
     "uses: actions/checkout",
     "with:",
-    "ref: ${{ github.event.repository.default_branch }}",
+    "ref: main",
     "persist-credentials: false",
     "sparse-checkout: .github/scripts",
     "- name: Merge grouped minor/patch PR",
@@ -936,8 +936,9 @@ const auditWorkflow = (name, reviewedLines) => {
 };
 
 const auditWorkflows = () => {
-  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort();
-  if (JSON.stringify(workflows) !== JSON.stringify(Object.keys(WORKFLOW_LINES).sort())) {
+  const byName = (a, b) => a.localeCompare(b);
+  const workflows = readdirSync(join(ROOT, ".github/workflows")).sort(byName);
+  if (JSON.stringify(workflows) !== JSON.stringify(Object.keys(WORKFLOW_LINES).sort(byName))) {
     fail(`unreviewed workflow file: ${JSON.stringify(workflows)}`);
   }
   for (const [name, lines] of Object.entries(WORKFLOW_LINES)) auditWorkflow(name, lines);
