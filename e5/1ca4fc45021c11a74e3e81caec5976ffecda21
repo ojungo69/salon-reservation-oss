@@ -1,0 +1,35 @@
+public/404.html
+  s_9eaa50dae3212d::t_9a8beb8802636d 18
+public/admin.html
+  s_9eaa50dae3212d::t_a36fced07fa46b 19
+public/bookings.html
+  s_9eaa50dae3212d::t_0dab38ce30866b 18
+public/cancellation.html
+  s_9eaa50dae3212d::t_5cd05ac24e7529 18
+public/index.html
+  s_9eaa50dae3212d::t_999f61a1179245 19
+public/line.html
+  s_9eaa50dae3212d::t_6ecbef5f8cbbbc 26
+public/privacy.html
+  s_9eaa50dae3212d::t_d9448cfb21d173 18
+public/setup.html
+  s_9eaa50dae3212d::t_156db57ba6fd5a 19
+public/terms.html
+  s_9eaa50dae3212d::t_e2bab6194332a6 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e51ca4fc45021c11a74e3e81caec5976ffecda21",
+  "prompts": {},
+  "sessions": {
+    "s_9eaa50dae3212d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d455a2c-bc6f-4b55-b74f-98a26f84e551",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
