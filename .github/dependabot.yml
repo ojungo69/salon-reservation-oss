@@ -39,6 +39,12 @@ updates:
       - dependency-name: "@types/node"
         update-types:
           - version-update:semver-major
+      # @cloudflare/vitest-pool-workers 0.23 (its last 0.x) peers on Vitest ^4.1, so a
+      # Vitest 5 bump cannot install. Remove this when moving to the successor
+      # @cloudflare/vitest-plugin, which accepts Vitest 5.
+      - dependency-name: vitest
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
