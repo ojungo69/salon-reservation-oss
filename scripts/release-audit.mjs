@@ -409,7 +409,13 @@ const auditPackage = () => {
   }
   if (
     JSON.stringify(packageJson.allowScripts) !==
-    JSON.stringify({ "esbuild@0.28.1": true, fsevents: false, "workerd@1.20260801.1": true })
+    JSON.stringify({
+      "esbuild@0.28.1": true,
+      "esbuild@0.28.2": true,
+      fsevents: false,
+      "workerd@1.20260815.1": true,
+      "workerd@1.20261023.1": true,
+    })
   ) {
     fail("install-script allowlist drift");
   }
