@@ -11,8 +11,10 @@
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
     "fsevents": false,
-    "workerd@1.20260801.1": true
+    "workerd@1.20260815.1": true,
+    "workerd@1.20261023.1": true
   },
   "cloudflare": {
     "bindings": {
