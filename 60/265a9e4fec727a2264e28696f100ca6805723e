@@ -1,0 +1,20 @@
+.github/dependabot.yml
+  s_9eaa50dae3212d::t_78163302561053 42,44-47
+  s_9eaa50dae3212d::t_47ac019d210d50 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60265a9e4fec727a2264e28696f100ca6805723e",
+  "prompts": {},
+  "sessions": {
+    "s_9eaa50dae3212d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d455a2c-bc6f-4b55-b74f-98a26f84e551",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
