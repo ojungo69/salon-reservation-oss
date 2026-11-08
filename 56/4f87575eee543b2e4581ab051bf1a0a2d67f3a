@@ -1,0 +1,35 @@
+public/terms.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 17
+public/cancellation.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 17
+public/index.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 18
+public/line.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 25
+public/privacy.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 17
+public/bookings.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 17
+public/404.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 17
+public/admin.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 18
+public/setup.html
+  s_e153eaa5d8c3cd::t_8d0bfb0a2332a1 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "564f87575eee543b2e4581ab051bf1a0a2d67f3a",
+  "prompts": {},
+  "sessions": {
+    "s_e153eaa5d8c3cd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b8d8-6ac7-72c3-9651-2148c711f448",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "ojungo69 <210335670+ojungo69@users.noreply.github.com>"
+    }
+  }
+}
