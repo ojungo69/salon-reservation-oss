@@ -39,7 +39,8 @@ texts remain in the installed packages. Run `npm ci && npm run release:audit` af
 change; a new or missing license expression fails the release gate until reviewed.
 
 npm 12 runs dependency install scripts only when `package.json` permits them. This release permits
-only the locked `esbuild@0.28.1` and `workerd@1.20260801.1` binary setup scripts; dependency updates
+only the locked `esbuild@0.28.1`, `esbuild@0.28.2`, `workerd@1.20260815.1` and `workerd@1.20261023.1`
+binary setup scripts; dependency updates
 must review and update those exact entries. Public CI additionally installs with `--ignore-scripts`
 and builds against the platform-specific packages already present in the lockfile.
 
